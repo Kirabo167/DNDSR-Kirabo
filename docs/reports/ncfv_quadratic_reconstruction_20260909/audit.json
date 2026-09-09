@@ -1,0 +1,53 @@
+{
+  "audits": {
+    "efficient/iv10": {
+      "unique_owned_nodes": 745,
+      "volume": 400.0,
+      "independent_norm_max_discrepancy": 4.336808689942018e-19
+    },
+    "efficient/iv20": {
+      "unique_owned_nodes": 4752,
+      "volume": 400.0,
+      "independent_norm_max_discrepancy": 2.168404344971009e-19
+    },
+    "efficient/iv40": {
+      "unique_owned_nodes": 33694,
+      "volume": 400.0,
+      "independent_norm_max_discrepancy": 4.336808689942018e-19
+    },
+    "efficient/iv80": {
+      "unique_owned_nodes": 252780,
+      "volume": 400.0,
+      "independent_norm_max_discrepancy": 5.421010862427522e-20
+    },
+    "traditional/iv10": {
+      "unique_owned_nodes": 745,
+      "volume": 399.99999999999864,
+      "independent_norm_max_discrepancy": 2.168404344971009e-19
+    },
+    "traditional/iv20": {
+      "unique_owned_nodes": 4752,
+      "volume": 399.9999999999976,
+      "independent_norm_max_discrepancy": 4.336808689942018e-19
+    },
+    "traditional/iv40": {
+      "unique_owned_nodes": 33694,
+      "volume": 399.99999999999756,
+      "independent_norm_max_discrepancy": 4.336808689942018e-19
+    },
+    "traditional/iv80": {
+      "unique_owned_nodes": 252780,
+      "volume": 399.99999999999784,
+      "independent_norm_max_discrepancy": 1.4445880506990755e-19
+    }
+  },
+  "value_tolerance": 1e-10,
+  "gradient_tolerance": 1e-08,
+  "sources_sha256": {
+    "src/NCFV/NCFVReconstruction.cpp": "5e780e8498009efaae6ba25e40265d095e513d5eeeecab331cfc39ee31ec2238",
+    "src/NCFV/NCFVDualGeometry.cpp": "baa2d00647a65be4785cc3faf4109ad6068c56eb9a407b9c75801834228cfe23",
+    "src/NCFV/NCFVSolver.cpp": "dce36ee25589001f934f881d01f5b73d0b67f7f3d70333e89ff86b4cb6c77062",
+    "build/src/NCFV/libncfv.a": "13db09e2c7f8a02fb6b6ceb3ddbae734ecda01afecefddb2593e85a732868ded",
+    "cases/NCFV/diagnostics/quadratic_reconstruction_probe.cpp": "0f9c1717e58afb71f1fbf29b3a4da8201bb97d523b53b991ee810ea5ec829052"
+  }
+}
