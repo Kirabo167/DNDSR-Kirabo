@@ -14,6 +14,15 @@
 
 namespace DNDS::NCFV
 {
+    /** Per-rank wall times for one completed production SSPRK3 step. */
+    struct StepPhaseTiming
+    {
+        RhsPhaseTiming rhs;
+        real baseStateCopySeconds = 0;
+        real stageUpdateSeconds = 0;
+        real totalSeconds = 0;
+    };
+
     template <int dimension>
     class Solver
     {
@@ -41,6 +50,8 @@ namespace DNDS::NCFV
         real _simulationTime = 0;
         index _lastOutputIteration = UnInitIndex;
         index _lastRestartIteration = UnInitIndex;
+        index _lastStepRiemannSolverCalls = 0;
+        StepPhaseTiming _lastStepTiming;
 
         void ReadMesh();
         void BroadcastBoundaryNameMap();
@@ -74,15 +85,45 @@ namespace DNDS::NCFV
         void Initialize();
         void Run();
         real EvaluateResidual() { return _spatial->EvaluateRHS(_state, _rhs); }
+        /** Enable intrusive internal-edge flux timing after Initialize(). */
+        void EnableDetailedFluxTiming(bool enabled)
+        {
+            DNDS_check_throw_info(_spatial != nullptr,
+                                  "Initialize solver before enabling detailed flux timing");
+            _spatial->EnableDetailedFluxTiming(enabled);
+        }
+        /** Select the precomputed or legacy on-demand physical-flux gradients. */
+        void UsePrecomputedPhysicalFluxGradients(bool enabled)
+        {
+            DNDS_check_throw_info(
+                _spatial != nullptr,
+                "Initialize solver before selecting physical-flux gradients");
+            _spatial->UsePrecomputedPhysicalFluxGradients(enabled);
+        }
 
         [[nodiscard]] const ssp<Geom::UnstructuredMesh> &Mesh() const { return _mesh; }
         [[nodiscard]] const Topology &EdgeTopology() const { return *_topology; }
         [[nodiscard]] const DualGeometry &Geometry() const { return *_geometry; }
         [[nodiscard]] const Reconstruction &ReconstructionData() const { return *_reconstruction; }
         [[nodiscard]] const NodeStatePair &StateField() const { return _state; }
+        [[nodiscard]] const NodeStatePair &ResidualField() const { return _rhs; }
         [[nodiscard]] const BoundaryRegistry &Boundaries() const { return *_boundaries; }
         [[nodiscard]] index CurrentIteration() const { return _currentIteration; }
         [[nodiscard]] real SimulationTime() const { return _simulationTime; }
+        /** Local selected-Riemann-solver calls in the most recently completed SSPRK3 step. */
+        [[nodiscard]] index LastStepRiemannSolverCalls() const
+        {
+            return _lastStepRiemannSolverCalls;
+        }
+        /** Local phase times in the most recently completed SSPRK3 step. */
+        [[nodiscard]] const StepPhaseTiming &LastStepTiming() const
+        {
+            return _lastStepTiming;
+        }
+        [[nodiscard]] const RhsPhaseTiming &LastRhsTiming() const
+        {
+            return _spatial->LastRhsTiming();
+        }
         [[nodiscard]] real LocalTimeStep(index iNode) const
         {
             return _spatial->LocalTimeStep(iNode);

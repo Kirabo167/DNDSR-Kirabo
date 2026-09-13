@@ -133,6 +133,21 @@ MPI 分工如下：
 
 这样跨分区边的两端严格使用同一份通量，不需要对残差执行 MPI push-sum。
 
+高效模式限制器严格约束论文式（3-94）--（3-100）的宏界面平均值，而不是
+原始边中点值。对于界面 \(S_{ij}\) 的 \(i\) 侧，先用预计算权重得到
+
+\[
+\bar U_i^{ij}=U_i+S_{ij}^{-1}\sum_m\boldsymbol\omega^i_{ij,m}
+\cdot\nabla U_m,
+\]
+
+再用端点格点值 \(U_i,U_j\) 构成逐分量上下界。所得单个锚点系数
+\(\phi_i\) 作用于该侧完整权重和；不能把和式内每个共享梯度永久乘以各自
+节点的系数，否则不再等价于论文式（3-96）。格点值恢复仍使用未限制梯度；
+限制系数只在该侧界面均值、物理通量梯度积分和黏性界面梯度中生效。
+跨分区节点计算限制器时，会在初始化阶段额外构造所需 ghost 原始边的宏面
+权重；关闭限制器时不保存这部分权重。
+
 ## 4. 构建与运行
 
 模块目录为 `src/NCFV/`，C++ 命名空间为 `DNDS::NCFV`，库目标为 `ncfv`，
@@ -184,6 +199,20 @@ mpirun --oversubscribe -np 4 ./app/NCFV.exe ../cases/NCFV/NCFV.json
 构造顶点插值系数压缩梯度积分，无 Gauss 点。左右重构迹的跳跃只作为黏性
 惩罚项加入平均梯度，不代替真实法向导数。
 
+内部黏性面按论文式（4-153）--（4-170）先计算原始变量算术平均
+\(\widetilde q=(q_L+q_R)/2\)，再以守恒变量形式构造 dGRP 梯度
+
+\[
+\overline{\nabla U}=\frac12
+(\overline{\nabla U_L}+\overline{\nabla U_R})
++\frac{\bar U_R-\bar U_L}{2\Delta\widetilde x}\,\boldsymbol n,
+\qquad
+\Delta\widetilde x=\frac{\min(\Omega_i,\Omega_j)}{S_{ij}},
+\]
+
+然后在 \(\widetilde q\) 处用链式法则转换为原始变量梯度。宏面黏性通量乘
+标量面积 \(S_{ij}=\sum_k S_{ij,k}\)，而不是合成有向面积向量的模。
+
 `physics.boundaryZones` 按区分大小写的 CGNS 名称配置：`FarField`、
 `SlipWall`、`Symmetry`、`NoSlipAdiabaticWall`、`NoSlipIsothermalWall`、
 `SupersonicInlet`、`SupersonicOutlet`、`PressureOutlet`。远场采用指定外侧
@@ -192,6 +221,9 @@ mpirun --oversubscribe -np 4 ./app/NCFV.exe ../cases/NCFV/NCFV.json
 `strongState=true` 在初始时刻和每个 RK 子步施加入口/壁面节点条件。
 角点处入口优先于壁面，同优先级按区 ID 确定。建议启用
 `requireBoundaryZoneCoverage=true` 防止漏配。
+高效模式边界无粘通量按论文第 4.3.2 节先在边界格点调用边界通量求解器，
+再把通量线性插值到边中点和面顶点并精确积分；不会先插值守恒量再调用
+非线性边界通量函数。
 
 `time.useCFLTimeStep=true` 时，`dt_i=CFL*V_i/sum(lambda_conv+lambda_visc)`。
 `useLocalTimeStep=true` 为稳态局部伪时间，输出时间记为各步最小步长的累加；
@@ -259,7 +291,9 @@ ctest --test-dir build -R '^ncfv_' --output-on-failure
 
 `ncfv_test_geometry` 检查线、三角形和四面体全微分公式对任意二次多项式
 达到机器精度。`ncfv_test_parallel` 在三维 Hex 网格上同时检查坐标平均、
-几何闭合、两种积分存储不变量、1/2/4/8-rank 拓扑以及自由流残差。
+几何闭合、两种积分存储不变量、1/2/4/8-rank 拓扑以及自由流残差；还在
+完整 MPI 对偶宏面上用含交叉项的任意二次多项式分别验证格点恢复权重、
+左右界面平均权重和通量矩阵权重，并验证跨分区限制器确实约束宏面平均值。
 
 I/O 测试还验证非均匀 CSV 初场、一步推进、VTK/H5 输出、状态回读及强
 无滑移壁条件。当前支持 O1 二维/三维 Euler 和层流黏性流动；O2 曲边、

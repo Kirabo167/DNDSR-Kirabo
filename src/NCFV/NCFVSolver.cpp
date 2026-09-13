@@ -634,7 +634,8 @@ namespace DNDS::NCFV
         _topology = std::make_unique<Topology>(_mpi, _mesh);
         _topology->Build();
         _geometry = std::make_unique<DualGeometry>(
-            _mpi, _mesh, *_topology, _configuration.algorithm);
+            _mpi, _mesh, *_topology, _configuration.algorithm,
+            _configuration.reconstruction.enableLimiter);
         _geometry->Build();
         if (_configuration.mesh.periodicLengths[0] > 0)
         {
@@ -701,14 +702,21 @@ namespace DNDS::NCFV
             if (_configuration.time.endTime >= 0 &&
                 _simulationTime >= _configuration.time.endTime - 1e-13)
                 break;
+            _lastStepTiming = {};
+            const double stepStart = MPI_Wtime();
             _spatial->SetMaximumStep(_configuration.time.endTime >= 0 ?
                 _configuration.time.endTime - _simulationTime : veryLargeReal);
+            const double baseCopyStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
                 _baseState[iNode] = _state[iNode];
+            _lastStepTiming.baseStateCopySeconds = MPI_Wtime() - baseCopyStart;
 
+            _spatial->ResetRiemannSolverCallCount();
             residual = _spatial->EvaluateRHS(_state, _rhs);
+            _lastStepTiming.rhs += _spatial->LastRhsTiming();
             const real physicalStep = _spatial->LastMinimumTimeStep();
             std::vector<real> stepSize(static_cast<std::size_t>(_mesh->NumNode()));
+            double stageUpdateStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
             {
                 stepSize[static_cast<std::size_t>(iNode)] =
@@ -719,8 +727,11 @@ namespace DNDS::NCFV
             }
             _spatial->ApplyStrongBoundaryConditions(_stageState);
             CheckOwnedState(_stageState, "SSPRK3 stage 1");
+            _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
 
             residual = _spatial->EvaluateRHS(_stageState, _rhs);
+            _lastStepTiming.rhs += _spatial->LastRhsTiming();
+            stageUpdateStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
                 _stageState[iNode] =
                     0.75 * _baseState[iNode] +
@@ -728,8 +739,11 @@ namespace DNDS::NCFV
                             stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
             _spatial->ApplyStrongBoundaryConditions(_stageState);
             CheckOwnedState(_stageState, "SSPRK3 stage 2");
+            _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
 
             residual = _spatial->EvaluateRHS(_stageState, _rhs);
+            _lastStepTiming.rhs += _spatial->LastRhsTiming();
+            stageUpdateStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
                 _state[iNode] =
                     (1.0 / 3.0) * _baseState[iNode] +
@@ -738,6 +752,9 @@ namespace DNDS::NCFV
                          stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
             _spatial->ApplyStrongBoundaryConditions(_state);
             CheckOwnedState(_state, "SSPRK3 stage 3");
+            _lastStepRiemannSolverCalls = _spatial->RiemannSolverCallCount();
+            _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+            _lastStepTiming.totalSeconds = MPI_Wtime() - stepStart;
 
             _currentIteration++;
             _simulationTime += physicalStep;

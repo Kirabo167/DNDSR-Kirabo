@@ -1,0 +1,24 @@
+{
+    "dimension": 3,
+    "mesh": {
+        "meshFile": "../cases/NCFV/generated_periodic_meshes/periodic_hex_iv20.cgns",
+        "ghostLayers": 2,
+        "periodicTolerance": 1e-8,
+        "periodicLengths": [10, 10, 4]
+    },
+    "algorithm": {"mode": "EfficientDifferential", "quadratureOrder": 4, "retainMicroGeometry": false},
+    "reconstruction": {"enableLimiter": false, "stencilSizeFactor": 1.7, "maximumStencilRings": 4},
+    "physics": {
+        "gamma": 1.4, "riemannSolver": "Roe_M2", "initialPrimitive": [1, 1, 1, 0, 1],
+        "farFieldPrimitive": [1, 1, 1, 0, 1], "requireBoundaryZoneCoverage": true,
+        "boundaryZones": [
+            {"name": "bc-2", "mode": "Periodic"}, {"name": "bc-2-1", "mode": "Periodic"},
+            {"name": "bc-3", "mode": "Periodic"}, {"name": "bc-3-1", "mode": "Periodic"},
+            {"name": "bc-4", "mode": "Periodic"}, {"name": "bc-4-1", "mode": "Periodic"}
+        ],
+        "viscous": {"enabled": false}
+    },
+    "initialField": {"isentropicVortex": true, "vortexStrength": 5, "vortexCenter": [5, 5, 0]},
+    "time": {"iterations": 1, "endTime": 2, "useCFLTimeStep": true, "useLocalTimeStep": false, "cfl": 0.5, "maximumTimeStep": 0.01, "reportInterval": 1},
+    "io": {"writeVTK": false, "writeInitial": false, "writeFinal": false, "outputInterval": 0, "writeFinalRestart": false, "restartInterval": 0, "writeResolvedConfiguration": false}
+}

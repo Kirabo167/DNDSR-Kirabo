@@ -149,12 +149,18 @@ namespace DNDS::NCFV
         ssp<Geom::UnstructuredMesh> _mesh;
         const Topology &_topology;
         AlgorithmSettings _settings;
+        bool _buildGhostEdgeSurfaces = false;
 
         std::vector<Vector3> _cellPoints;
         std::vector<Vector3> _facePoints;
         std::vector<Vector3> _edgePoints;
         std::vector<NodeControlVolume> _nodeVolumes;
         std::vector<EdgeControlSurface> _edgeSurfaces;
+        // Efficient limiting of an owned node also needs the exact macro-surface
+        // mean on incident edges owned by another rank.  Keep those private
+        // halo surfaces separate so EdgeSurfaces() retains its owned-only
+        // iteration and accounting semantics.
+        std::vector<EdgeControlSurface> _ghostEdgeSurfaces;
         NodeMomentPair _nodeMoments;
         NodeReferenceLengthPair _nodeReferenceLengths;
         EdgeMetricPair _edgeMetrics;
@@ -192,8 +198,10 @@ namespace DNDS::NCFV
             const MPIInfo &mpi,
             const ssp<Geom::UnstructuredMesh> &mesh,
             const Topology &topology,
-            const AlgorithmSettings &settings)
-            : _mpi(mpi), _mesh(mesh), _topology(topology), _settings(settings)
+            const AlgorithmSettings &settings,
+            bool buildGhostEdgeSurfaces = false)
+            : _mpi(mpi), _mesh(mesh), _topology(topology), _settings(settings),
+              _buildGhostEdgeSurfaces(buildGhostEdgeSurfaces)
         {
         }
 
@@ -208,7 +216,10 @@ namespace DNDS::NCFV
         }
         [[nodiscard]] const EdgeControlSurface &EdgeSurface(index iEdge) const
         {
-            return _edgeSurfaces.at(static_cast<std::size_t>(iEdge));
+            if (iEdge < _topology.NumEdge())
+                return _edgeSurfaces.at(static_cast<std::size_t>(iEdge));
+            return _ghostEdgeSurfaces.at(
+                static_cast<std::size_t>(iEdge - _topology.NumEdge()));
         }
         [[nodiscard]] const std::vector<NodeControlVolume> &NodeVolumes() const { return _nodeVolumes; }
         [[nodiscard]] const std::vector<EdgeControlSurface> &EdgeSurfaces() const { return _edgeSurfaces; }

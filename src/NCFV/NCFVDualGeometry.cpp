@@ -538,9 +538,10 @@ namespace DNDS::NCFV
     {
         _edgeSurfaces.clear();
         _edgeSurfaces.resize(static_cast<std::size_t>(_topology.NumEdge()));
-        for (index iEdge = 0; iEdge < _topology.NumEdge(); iEdge++)
+        _ghostEdgeSurfaces.clear();
+
+        const auto buildSurface = [&](index iEdge, EdgeControlSurface &surface)
         {
-            EdgeControlSurface &surface = _edgeSurfaces[static_cast<std::size_t>(iEdge)];
             surface.edge = iEdge;
             surface.nodes = {_topology.Edge2Node()(iEdge, 0),
                              _topology.Edge2Node()(iEdge, 1)};
@@ -582,6 +583,23 @@ namespace DNDS::NCFV
             else
                 DNDS_check_throw_info(!surface.quadrature.empty(),
                                       "Traditional NCFV did not store surface quadrature points");
+        };
+
+        for (index iEdge = 0; iEdge < _topology.NumEdge(); iEdge++)
+            buildSurface(iEdge, _edgeSurfaces[static_cast<std::size_t>(iEdge)]);
+
+        if (_settings.mode == IntegrationMode::EfficientDifferential &&
+            _buildGhostEdgeSurfaces)
+        {
+            _ghostEdgeSurfaces.resize(
+                static_cast<std::size_t>(_topology.NumEdgeGhost()));
+            for (index iGhost = 0; iGhost < _topology.NumEdgeGhost(); iGhost++)
+            {
+                const index iEdge = _topology.NumEdge() + iGhost;
+                buildSurface(
+                    iEdge,
+                    _ghostEdgeSurfaces[static_cast<std::size_t>(iGhost)]);
+            }
         }
     }
 

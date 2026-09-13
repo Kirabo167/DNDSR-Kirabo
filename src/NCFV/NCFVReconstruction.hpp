@@ -118,7 +118,13 @@ namespace DNDS::NCFV
             const NodeMatrixPair &coefficients,
             NodeStatePair &pointValues) const;
 
-        /** @brief One scalar limiter coefficient per owned node. */
+        /**
+         * @brief One scalar limiter coefficient per owned node.
+         *
+         * Efficient mode follows thesis (3-94)--(3-100): the constrained
+         * quantity is the exact differential-weight macro-surface mean, and
+         * its admissible interval is formed by the two endpoint point values.
+         */
         std::vector<real> ComputeLimiterFactors(
             const NodeStatePair &means,
             const NodeStatePair &pointValues,

@@ -407,6 +407,57 @@ namespace DNDS::NCFV
     {
         const int nVars = means.father->MatRowSize();
         std::vector<real> factors(static_cast<std::size_t>(_mesh->NumNode()), 1.0);
+
+        if (_mode == IntegrationMode::EfficientDifferential)
+        {
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            {
+                real factor = 1.0;
+                for (const NodeEdgeIncidence &incidence : _topology.Node2Edge(iNode))
+                {
+                    const EdgeControlSurface &surface =
+                        _geometry.EdgeSurface(incidence.edge);
+                    const bool isLeft = surface.nodes[0] == iNode;
+                    DNDS_check_throw_info(
+                        isLeft || surface.nodes[1] == iNode,
+                        "NCFV limiter encountered an edge not incident to its node");
+                    const index neighbor = surface.nodes[isLeft ? 1 : 0];
+                    const auto &weights = isLeft
+                                              ? surface.leftStateWeights
+                                              : surface.rightStateWeights;
+
+                    Eigen::VectorXd candidate = pointValues[iNode];
+                    for (const SparseVectorWeight &weight : weights)
+                        candidate += gradients[weight.node].transpose() *
+                                     weight.value.head(_mesh->getDim()) /
+                                     surface.measure;
+
+                    const Eigen::VectorXd minimum =
+                        pointValues[iNode].cwiseMin(pointValues[neighbor]);
+                    const Eigen::VectorXd maximum =
+                        pointValues[iNode].cwiseMax(pointValues[neighbor]);
+                    for (int iVar = 0; iVar < nVars; iVar++)
+                    {
+                        const real increment =
+                            candidate(iVar) - pointValues[iNode](iVar);
+                        if (increment > verySmallReal)
+                            factor = std::min(
+                                factor,
+                                (maximum(iVar) - pointValues[iNode](iVar)) /
+                                    increment);
+                        else if (increment < -verySmallReal)
+                            factor = std::min(
+                                factor,
+                                (minimum(iVar) - pointValues[iNode](iVar)) /
+                                    increment);
+                    }
+                }
+                factors[static_cast<std::size_t>(iNode)] =
+                    std::clamp(factor, 0.0, 1.0);
+            }
+            return factors;
+        }
+
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
             Eigen::VectorXd minimum = means[iNode];
@@ -422,16 +473,10 @@ namespace DNDS::NCFV
             {
                 const Vector3 point = 0.5 * (_mesh->coords[iNode] + _mesh->coords[neighbor]);
                 Eigen::VectorXd candidate = pointValues[iNode];
-                if (_mode == IntegrationMode::EfficientDifferential)
-                    candidate += gradients[iNode].transpose() *
-                                 (point - _mesh->coords[iNode]).head(_mesh->getDim());
-                else
-                {
-                    const auto &op = _operators[static_cast<std::size_t>(iNode)];
-                    candidate += coefficients[iNode].transpose() *
-                                 EvaluateBasis(point - _mesh->coords[iNode],
-                                               op.referenceLengths, _mesh->getDim());
-                }
+                const auto &op = _operators[static_cast<std::size_t>(iNode)];
+                candidate += coefficients[iNode].transpose() *
+                             EvaluateBasis(point - _mesh->coords[iNode],
+                                           op.referenceLengths, _mesh->getDim());
 
                 for (int iVar = 0; iVar < nVars; iVar++)
                 {
@@ -456,10 +501,11 @@ namespace DNDS::NCFV
     {
         DNDS_check_throw_info(factors.size() == static_cast<std::size_t>(_mesh->NumNode()),
                               "NCFV limiter-factor array has the wrong size");
+        DNDS_check_throw_info(
+            _mode == IntegrationMode::TraditionalQuadrature,
+            "Efficient NCFV limiter factors are side-anchored and cannot be applied to the shared gradient field");
+        static_cast<void>(gradients);
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
-            if (_mode == IntegrationMode::EfficientDifferential)
-                gradients[iNode] *= factors[static_cast<std::size_t>(iNode)];
-            else
-                coefficients[iNode] *= factors[static_cast<std::size_t>(iNode)];
+            coefficients[iNode] *= factors[static_cast<std::size_t>(iNode)];
     }
 }

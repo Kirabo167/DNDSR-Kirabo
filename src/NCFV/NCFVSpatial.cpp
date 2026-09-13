@@ -168,12 +168,100 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
+    void SpatialOperator<dimension>::ComputePhysicalFluxGradients()
+    {
+        DNDS_assert(_mode == IntegrationMode::EfficientDifferential);
+        DNDS_assert(_physicalFluxGradients.Size() == _stateGradients.Size());
+        DNDS_assert(_physicalFluxGradients.Size() == _pointValues.Size());
+
+        const real gammaMinusOne = _physics.gamma - 1.0;
+        for (index iNode = 0; iNode < _physicalFluxGradients.Size(); iNode++)
+        {
+            const State state = _pointValues[iNode];
+            const StateGradient stateGradient = _stateGradients[iNode];
+            PhysicalFluxGradient physicalFluxGradient;
+
+            const real density = state(0);
+            const real inverseDensity = 1.0 / density;
+            const SpatialVector momentum = state.template segment<dimension>(1);
+            const SpatialVector velocity = momentum * inverseDensity;
+            const real velocitySquared = velocity.squaredNorm();
+            const real pressure = gammaMinusOne *
+                                  (state(dimension + 1) -
+                                   0.5 * density * velocitySquared);
+            const real totalEnthalpyDensity = state(dimension + 1) + pressure;
+
+            for (int derivativeDirection = 0;
+                 derivativeDirection < dimension; derivativeDirection++)
+            {
+                const State stateDerivative =
+                    stateGradient.row(derivativeDirection).transpose();
+                const real densityDerivative = stateDerivative(0);
+                const SpatialVector momentumDerivative =
+                    stateDerivative.template segment<dimension>(1);
+                const real totalEnergyDensityDerivative =
+                    stateDerivative(dimension + 1);
+                const SpatialVector velocityDerivative =
+                    (momentumDerivative - densityDerivative * velocity) *
+                    inverseDensity;
+                const real pressureDerivative = gammaMinusOne *
+                                                (totalEnergyDensityDerivative -
+                                                 momentumDerivative.dot(velocity) +
+                                                 0.5 * densityDerivative *
+                                                     velocitySquared);
+
+                for (int fluxDirection = 0;
+                     fluxDirection < dimension; fluxDirection++)
+                {
+                    const int column = FluxGradientColumn(
+                        derivativeDirection, fluxDirection);
+                    physicalFluxGradient(0, column) =
+                        momentumDerivative(fluxDirection);
+                    physicalFluxGradient(dimension + 1, column) =
+                        (totalEnergyDensityDerivative + pressureDerivative) *
+                            velocity(fluxDirection) +
+                        totalEnthalpyDensity * velocityDerivative(fluxDirection);
+                }
+
+                // d(m_i m_j / rho + p delta_ij) is symmetric in i and j.
+                for (int fluxDirection = 0;
+                     fluxDirection < dimension; fluxDirection++)
+                    for (int momentumDirection = 0;
+                         momentumDirection <= fluxDirection; momentumDirection++)
+                    {
+                        real derivative =
+                            momentumDerivative(momentumDirection) *
+                                velocity(fluxDirection) +
+                            momentumDerivative(fluxDirection) *
+                                velocity(momentumDirection) -
+                            densityDerivative * velocity(momentumDirection) *
+                                velocity(fluxDirection);
+                        if (momentumDirection == fluxDirection)
+                            derivative += pressureDerivative;
+                        physicalFluxGradient(
+                            1 + momentumDirection,
+                            FluxGradientColumn(
+                                derivativeDirection, fluxDirection)) =
+                            derivative;
+                        physicalFluxGradient(
+                            1 + fluxDirection,
+                            FluxGradientColumn(
+                                derivativeDirection, momentumDirection)) =
+                            derivative;
+                    }
+            }
+            _physicalFluxGradients[iNode] = physicalFluxGradient;
+        }
+    }
+
+    template <int dimension>
     typename SpatialOperator<dimension>::State
     SpatialOperator<dimension>::NumericalFlux(
         const State &left,
         const State &right,
         const SpatialVector &unitNormal) const
     {
+        ++_riemannSolverCallCount;
         State flux = State::Zero();
         SpatialVector gridVelocity = SpatialVector::Zero();
         real acousticMinus = 0;
@@ -265,7 +353,7 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
-    typename SpatialOperator<dimension>::Gradient
+    typename SpatialOperator<dimension>::StateGradient
     SpatialOperator<dimension>::EvaluateTraditionalGradient(
         index anchorNode,
         const Vector3 &point) const
@@ -280,17 +368,18 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
-    typename SpatialOperator<dimension>::Gradient
+    typename SpatialOperator<dimension>::StateGradient
     SpatialOperator<dimension>::EfficientSurfaceGradient(
+        index anchorNode,
         const std::vector<SparseScalarWeight> &weights,
         real measure) const
     {
         DNDS_check_throw_info(measure > verySmallReal,
                               "NCFV efficient surface has zero measure");
-        Gradient gradient = Gradient::Zero();
+        StateGradient gradient = StateGradient::Zero();
         for (const auto &weight : weights)
-            gradient += weight.value * Gradient(_gradients[weight.node]);
-        return gradient / measure;
+            gradient += weight.value * StateGradient(_stateGradients[weight.node]);
+        return _limiterFactors[anchorNode](0, 0) * gradient / measure;
     }
 
     template <int dimension>
@@ -298,24 +387,68 @@ namespace DNDS::NCFV
     SpatialOperator<dimension>::EfficientIntegratedPhysicalFlux(
         index anchorNode,
         const Vector3 &vectorMeasure,
-        const std::vector<SparseMatrixWeight> &weights) const
+        const std::vector<SparseMatrixWeight> &weights,
+        EfficientPhysicalFluxIntegralTiming &timing) const
     {
+        if (!_usePrecomputedPhysicalFluxGradients)
+        {
+            State integral = PhysicalFlux(
+                State(_pointValues[anchorNode]),
+                vectorMeasure.template head<dimension>());
+            State correction = State::Zero();
+            for (const auto &weight : weights)
+            {
+                const State state = _pointValues[weight.node];
+                for (int derivativeDirection = 0;
+                     derivativeDirection < dimension; derivativeDirection++)
+                {
+                    const State stateDerivative =
+                        _stateGradients[weight.node].row(derivativeDirection).transpose();
+                    for (int fluxDirection = 0; fluxDirection < dimension;
+                         fluxDirection++)
+                        correction +=
+                            weight.value(derivativeDirection, fluxDirection) *
+                            PhysicalFluxDerivative(
+                                state, stateDerivative, fluxDirection);
+                }
+            }
+            return integral +
+                   _limiterFactors[anchorNode](0, 0) * correction;
+        }
+
+        double phaseStart = 0;
+        if (_detailedFluxTiming)
+            phaseStart = MPI_Wtime();
         State integral = PhysicalFlux(
             State(_pointValues[anchorNode]), vectorMeasure.template head<dimension>());
+        if (_detailedFluxTiming)
+        {
+            timing.zeroOrderFluxSeconds += MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
+        State correction = State::Zero();
         for (const auto &weight : weights)
         {
-            const State state = _pointValues[weight.node];
             for (int derivativeDirection = 0; derivativeDirection < dimension;
                  derivativeDirection++)
-            {
-                const State stateDerivative =
-                    _gradients[weight.node].row(derivativeDirection).transpose();
                 for (int fluxDirection = 0; fluxDirection < dimension; fluxDirection++)
-                    integral += weight.value(derivativeDirection, fluxDirection) *
-                                PhysicalFluxDerivative(state, stateDerivative, fluxDirection);
-            }
+                    correction +=
+                        weight.value(derivativeDirection, fluxDirection) *
+                        _physicalFluxGradients[weight.node]
+                            .col(FluxGradientColumn(
+                                derivativeDirection, fluxDirection));
         }
-        return integral;
+        if (_detailedFluxTiming)
+        {
+            timing.precomputedGradientIntegralSeconds +=
+                MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
+        const State result = integral +
+                             _limiterFactors[anchorNode](0, 0) * correction;
+        if (_detailedFluxTiming)
+            timing.finalAssemblySeconds += MPI_Wtime() - phaseStart;
+        return result;
     }
 
     template <int dimension>
@@ -326,9 +459,14 @@ namespace DNDS::NCFV
         const std::vector<SparseVectorWeight> &weights) const
     {
         State integral = measure * State(_pointValues[anchorNode]);
+        State correction = State::Zero();
         for (const auto &weight : weights)
-            integral += _gradients[weight.node].transpose() *
-                        weight.value.template head<dimension>();
+            correction += _stateGradients[weight.node].transpose() *
+                          weight.value.template head<dimension>();
+        // One coefficient for the complete side reconstruction is required by
+        // thesis (3-96); scaling each contributing nodal gradient by its own
+        // coefficient would define a different interface mean.
+        integral += _limiterFactors[anchorNode](0, 0) * correction;
         const State mean = integral / measure;
         return PreservePhysical(mean, State(_pointValues[anchorNode]));
     }
@@ -338,37 +476,35 @@ namespace DNDS::NCFV
     SpatialOperator<dimension>::InternalViscousFlux(
         const State &left,
         const State &right,
-        const Gradient &leftGradient,
-        const Gradient &rightGradient,
+        const StateGradient &leftGradient,
+        const StateGradient &rightGradient,
         const SpatialVector &unitNormal,
-        real normalDistance) const
+        real characteristicDistance) const
     {
         State flux = State::Zero();
         if (!_physics.viscous.enabled)
             return flux;
 
-        Gradient leftPrimitiveGradient;
-        Gradient rightPrimitiveGradient;
+        // Thesis (4-153)/(4-156) uses the arithmetic mean of the primitive
+        // variables q, not the primitive state obtained from an arithmetic
+        // mean of conservative variables.
+        const State facePrimitive =
+            0.5 * (ConservativeToPrimitive(left) +
+                   ConservativeToPrimitive(right));
+        const State faceState = PrimitiveToConservative(
+            std::vector<real>(facePrimitive.data(),
+                              facePrimitive.data() + facePrimitive.size()));
+        const real distance = std::max(characteristicDistance, verySmallReal);
+        // Conservative dGRP gradient, thesis (4-154)/(4-170).  The 1/2 in
+        // both the averaged gradients and jump correction is essential.
+        StateGradient conservativeGradient = 0.5 * (leftGradient + rightGradient);
+        conservativeGradient +=
+            unitNormal * ((right - left).transpose() / (2.0 * distance));
+        StateGradient primitiveGradient;
         Euler::Gas::GradientCons2Prim_IdealGas<dimension>(
-            left, leftGradient, leftPrimitiveGradient, _physics.gamma,
+            faceState, conservativeGradient, primitiveGradient, _physics.gamma,
             Eigen::Vector<real, 0>{});
-        Euler::Gas::GradientCons2Prim_IdealGas<dimension>(
-            right, rightGradient, rightPrimitiveGradient, _physics.gamma,
-            Eigen::Vector<real, 0>{});
-        Gradient primitiveGradient =
-            0.5 * (leftPrimitiveGradient + rightPrimitiveGradient);
 
-        const State leftPrimitive = ConservativeToPrimitive(left);
-        const State rightPrimitive = ConservativeToPrimitive(right);
-        const real distance = std::max(normalDistance, verySmallReal);
-        const Eigen::RowVector<real, dimension + 2> desiredNormalDerivative =
-            (rightPrimitive - leftPrimitive).transpose() / distance;
-        // The two traces are reconstructed at the same surface point. Their
-        // jump is a penalty, not an estimate of the physical normal gradient.
-        primitiveGradient += unitNormal * desiredNormalDerivative;
-
-        const State faceState = PreservePhysical(
-            0.5 * (left + right), IsPhysical(left) ? left : right);
         const real viscosity = MolecularViscosity(faceState);
         const real cp = _physics.viscous.gasConstant * _physics.gamma /
                         (_physics.gamma - 1.0);
@@ -385,7 +521,7 @@ namespace DNDS::NCFV
     typename SpatialOperator<dimension>::State
     SpatialOperator<dimension>::BoundaryViscousFlux(
         const State &inside,
-        const Gradient &insideGradient,
+        const StateGradient &insideGradient,
         const SpatialVector &unitNormal,
         const BoundaryZoneSettings &boundary,
         real lengthScale) const
@@ -396,7 +532,7 @@ namespace DNDS::NCFV
             boundary.mode == BoundaryMode::Symmetry)
             return flux;
 
-        Gradient primitiveGradient;
+        StateGradient primitiveGradient;
         Euler::Gas::GradientCons2Prim_IdealGas<dimension>(
             inside, insideGradient, primitiveGradient, _physics.gamma,
             Eigen::Vector<real, 0>{});
@@ -466,18 +602,22 @@ namespace DNDS::NCFV
 
     template <int dimension>
     typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::EvaluateOwnedEdgeFlux(index iEdge) const
+    SpatialOperator<dimension>::EvaluateOwnedEdgeFlux(index iEdge)
     {
         const auto &surface = _geometry.EdgeSurface(iEdge);
         const index node0 = surface.nodes[0];
         const index node1 = surface.nodes[1];
         const SpatialVector unitNormal =
             surface.vectorMeasure.template head<dimension>().normalized();
-        const Vector3 edgeVector = _mesh->coords[node1] - _mesh->coords[node0];
-        real normalDistance =
-            std::abs(edgeVector.template head<dimension>().dot(unitNormal));
-        if (normalDistance <= verySmallReal)
-            normalDistance = edgeVector.template head<dimension>().norm();
+        const real volume0 = _periodic
+                                 ? _periodic->Volume(node0)
+                                 : _geometry.NodeMoments()(node0, 0);
+        const real volume1 = _periodic
+                                 ? _periodic->Volume(node1)
+                                 : _geometry.NodeMoments()(node1, 0);
+        // Thesis (4-155), not the projected primal-edge length.
+        const real characteristicDistance =
+            std::min(volume0, volume1) / surface.measure;
 
         if (_mode == IntegrationMode::TraditionalQuadrature)
         {
@@ -486,42 +626,122 @@ namespace DNDS::NCFV
             {
                 const SpatialVector pointNormal =
                     point.vectorWeight.template head<dimension>() / point.weight;
+                double phaseStart = 0;
+                if (_detailedFluxTiming)
+                    phaseStart = MPI_Wtime();
                 const State left = EvaluateTraditionalState(node0, point.coordinate);
+                if (_detailedFluxTiming)
+                {
+                    _lastRhsTiming.edgeLeftStatePreparationSeconds +=
+                        MPI_Wtime() - phaseStart;
+                    phaseStart = MPI_Wtime();
+                }
                 const State right = EvaluateTraditionalState(node1, point.coordinate);
+                if (_detailedFluxTiming)
+                {
+                    _lastRhsTiming.edgeRightStatePreparationSeconds +=
+                        MPI_Wtime() - phaseStart;
+                    phaseStart = MPI_Wtime();
+                }
                 State flux = NumericalFlux(left, right, pointNormal);
                 if (_physics.viscous.enabled)
                     flux -= InternalViscousFlux(
                         left, right,
                         EvaluateTraditionalGradient(node0, point.coordinate),
                         EvaluateTraditionalGradient(node1, point.coordinate),
-                        pointNormal, normalDistance);
+                        pointNormal, characteristicDistance);
                 integral += point.weight * flux;
+                if (_detailedFluxTiming)
+                    _lastRhsTiming.edgeNumericalFluxAndAssemblySeconds +=
+                        MPI_Wtime() - phaseStart;
             }
             return integral;
         }
 
+        double phaseStart = 0;
+        if (_detailedFluxTiming)
+            phaseStart = MPI_Wtime();
         const State leftIntegral = EfficientIntegratedPhysicalFlux(
-            node0, surface.vectorMeasure, surface.leftFluxWeights);
+            node0, surface.vectorMeasure, surface.leftFluxWeights,
+            _lastRhsTiming.edgeLeftPhysicalFluxDetail);
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeLeftPhysicalFluxIntegralSeconds +=
+                MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
         const State rightIntegral = EfficientIntegratedPhysicalFlux(
-            node1, surface.vectorMeasure, surface.rightFluxWeights);
+            node1, surface.vectorMeasure, surface.rightFluxWeights,
+            _lastRhsTiming.edgeRightPhysicalFluxDetail);
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeRightPhysicalFluxIntegralSeconds +=
+                MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
         const State leftMean = EfficientSurfaceMean(
             node0, surface.measure, surface.leftStateWeights);
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeLeftStatePreparationSeconds +=
+                MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
         const State rightMean = EfficientSurfaceMean(
             node1, surface.measure, surface.rightStateWeights);
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeRightStatePreparationSeconds +=
+                MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
+        const double numericalBlockStart = phaseStart;
         const State numerical = NumericalFlux(leftMean, rightMean, unitNormal);
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeRiemannFluxSeconds += MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
         const State centralMean = 0.5 *
                                   (PhysicalFlux(leftMean, unitNormal) +
                                    PhysicalFlux(rightMean, unitNormal));
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeCentralFluxSeconds += MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
+        const State dissipativeCorrection =
+            surface.measure * (numerical - centralMean);
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeDissipationAssemblySeconds += MPI_Wtime() - phaseStart;
+            phaseStart = MPI_Wtime();
+        }
         State integral = 0.5 * (leftIntegral + rightIntegral) +
-                         surface.measure * (numerical - centralMean);
+                         dissipativeCorrection;
+        if (_detailedFluxTiming)
+        {
+            _lastRhsTiming.edgeInviscidFinalAssemblySeconds +=
+                MPI_Wtime() - phaseStart;
+            _lastRhsTiming.edgeNumericalFluxAndAssemblySeconds +=
+                MPI_Wtime() - numericalBlockStart;
+        }
         if (_physics.viscous.enabled)
         {
-            const Gradient surfaceGradient = EfficientSurfaceGradient(
-                surface.gradientIntegralWeights, surface.measure);
-            integral -= surface.vectorMeasure.template head<dimension>().norm() *
+            if (_detailedFluxTiming)
+                phaseStart = MPI_Wtime();
+            const StateGradient leftSurfaceGradient = EfficientSurfaceGradient(
+                node0, surface.gradientIntegralWeights, surface.measure);
+            const StateGradient rightSurfaceGradient = EfficientSurfaceGradient(
+                node1, surface.gradientIntegralWeights, surface.measure);
+            integral -= surface.measure *
                         InternalViscousFlux(
-                            leftMean, rightMean, surfaceGradient, surfaceGradient,
-                            unitNormal, normalDistance);
+                            leftMean, rightMean,
+                            leftSurfaceGradient, rightSurfaceGradient,
+                            unitNormal, characteristicDistance);
+            if (_detailedFluxTiming)
+                _lastRhsTiming.edgeViscousFluxSeconds +=
+                    MPI_Wtime() - phaseStart;
         }
         return integral;
     }
@@ -590,14 +810,23 @@ namespace DNDS::NCFV
             for (int iPoint = 0; iPoint < piece.nPoints; iPoint++)
             {
                 State affineState = State::Zero();
+                State affineFlux = State::Zero();
                 for (const auto &coefficient :
                      piece.points[static_cast<std::size_t>(iPoint)].support)
+                {
+                    const State nodalState = _pointValues[coefficient.node];
                     affineState += coefficient.coefficient *
-                                   State(_pointValues[coefficient.node]);
+                                   nodalState;
+                    // Thesis section 4.3.2 interpolates already evaluated
+                    // nodal numerical fluxes. Evaluating the nonlinear flux
+                    // after interpolating U is not the same operation.
+                    affineFlux += coefficient.coefficient *
+                                  BoundaryNumericalFlux(
+                                      nodalState, unitNormal, boundary);
+                }
                 affineState = PreservePhysical(affineState, State(_pointValues[iNode]));
                 insideMean += affineState;
-                vertexFluxSum += BoundaryNumericalFlux(
-                    affineState, unitNormal, boundary);
+                vertexFluxSum += affineFlux;
             }
             insideMean /= static_cast<real>(piece.nPoints);
             total += piece.measure / static_cast<real>(piece.nPoints) * vertexFluxSum;
@@ -605,6 +834,7 @@ namespace DNDS::NCFV
                 total -= piece.measure * BoundaryViscousFlux(
                                              insideMean,
                                              EfficientSurfaceGradient(
+                                                 iNode,
                                                  piece.gradientIntegralWeights,
                                                  piece.measure),
                                              unitNormal, boundary,
@@ -636,13 +866,30 @@ namespace DNDS::NCFV
     void SpatialOperator<dimension>::AllocateNodeMatrix(
         NodeMatrixPair &field,
         const std::string &name,
-        int rows)
+        int rows,
+        int columns)
     {
         field.InitPair(name, _mpi);
-        field.father->Resize(_mesh->NumNode(), rows, dimension + 2);
-        field.son->Resize(_mesh->NumNodeGhost(), rows, dimension + 2);
+        field.father->Resize(_mesh->NumNode(), rows, columns);
+        field.son->Resize(_mesh->NumNodeGhost(), rows, columns);
         field.BorrowSetup(_mesh->coords);
         field.trans.initPersistentPull();
+        for (index iNode = 0; iNode < field.Size(); iNode++)
+            field[iNode].setZero();
+    }
+
+    template <int dimension>
+    void SpatialOperator<dimension>::AllocateLocalNodeMatrix(
+        NodeMatrixPair &field,
+        const std::string &name,
+        int rows,
+        int columns)
+    {
+        // This cache is recomputed for owned and ghost nodes from already
+        // synchronized inputs, so it deliberately has no MPI transformer.
+        field.InitPair(name, _mpi);
+        field.father->Resize(_mesh->NumNode(), rows, columns);
+        field.son->Resize(_mesh->NumNodeGhost(), rows, columns);
         for (index iNode = 0; iNode < field.Size(); iNode++)
             field[iNode].setZero();
     }
@@ -665,13 +912,20 @@ namespace DNDS::NCFV
     template <int dimension>
     void SpatialOperator<dimension>::Initialize()
     {
-        AllocateNodeMatrix(_gradients, "NCFV.gradients", dimension);
-        if (_mode == IntegrationMode::TraditionalQuadrature)
+        AllocateNodeMatrix(_stateGradients, "NCFV.stateGradients", dimension);
+        if (_mode == IntegrationMode::EfficientDifferential)
+            AllocateLocalNodeMatrix(
+                _physicalFluxGradients, "NCFV.physicalFluxGradients",
+                dimension + 2, dimension * dimension);
+        else
             AllocateNodeMatrix(_coefficients, "NCFV.coefficients",
                                Reconstruction::QuadraticBasisSize(dimension));
         CFV::BuildUDofOnMesh(
             _pointValues, "NCFV.pointValues", _mpi, _mesh,
             dimension + 2, true, true, Geom::MeshLoc::Node);
+        CFV::BuildUDofOnMesh(
+            _limiterFactors, "NCFV.limiterFactors", _mpi, _mesh,
+            1, true, true, Geom::MeshLoc::Node);
         CFV::BuildUDofOnMesh(
             _localTimeSteps, "NCFV.localTimeSteps", _mpi, _mesh,
             1, true, true, Geom::MeshLoc::Node);
@@ -680,6 +934,8 @@ namespace DNDS::NCFV
         AllocateEdgeField(_edgeSpectralRadius, "NCFV.edgeSpectralRadius", 1);
 
         _farField = PrimitiveToConservative(_physics.farFieldPrimitive);
+        for (index iNode = 0; iNode < _limiterFactors.Size(); iNode++)
+            _limiterFactors[iNode](0, 0) = 1.0;
         for (index iNode = 0; iNode < _localTimeSteps.Size(); iNode++)
             _localTimeSteps[iNode](0, 0) = _time.timeStep;
     }
@@ -687,43 +943,77 @@ namespace DNDS::NCFV
     template <int dimension>
     void SpatialOperator<dimension>::Reconstruct(NodeStatePair &means)
     {
+        double phaseStart = MPI_Wtime();
         means.trans.startPersistentPull();
         means.trans.waitPersistentPull();
+        _lastRhsTiming.meanHaloSeconds += MPI_Wtime() - phaseStart;
 
-        _reconstruction.ComputeCoefficients(means, _gradients, _coefficients);
+        phaseStart = MPI_Wtime();
+        _reconstruction.ComputeCoefficients(means, _stateGradients, _coefficients);
+        _lastRhsTiming.coefficientComputeSeconds += MPI_Wtime() - phaseStart;
+
+        phaseStart = MPI_Wtime();
         if (_mode == IntegrationMode::EfficientDifferential)
         {
-            _gradients.trans.startPersistentPull();
-            _gradients.trans.waitPersistentPull();
+            _stateGradients.trans.startPersistentPull();
+            _stateGradients.trans.waitPersistentPull();
         }
         else
         {
             _coefficients.trans.startPersistentPull();
             _coefficients.trans.waitPersistentPull();
         }
+        _lastRhsTiming.coefficientHaloSeconds += MPI_Wtime() - phaseStart;
 
+        phaseStart = MPI_Wtime();
         _reconstruction.RecoverPointValues(
-            means, _gradients, _coefficients, _pointValues);
+            means, _stateGradients, _coefficients, _pointValues);
+        _lastRhsTiming.pointRecoverySeconds += MPI_Wtime() - phaseStart;
+        for (index iNode = 0; iNode < _limiterFactors.Size(); iNode++)
+            _limiterFactors[iNode](0, 0) = 1.0;
+        bool pointValuesSynchronized = false;
         if (_reconstructionSettings.enableLimiter)
         {
-            const auto factors = _reconstruction.ComputeLimiterFactors(
-                means, _pointValues, _gradients, _coefficients);
-            _reconstruction.ApplyLimiter(factors, _gradients, _coefficients);
+            phaseStart = MPI_Wtime();
             if (_mode == IntegrationMode::EfficientDifferential)
             {
-                _gradients.trans.startPersistentPull();
-                _gradients.trans.waitPersistentPull();
+                // Pairwise bounds in thesis (3-97) use both endpoint point
+                // values, including a ghost endpoint on partition edges.
+                const double haloStart = MPI_Wtime();
+                _pointValues.trans.startPersistentPull();
+                _pointValues.trans.waitPersistentPull();
+                _lastRhsTiming.pointValueHaloSeconds +=
+                    MPI_Wtime() - haloStart;
+                pointValuesSynchronized = true;
+            }
+            const auto factors = _reconstruction.ComputeLimiterFactors(
+                means, _pointValues, _stateGradients, _coefficients);
+            if (_mode == IntegrationMode::EfficientDifferential)
+            {
+                for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                    _limiterFactors[iNode](0, 0) =
+                        factors[static_cast<std::size_t>(iNode)];
+                _limiterFactors.trans.startPersistentPull();
+                _limiterFactors.trans.waitPersistentPull();
             }
             else
             {
+                _reconstruction.ApplyLimiter(
+                    factors, _stateGradients, _coefficients);
                 _coefficients.trans.startPersistentPull();
                 _coefficients.trans.waitPersistentPull();
+                _reconstruction.RecoverPointValues(
+                    means, _stateGradients, _coefficients, _pointValues);
             }
-            _reconstruction.RecoverPointValues(
-                means, _gradients, _coefficients, _pointValues);
+            _lastRhsTiming.limiterSeconds += MPI_Wtime() - phaseStart;
         }
-        _pointValues.trans.startPersistentPull();
-        _pointValues.trans.waitPersistentPull();
+        if (!pointValuesSynchronized)
+        {
+            phaseStart = MPI_Wtime();
+            _pointValues.trans.startPersistentPull();
+            _pointValues.trans.waitPersistentPull();
+            _lastRhsTiming.pointValueHaloSeconds += MPI_Wtime() - phaseStart;
+        }
     }
 
     template <int dimension>
@@ -838,22 +1128,44 @@ namespace DNDS::NCFV
         NodeStatePair &means,
         NodeStatePair &rhs)
     {
+        _lastRhsTiming = {};
+        const double totalStart = MPI_Wtime();
+        double phaseStart = MPI_Wtime();
         Reconstruct(means);
+        _lastRhsTiming.reconstructionSeconds = MPI_Wtime() - phaseStart;
 
+        if (_mode == IntegrationMode::EfficientDifferential &&
+            _usePrecomputedPhysicalFluxGradients)
+        {
+            phaseStart = MPI_Wtime();
+            ComputePhysicalFluxGradients();
+            _lastRhsTiming.physicalFluxGradientComputeSeconds =
+                MPI_Wtime() - phaseStart;
+        }
+
+        phaseStart = MPI_Wtime();
         for (index iEdge = 0; iEdge < _topology.NumEdge(); iEdge++)
         {
             _edgeFlux[iEdge] = EvaluateOwnedEdgeFlux(iEdge);
             _edgeSpectralRadius[iEdge](0, 0) =
                 EvaluateOwnedEdgeSpectralRadius(iEdge);
         }
+        _lastRhsTiming.edgeFluxSeconds = MPI_Wtime() - phaseStart;
+
+        phaseStart = MPI_Wtime();
         _edgeFlux.trans.startPersistentPull();
         _edgeSpectralRadius.trans.startPersistentPull();
         _edgeFlux.trans.waitPersistentPull();
         _edgeSpectralRadius.trans.waitPersistentPull();
+        _lastRhsTiming.edgeHaloSeconds = MPI_Wtime() - phaseStart;
+
+        phaseStart = MPI_Wtime();
         UpdateLocalTimeSteps();
+        _lastRhsTiming.localTimeStepSeconds = MPI_Wtime() - phaseStart;
 
         real localSquared = 0;
         real localVolume = 0;
+        phaseStart = MPI_Wtime();
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
             State residual = EvaluateOwnedBoundaryFlux(iNode);
@@ -864,6 +1176,9 @@ namespace DNDS::NCFV
         }
         if (_periodic)
             _periodic->Average(rhs);
+        _lastRhsTiming.residualAssemblySeconds = MPI_Wtime() - phaseStart;
+
+        phaseStart = MPI_Wtime();
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
             const real volume = _geometry.NodeVolume(iNode).moments.measure;
@@ -877,8 +1192,9 @@ namespace DNDS::NCFV
                       DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
         MPI_Allreduce(&localVolume, &globalVolume, 1,
                       DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
-        return std::sqrt(globalSquared /
-                         std::max(globalVolume, verySmallReal));
+        _lastRhsTiming.residualNormSeconds = MPI_Wtime() - phaseStart;
+        _lastRhsTiming.totalSeconds = MPI_Wtime() - totalStart;
+        return std::sqrt(globalSquared / std::max(globalVolume, verySmallReal));
     }
 
     template class SpatialOperator<2>;

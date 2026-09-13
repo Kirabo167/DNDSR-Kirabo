@@ -8,6 +8,7 @@
 
 #include "NCFV/NCFVSolver.hpp"
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -19,6 +20,30 @@ namespace
     using namespace DNDS::NCFV;
 
     MPIInfo gMPI;
+
+    struct QuadraticField
+    {
+        DNDS::real constant = 0;
+        Vector3 linear = Vector3::Zero();
+        Matrix3 hessian = Matrix3::Zero();
+
+        [[nodiscard]] DNDS::real Value(const Vector3 &coordinate) const
+        {
+            return constant + linear.dot(coordinate) +
+                   0.5 * coordinate.dot(hessian * coordinate);
+        }
+
+        [[nodiscard]] Vector3 Gradient(const Vector3 &coordinate) const
+        {
+            return linear + hessian * coordinate;
+        }
+
+        [[nodiscard]] DNDS::real Integral(const RawMoments &moments) const
+        {
+            return constant * moments.measure + linear.dot(moments.first) +
+                   0.5 * (hessian.cwiseProduct(moments.second)).sum();
+        }
+    };
 
     std::filesystem::path ProjectRoot()
     {
@@ -140,6 +165,269 @@ namespace
         CHECK(globalMaximumError < 2e-14);
     }
 
+    void VerifyEfficientPolynomialWeights(const Solver<3> &solver)
+    {
+        const auto &mesh = solver.Mesh();
+        const auto &geometry = solver.Geometry();
+
+        QuadraticField state;
+        state.constant = 0.73;
+        state.linear = Vector3{0.31, -0.47, 0.29};
+        state.hessian << 0.8, -0.2, 0.13,
+            -0.2, -0.5, 0.17,
+            0.13, 0.17, 0.4;
+
+        std::array<QuadraticField, 3> fluxes;
+        for (int f = 0; f < 3; f++)
+        {
+            fluxes[static_cast<std::size_t>(f)].constant = 0.2 + 0.3 * f;
+            fluxes[static_cast<std::size_t>(f)].linear =
+                Vector3{0.11 + 0.07 * f, -0.23 + 0.05 * f, 0.37 - 0.09 * f};
+            Matrix3 &hessian = fluxes[static_cast<std::size_t>(f)].hessian;
+            hessian << 0.4 + 0.1 * f, -0.08, 0.03 + 0.02 * f,
+                -0.08, -0.3 + 0.04 * f, 0.06,
+                0.03 + 0.02 * f, 0.06, 0.2 - 0.03 * f;
+        }
+
+        DNDS::real localPointError = 0;
+        DNDS::real localStateMeanError = 0;
+        DNDS::real localFluxError = 0;
+        DNDS::index localSurfaceCount = 0;
+
+        for (DNDS::index iNode = 0; iNode < mesh->NumNode(); iNode++)
+        {
+            const auto &volume = geometry.NodeVolume(iNode);
+            const DNDS::real exactIntegral = state.Integral(volume.moments);
+            DNDS::real recovered = exactIntegral / volume.moments.measure;
+            for (const auto &weight : volume.pointRecoveryWeights)
+                recovered -= weight.value.dot(
+                    state.Gradient(mesh->coords[weight.node]));
+            localPointError = std::max(
+                localPointError,
+                std::abs(recovered - state.Value(mesh->coords[iNode])) /
+                    std::max<DNDS::real>(1.0, std::abs(state.Value(mesh->coords[iNode]))));
+        }
+
+        for (const auto &surface : geometry.EdgeSurfaces())
+        {
+            DNDS_check_throw_info(!surface.microSurfaces.empty(),
+                                  "NCFV polynomial-weight test requires retained micro surfaces");
+            DNDS::real exactStateIntegral = 0;
+            DNDS::real exactFluxIntegral = 0;
+            for (const auto &micro : surface.microSurfaces)
+            {
+                std::vector<Vector3> coordinates;
+                coordinates.reserve(static_cast<std::size_t>(micro.nPoints));
+                for (int p = 0; p < micro.nPoints; p++)
+                    coordinates.push_back(micro.points[static_cast<std::size_t>(p)]);
+                const RawMoments moments =
+                    DualGeometry::ExactSimplexMoments(coordinates, micro.measure);
+                exactStateIntegral += state.Integral(moments);
+                const Vector3 unitNormal = micro.vectorMeasure / micro.measure;
+                for (int f = 0; f < 3; f++)
+                    exactFluxIntegral += unitNormal(f) *
+                                         fluxes[static_cast<std::size_t>(f)].Integral(moments);
+            }
+
+            const auto stateIntegral = [&](
+                                           DNDS::index anchor,
+                                           const std::vector<SparseVectorWeight> &weights)
+            {
+                DNDS::real integral =
+                    surface.measure * state.Value(mesh->coords[anchor]);
+                for (const auto &weight : weights)
+                    integral += weight.value.dot(
+                        state.Gradient(mesh->coords[weight.node]));
+                return integral;
+            };
+            const auto fluxIntegral = [&](
+                                          DNDS::index anchor,
+                                          const std::vector<SparseMatrixWeight> &weights)
+            {
+                Vector3 anchorFlux;
+                for (int f = 0; f < 3; f++)
+                    anchorFlux(f) = fluxes[static_cast<std::size_t>(f)].Value(
+                        mesh->coords[anchor]);
+                DNDS::real integral = anchorFlux.dot(surface.vectorMeasure);
+                for (const auto &weight : weights)
+                    for (int d = 0; d < 3; d++)
+                        for (int f = 0; f < 3; f++)
+                            integral += weight.value(d, f) *
+                                        fluxes[static_cast<std::size_t>(f)]
+                                            .Gradient(mesh->coords[weight.node])(d);
+                return integral;
+            };
+
+            for (int side = 0; side < 2; side++)
+            {
+                const DNDS::index anchor = surface.nodes[static_cast<std::size_t>(side)];
+                const auto &stateWeights = side == 0
+                                               ? surface.leftStateWeights
+                                               : surface.rightStateWeights;
+                const auto &fluxWeights = side == 0
+                                              ? surface.leftFluxWeights
+                                              : surface.rightFluxWeights;
+                localStateMeanError = std::max(
+                    localStateMeanError,
+                    std::abs(stateIntegral(anchor, stateWeights) - exactStateIntegral) /
+                        std::max<DNDS::real>(1.0, std::abs(exactStateIntegral)));
+                localFluxError = std::max(
+                    localFluxError,
+                    std::abs(fluxIntegral(anchor, fluxWeights) - exactFluxIntegral) /
+                        std::max<DNDS::real>(1.0, std::abs(exactFluxIntegral)));
+            }
+            localSurfaceCount++;
+        }
+
+        DNDS::real localErrors[3]{
+            localPointError, localStateMeanError, localFluxError};
+        DNDS::real globalErrors[3]{};
+        DNDS::index globalSurfaceCount = 0;
+        MPI_Allreduce(localErrors, globalErrors, 3,
+                      DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        MPI_Allreduce(&localSurfaceCount, &globalSurfaceCount, 1,
+                      DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalSurfaceCount > 0);
+        CHECK(globalErrors[0] < 3e-13);
+        CHECK(globalErrors[1] < 3e-13);
+        CHECK(globalErrors[2] < 3e-13);
+    }
+
+    void VerifyEfficientLimiterUsesMacroSurfaceMeans(const Solver<3> &solver)
+    {
+        const auto &mesh = solver.Mesh();
+        const auto &topology = solver.EdgeTopology();
+        const auto &geometry = solver.Geometry();
+
+        NodeStatePair means, points;
+        CFV::BuildUDofOnMesh(
+            means, "NCFV.test.limiterMeans", gMPI, mesh,
+            1, true, true, Geom::MeshLoc::Node);
+        CFV::BuildUDofOnMesh(
+            points, "NCFV.test.limiterPoints", gMPI, mesh,
+            1, true, true, Geom::MeshLoc::Node);
+        NodeMatrixPair gradients, coefficients;
+        const auto allocate = [&](NodeMatrixPair &field,
+                                  const std::string &name, int rows)
+        {
+            field.InitPair(name, gMPI);
+            field.father->Resize(mesh->NumNode(), rows, 1);
+            field.son->Resize(mesh->NumNodeGhost(), rows, 1);
+            field.BorrowSetup(mesh->coords);
+            field.trans.initPersistentPull();
+            for (DNDS::index iNode = 0; iNode < field.Size(); iNode++)
+                field[iNode].setZero();
+        };
+        allocate(gradients, "NCFV.test.limiterGradients", 3);
+        allocate(coefficients, "NCFV.test.limiterCoefficients", 9);
+
+        const Vector3 exactGradient{0.4, 0.7, 1.1};
+        for (DNDS::index iNode = 0; iNode < mesh->NumNode(); iNode++)
+        {
+            const DNDS::real point = 2.0 + exactGradient.dot(mesh->coords[iNode]);
+            points[iNode](0) = point;
+            // Deliberately unrelated means make the old mean-bounded midpoint
+            // implementation observably different from thesis (3-94)--(3-100).
+            means[iNode](0) = point + 20.0 + 0.1 * mesh->coords[iNode].x();
+            gradients[iNode].col(0) = 4.0 * exactGradient;
+        }
+        means.trans.startPersistentPull();
+        points.trans.startPersistentPull();
+        gradients.trans.startPersistentPull();
+        means.trans.waitPersistentPull();
+        points.trans.waitPersistentPull();
+        gradients.trans.waitPersistentPull();
+
+        const std::vector<DNDS::real> factors =
+            solver.ReconstructionData().ComputeLimiterFactors(
+                means, points, gradients, coefficients);
+        DNDS::real localMaximumError = 0;
+        DNDS::real localLegacyDifference = 0;
+        DNDS::real localBoundViolation = 0;
+        DNDS::index localNontrivial = 0;
+        for (DNDS::index iNode = 0; iNode < mesh->NumNode(); iNode++)
+        {
+            DNDS::real expected = 1.0;
+            DNDS::real legacy = 1.0;
+            DNDS::real legacyMinimum = means[iNode](0);
+            DNDS::real legacyMaximum = means[iNode](0);
+            for (const auto &incidence : topology.Node2Edge(iNode))
+            {
+                const auto &surface = geometry.EdgeSurface(incidence.edge);
+                const bool isLeft = surface.nodes[0] == iNode;
+                const DNDS::index neighbor = surface.nodes[isLeft ? 1 : 0];
+                legacyMinimum = std::min(legacyMinimum, means[neighbor](0));
+                legacyMaximum = std::max(legacyMaximum, means[neighbor](0));
+            }
+            for (const auto &incidence : topology.Node2Edge(iNode))
+            {
+                const auto &surface = geometry.EdgeSurface(incidence.edge);
+                const bool isLeft = surface.nodes[0] == iNode;
+                const DNDS::index neighbor = surface.nodes[isLeft ? 1 : 0];
+                const auto &weights = isLeft
+                                          ? surface.leftStateWeights
+                                          : surface.rightStateWeights;
+                DNDS::real candidate = points[iNode](0);
+                for (const auto &weight : weights)
+                    candidate += weight.value.dot(gradients[weight.node].col(0)) /
+                                 surface.measure;
+                const DNDS::real increment = candidate - points[iNode](0);
+                const DNDS::real minimum =
+                    std::min(points[iNode](0), points[neighbor](0));
+                const DNDS::real maximum =
+                    std::max(points[iNode](0), points[neighbor](0));
+                if (increment > verySmallReal)
+                    expected = std::min(
+                        expected, (maximum - points[iNode](0)) / increment);
+                else if (increment < -verySmallReal)
+                    expected = std::min(
+                        expected, (minimum - points[iNode](0)) / increment);
+                const DNDS::real limited =
+                    points[iNode](0) + std::clamp(expected, 0.0, 1.0) * increment;
+                localBoundViolation = std::max(
+                    localBoundViolation,
+                    std::max({minimum - limited, limited - maximum, 0.0}));
+
+                const Vector3 midpoint =
+                    0.5 * (mesh->coords[iNode] + mesh->coords[neighbor]);
+                const DNDS::real legacyCandidate =
+                    points[iNode](0) + gradients[iNode].col(0).dot(
+                                           midpoint - mesh->coords[iNode]);
+                const DNDS::real legacyIncrement =
+                    legacyCandidate - means[iNode](0);
+                if (legacyIncrement > verySmallReal)
+                    legacy = std::min(
+                        legacy, (legacyMaximum - means[iNode](0)) /
+                                    legacyIncrement);
+                else if (legacyIncrement < -verySmallReal)
+                    legacy = std::min(
+                        legacy, (legacyMinimum - means[iNode](0)) /
+                                    legacyIncrement);
+            }
+            expected = std::clamp(expected, 0.0, 1.0);
+            legacy = std::clamp(legacy, 0.0, 1.0);
+            localMaximumError = std::max(
+                localMaximumError,
+                std::abs(factors[static_cast<std::size_t>(iNode)] - expected));
+            localLegacyDifference = std::max(
+                localLegacyDifference, std::abs(expected - legacy));
+            localNontrivial += expected > 1e-12 && expected < 1.0 - 1e-12;
+        }
+
+        DNDS::real localChecks[3]{
+            localMaximumError, localLegacyDifference, localBoundViolation};
+        DNDS::real globalChecks[3]{};
+        DNDS::index globalNontrivial = 0;
+        MPI_Allreduce(localChecks, globalChecks, 3,
+                      DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        MPI_Allreduce(&localNontrivial, &globalNontrivial, 1,
+                      DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalChecks[0] < 3e-14);
+        CHECK(globalChecks[1] > 1e-3);
+        CHECK(globalChecks[2] < 3e-14);
+        CHECK(globalNontrivial > 0);
+    }
+
     void VerifyMode(IntegrationMode mode)
     {
         Solver<3> solver(gMPI, MakeConfiguration(mode));
@@ -182,6 +470,8 @@ namespace
             CHECK(globalCounts[1] == 0);
             CHECK(globalCounts[2] == 0);
             VerifyEfficientGradientWeights(solver);
+            VerifyEfficientPolynomialWeights(solver);
+            VerifyEfficientLimiterUsesMacroSurfaceMeans(solver);
         }
         else
         {

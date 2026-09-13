@@ -185,7 +185,8 @@ int main(int argc, char **argv)
                 const Vector3 grid = Vector3::Zero();
                 DNDS::Euler::Gas::InviscidFlux_IdealGas_Dispatcher<3>(
                     cfg.physics.riemannSolver, left, right, left, right,
-                    grid, normal, cfg.physics.gamma, flux, 0.0, 1.0, 1.0,
+                    grid, normal, cfg.physics.gamma, cfg.physics.gamma,
+                    flux, 0.0, 1.0, 1.0,
                     []() {}, am, ac, ap);
                 return flux(0);
             };
