@@ -33,10 +33,32 @@ namespace DNDS::ACM
         DNDS_check_throw_info(_mesh != nullptr && _vfv != nullptr, "ACM evaluator requires mesh and VFV objects");
         DNDS_check_throw_info(_mesh->getDim() == gDim, "ACM evaluator dimension does not match the mesh");
         _settings.Validate();
+        DNDS_check_throw_info(
+            std::isfinite(_reconstructionSettings.variationalTolerance) &&
+                _reconstructionSettings.variationalTolerance >= 0 &&
+                _reconstructionSettings.variationalIterations > 0 &&
+                _reconstructionSettings.variationalCheckInterval > 0 &&
+                _reconstructionSettings.variationalMaxIterations > 0 &&
+                std::isfinite(_reconstructionSettings.variationalRelaxation) &&
+                _reconstructionSettings.variationalRelaxation > 0 &&
+                _reconstructionSettings.variationalRelaxation <= 1 &&
+                _reconstructionSettings.variationalGMRESSubspace >= 2 &&
+                _reconstructionSettings.variationalGMRESRestarts >= 0 &&
+                std::isfinite(_reconstructionSettings.variationalGMRESRelativeTolerance) &&
+                _reconstructionSettings.variationalGMRESRelativeTolerance > 0 &&
+                _reconstructionSettings.variationalGMRESRelativeTolerance <= 1,
+            "ACM evaluator received invalid reconstruction convergence controls");
+        DNDS_check_throw_info(
+            _reconstructionSettings.variationalTolerance == 0 ||
+                (_reconstructionSettings.variationalMaxIterations >= _reconstructionSettings.variationalIterations &&
+                 _vfv->getSettings().maxOrder >= 1 &&
+                 !(_vfv->getSettings().maxOrder == 1 && _vfv->getSettings().subs2ndOrder != 0)),
+            "ACM convergence-controlled reconstruction requires a variational operator and a sufficient sweep cap");
         DNDS_check_throw_info(_boundaryHandler != nullptr, "ACM evaluator requires a boundary handler");
 
         _vfv->BuildURec(_uRec, nVarsFixed);
         _vfv->BuildURec(_uRecWork, nVarsFixed);
+        _vfv->BuildURec(_uRecCorrection, nVarsFixed);
         _vfv->BuildURec(_uRecLimited, nVarsFixed);
         _vfv->BuildUGrad(_uGrad, nVarsFixed);
         _vfv->BuildUDof(_limiter, 1);
@@ -45,6 +67,7 @@ namespace DNDS::ACM
         _vfv->BuildUDof(_lusgsCorrection, nVarsFixed);
         _uRec.setConstant(0.0);
         _uRecWork.setConstant(0.0);
+        _uRecCorrection.setConstant(0.0);
         _uRecLimited.setConstant(0.0);
         _uGrad.setConstant(0.0);
         _limiter.setConstant(1.0);
@@ -132,6 +155,34 @@ namespace DNDS::ACM
     }
 
     template <int gDim>
+    typename ACMEvaluator<gDim>::TBoundaryDiffFunction
+    ACMEvaluator<gDim>::GetBoundaryDiffFunction(real time) const
+    {
+        return [this, time](
+                   const State &interior,
+                   const State &increment,
+                   const State &cellMean,
+                   index iCell,
+                   index iFace,
+                   int iG,
+                   const Geom::tPoint &normal,
+                   const Geom::tPoint &point,
+                   Geom::t_index faceType) -> State
+        {
+            (void)cellMean;
+            (void)iCell;
+            (void)iG;
+            const Geom::t_index faceZone = Geom::FaceIDIsExternalBC(faceType)
+                                                   ? faceType
+                                                   : _mesh->GetFaceZone(iFace);
+            return GenerateBoundaryForFace(
+                       faceZone, interior + increment, ToVector3(normal), ToVector3(point), time) -
+                   GenerateBoundaryForFace(
+                       faceZone, interior, ToVector3(normal), ToVector3(point), time);
+        };
+    }
+
+    template <int gDim>
     State ACMEvaluator<gDim>::GenerateBoundaryForFace(
         Geom::t_index faceZone,
         const State &interior,
@@ -159,6 +210,7 @@ namespace DNDS::ACM
     template <int gDim>
     void ACMEvaluator<gDim>::Reconstruct(TDof &u, real time)
     {
+        _reconstructionReport = {};
         u.trans.startPersistentPull();
         u.trans.waitPersistentPull();
 
@@ -178,17 +230,107 @@ namespace DNDS::ACM
         {
             if (_reconstructionSettings.resetVariationalCoefficients)
                 _uRec.setConstant(0.0);
-            for (int iteration = 0; iteration < _reconstructionSettings.variationalIterations; iteration++)
+            const bool controlled = _reconstructionSettings.variationalTolerance > 0;
+            const auto boundaryDiff = GetBoundaryDiffFunction(time);
+            std::unique_ptr<Linear::GMRES_LeftPreconditioned<TRec>> reconstructionGMRES;
+            if (controlled && _reconstructionSettings.variationalUseGMRES)
+                reconstructionGMRES = std::make_unique<Linear::GMRES_LeftPreconditioned<TRec>>(
+                    static_cast<uint32_t>(_reconstructionSettings.variationalGMRESSubspace),
+                    [this](TRec &field)
+                    {
+                        _vfv->BuildURec(field, nVarsFixed);
+                        field.setConstant(0.0);
+                    });
+            const int maximumIterations = controlled
+                                              ? _reconstructionSettings.variationalMaxIterations
+                                              : _reconstructionSettings.variationalIterations;
+            for (int iteration = 0; iteration <= maximumIterations; iteration++)
             {
-                _vfv->template DoReconstructionIter<nVarsFixed>(
-                    _uRec,
-                    _uRecWork,
-                    u,
-                    boundary,
-                    false);
+                if (controlled)
+                    _vfv->template DoReconstructionIter<nVarsFixed>(
+                        _uRec, _uRecWork, u, boundary, true, true);
+                if (controlled &&
+                    (_reconstructionSettings.variationalUseGMRES || iteration == 0 || iteration == maximumIterations ||
+                     (iteration >= _reconstructionSettings.variationalIterations &&
+                      iteration % _reconstructionSettings.variationalCheckInterval == 0)))
+                {
+                    // recordInc evaluates a-A^{-1}(B*a+b) without updating a.
+                    // It is independent of SOR relaxation and of the warm-start history.
+                    const real velocityScale = std::sqrt(_settings.beta2 / _settings.rho0);
+                    real localDefect = 0;
+                    for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
+                        for (int variable = 0; variable < nVarsFixed; variable++)
+                        {
+                            const real scale = variable == 3 ? _settings.beta2 : velocityScale;
+                            localDefect = std::max(localDefect,
+                                                  _uRecWork[iCell].col(variable).cwiseAbs().maxCoeff() / scale);
+                        }
+                    MPI::Allreduce(&localDefect, &_reconstructionReport.equationDefect,
+                                   1, DNDS_MPI_REAL, MPI_MAX, _mesh->getMPI().comm);
+                    _reconstructionReport.converged =
+                        _reconstructionReport.equationDefect <= _reconstructionSettings.variationalTolerance;
+                    if (_reconstructionReport.converged)
+                        break;
+                }
+                if (iteration == maximumIterations)
+                    break;
+                if (controlled)
+                {
+                    if (_reconstructionSettings.variationalUseGMRES)
+                    {
+                        _uRecCorrection.setConstant(0.0);
+                        reconstructionGMRES->solve(
+                            [&](TRec &input, TRec &output)
+                            {
+                                // Arnoldi vectors only own their local entries.  Refresh
+                                // halo coefficients before the distributed reconstruction
+                                // operator reads neighboring-cell directions.
+                                input.trans.startPersistentPull();
+                                input.trans.waitPersistentPull();
+                                _vfv->template DoReconstructionIterDiff<nVarsFixed>(
+                                    _uRec, input, output, u, boundaryDiff);
+                            },
+                            [](TRec &input, TRec &output)
+                            { output = input; },
+                            [](TRec &left, TRec &right)
+                            { return left.dot(right); },
+                            _uRecWork,
+                            _uRecCorrection,
+                            static_cast<uint32_t>(_reconstructionSettings.variationalGMRESRestarts),
+                            [&](uint32_t, real residual, real initialResidual)
+                            {
+                                return residual <=
+                                       _reconstructionSettings.variationalGMRESRelativeTolerance *
+                                           std::max(initialResidual, verySmallReal);
+                            });
+                        _uRec.addTo(
+                            _uRecCorrection,
+                            -_reconstructionSettings.variationalRelaxation);
+                    }
+                    else
+                    {
+                        // Simultaneous updates keep all boundary evaluations on the
+                        // same coefficient field as the equation-defect check. The
+                        // legacy in-place SOR path partially overwrites the local
+                        // polynomial before evaluating its boundary contribution.
+                        _uRec.addTo(
+                            _uRecWork,
+                            -_reconstructionSettings.variationalRelaxation);
+                    }
+                }
+                else
+                    _vfv->template DoReconstructionIter<nVarsFixed>(
+                        _uRec, _uRecWork, u, boundary, false);
                 _uRec.trans.startPersistentPull();
                 _uRec.trans.waitPersistentPull();
+                _reconstructionReport.iterations++;
+                _totalReconstructionSweeps++;
             }
+            DNDS_check_throw_info(
+                !controlled || _reconstructionReport.converged,
+                fmt::format("ACM reconstruction did not converge: sweeps={}, scaled equation defect={:.6e}, tolerance={:.6e}",
+                            _reconstructionReport.iterations, _reconstructionReport.equationDefect,
+                            _reconstructionSettings.variationalTolerance));
         }
         if (_reconstructionSettings.enableLimiter &&
             _reconstructionSettings.type == ReconstructionType::Variational &&
@@ -213,7 +355,7 @@ namespace DNDS::ACM
         State increment = State::Zero();
         if (_reconstructionSettings.type == ReconstructionType::GreenGauss)
         {
-            const auto displacement =
+            const Eigen::Matrix<real, gDim, 1> displacement =
                 (_vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG) -
                  _vfv->GetCellQuadraturePPhys(iCell, -1))
                     .template head<gDim>();
@@ -325,7 +467,7 @@ namespace DNDS::ACM
                     State unlimited = mean;
                     if (_reconstructionSettings.type == ReconstructionType::GreenGauss)
                     {
-                        const auto displacement =
+                        const Eigen::Matrix<real, gDim, 1> displacement =
                             (_vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, iG) -
                              _vfv->GetCellQuadraturePPhys(iCell, -1))
                                 .template head<gDim>();

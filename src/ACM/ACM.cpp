@@ -1016,6 +1016,28 @@ namespace DNDS::ACM
             reconstructionSettings.variationalIterations > 0,
             "ACM variationalIterations must be positive");
         DNDS_check_throw_info(
+            std::isfinite(reconstructionSettings.variationalTolerance) &&
+                reconstructionSettings.variationalTolerance >= 0 &&
+                reconstructionSettings.variationalMaxIterations > 0 &&
+                reconstructionSettings.variationalCheckInterval > 0 &&
+                std::isfinite(reconstructionSettings.variationalRelaxation) &&
+                reconstructionSettings.variationalRelaxation > 0 &&
+                reconstructionSettings.variationalRelaxation <= 1 &&
+                reconstructionSettings.variationalGMRESSubspace >= 2 &&
+                reconstructionSettings.variationalGMRESRestarts >= 0 &&
+                std::isfinite(reconstructionSettings.variationalGMRESRelativeTolerance) &&
+                reconstructionSettings.variationalGMRESRelativeTolerance > 0 &&
+                reconstructionSettings.variationalGMRESRelativeTolerance <= 1,
+            "ACM reconstruction tolerance must be finite/non-negative and iteration controls positive");
+        DNDS_check_throw_info(
+            reconstructionSettings.variationalTolerance == 0 ||
+                reconstructionSettings.variationalMaxIterations >= reconstructionSettings.variationalIterations,
+            "ACM variationalMaxIterations must cover the minimum variationalIterations");
+        DNDS_check_throw_info(
+            reconstructionSettings.variationalTolerance == 0 ||
+                !(vfvSettings.maxOrder == 1 && vfvSettings.subs2ndOrder != 0),
+            "ACM reconstruction equation convergence requires the variational operator, not substituted second-order reconstruction");
+        DNDS_check_throw_info(
             !reconstructionSettings.enableLimiter ||
                 reconstructionSettings.limiterType == LimiterType::LocalExtrema ||
                 reconstructionSettings.type == ReconstructionType::Variational,
@@ -1029,6 +1051,14 @@ namespace DNDS::ACM
                                   "ACM configured boundary state is non-finite");
         }
         DNDS_check_throw_info(nFacesPerRank > 0, "ACM nFacesPerRank must be positive");
+        DNDS_check_throw_info(
+            restartSettings.flowFile.empty() || restartSettings.writerRanks > 0,
+            "ACM VTK-HDF restart requires a positive writerRanks value");
+        DNDS_check_throw_info(
+            restartSettings.flowFile.empty() ||
+                (timeMarchSettings.integrator != TimeIntegratorType::BDF2DualTimeLUSGS &&
+                 timeMarchSettings.integrator != TimeIntegratorType::BDF2DualTimeGMRES),
+            "ACM VTK-HDF restart contains no BDF2 history and cannot initialize dual-time marching");
     }
 
     /** @copydoc KernelConfiguration::LeftState */
@@ -1093,6 +1123,20 @@ namespace DNDS::ACM
         auto &timeMarch = resolved.at("timeMarchSettings");
         if (!timeMarch.contains("physicalTimeStep"))
             timeMarch["physicalTimeStep"] = TimeMarchSettings{}.physicalTimeStep;
+        const nlohmann::ordered_json timeDefaults = TimeMarchSettings{};
+        for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
+                                "steadyCFLGrowth", "steadyCFLReduction"})
+            if (!timeMarch.contains(key))
+                timeMarch[key] = timeDefaults.at(key);
+        auto &reconstruction = resolved.at("reconstructionSettings");
+        const nlohmann::ordered_json reconstructionDefaults = ReconstructionSettings{};
+        for (const char *key : {"variationalTolerance", "variationalMaxIterations", "variationalCheckInterval",
+                                "variationalRelaxation", "variationalUseGMRES", "variationalGMRESSubspace",
+                                "variationalGMRESRestarts", "variationalGMRESRelativeTolerance"})
+            if (!reconstruction.contains(key))
+                reconstruction[key] = reconstructionDefaults.at(key);
+        if (!resolved.contains("restartSettings"))
+            resolved["restartSettings"] = RestartSettings{};
 
         KernelConfiguration configuration = resolved.get<KernelConfiguration>();
         configuration.Validate();

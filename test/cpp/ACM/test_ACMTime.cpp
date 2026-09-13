@@ -52,6 +52,63 @@ namespace
     }
 }
 
+/// @test Inexact steady steps obey their target and tighten near the steady solution.
+TEST_CASE("ACM steady inner accuracy follows the current outer residual")
+{
+    Settings settings;
+    settings.beta2 = 1;
+    TimeMarchSettings strict;
+    strict.integrator = TimeIntegratorType::ImplicitEulerBlockJacobi;
+    strict.implicitRelaxation = 0.7;
+    strict.maxImplicitIterations = 40;
+    strict.implicitTolerance = 1e-10;
+    TimeMarchSettings inexact = strict;
+    inexact.steadyRelativeTolerance = 0.01;
+    const ScalarField dt(1, 0.1);
+    StateField exactState(1, State::Zero());
+    exactState[0](3) = 1;
+    StateField inexactState = exactState;
+    const auto exact = AdvanceImplicitEulerBlockJacobi(
+        exactState, dt, settings, strict, LinearDecayResidual(1), LinearDecayJacobian(1));
+    const auto loose = AdvanceImplicitEulerBlockJacobi(
+        inexactState, dt, settings, inexact, LinearDecayResidual(1), LinearDecayJacobian(1));
+    CHECK(exact.converged);
+    CHECK(loose.converged);
+    CHECK(loose.iterations < exact.iterations);
+    CHECK(loose.finalDefectNorm <= loose.defectTolerance);
+    CHECK(std::abs(inexactState[0](3) - 1.0 / 1.1) <= 2 * loose.defectTolerance / 11);
+    CHECK(loose.defectTolerance == doctest::Approx(0.005));
+
+    inexactState[0].setZero();
+    inexactState[0](3) = 1e-9;
+    const auto nearSteady = AdvanceImplicitEulerBlockJacobi(
+        inexactState, dt, settings, inexact, LinearDecayResidual(1), LinearDecayJacobian(1));
+    CHECK(nearSteady.converged);
+    CHECK(nearSteady.defectTolerance == doctest::Approx(strict.implicitTolerance));
+
+    inexact.integrator = TimeIntegratorType::BDF2DualTimeGMRES;
+    CHECK_THROWS_AS(inexact.Validate(), std::runtime_error);
+}
+
+/// @test Adaptive CFL reacts to nonlinear progress and respects safety bounds.
+TEST_CASE("ACM adaptive steady CFL grows only on successful residual reduction")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::ImplicitEulerGMRES;
+    settings.useCFLTimeStep = true;
+    settings.steadyAdaptiveCFL = true;
+    settings.Validate();
+    CHECK(settings.NextSteadyCFL(1, 100, 25, true) == doctest::Approx(1.5));
+    CHECK(settings.NextSteadyCFL(1, 100, 100, true) == doctest::Approx(1));
+    CHECK(settings.NextSteadyCFL(1, 100, 200, true) == doctest::Approx(0.5));
+    CHECK(settings.NextSteadyCFL(1, 100, 25, false) == doctest::Approx(0.5));
+    CHECK(settings.NextSteadyCFL(0.1, 100, 200, false) == doctest::Approx(0.1));
+    CHECK(settings.NextSteadyCFL(20, 100, 0, true) == doctest::Approx(20));
+    CHECK(settings.NextSteadyCFL(1, 0, 0, true) == doctest::Approx(1));
+    settings.useCFLTimeStep = false;
+    CHECK_THROWS_AS(settings.Validate(), std::runtime_error);
+}
+
 /// @test Verify inverse-Gamma application independently of a time-integration scheme.
 TEST_CASE("ACM inverse Gamma converts raw residual to pseudo-time derivative")
 {
@@ -448,6 +505,11 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
         std::filesystem::temp_directory_path() / "dndsr_acm_legacy_bdf2_config.json";
     nlohmann::ordered_json legacyConfiguration = KernelConfiguration{};
     legacyConfiguration.at("timeMarchSettings").erase("physicalTimeStep");
+    for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
+                            "steadyCFLGrowth", "steadyCFLReduction"})
+        legacyConfiguration.at("timeMarchSettings").erase(key);
+    for (const char *key : {"variationalTolerance", "variationalMaxIterations", "variationalCheckInterval", "variationalRelaxation"})
+        legacyConfiguration.at("reconstructionSettings").erase(key);
     {
         std::ofstream output(temporaryConfiguration);
         REQUIRE(output.good());
@@ -461,6 +523,9 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     std::filesystem::remove(temporaryConfiguration);
 
     CHECK(loaded.configuration.timeMarchSettings.physicalTimeStep == doctest::Approx(0.01));
+    CHECK(loaded.configuration.timeMarchSettings.steadyRelativeTolerance == 0);
+    CHECK_FALSE(loaded.configuration.timeMarchSettings.steadyAdaptiveCFL);
+    CHECK(loaded.configuration.reconstructionSettings.variationalTolerance == 0);
     REQUIRE(loaded.resolvedJson.contains("timeMarchSettings"));
     CHECK(loaded.resolvedJson.at("timeMarchSettings").contains("physicalTimeStep"));
 }

@@ -321,7 +321,7 @@ namespace DNDS::ACM
                 const auto quadrature = _vfv->GetFaceQuad(iFace);
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
-                    const auto displacement =
+                    const Eigen::Matrix<real, gDim, 1> displacement =
                         (_vfv->GetFaceQuadraturePPhysFromCell(
                              iFace, iCell, if2c, iG) -
                          _vfv->GetCellQuadraturePPhys(iCell, -1))
@@ -395,7 +395,7 @@ namespace DNDS::ACM
                 const auto quadrature = _vfv->GetFaceQuad(iFace);
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
-                    const auto displacement =
+                    const Eigen::Matrix<real, gDim, 1> displacement =
                         (_vfv->GetFaceQuadraturePPhysFromCell(
                              iFace, iCell, if2c, iG) -
                          _vfv->GetCellQuadraturePPhys(iCell, -1))
@@ -436,7 +436,7 @@ namespace DNDS::ACM
         TurbulenceState reconstructed = _state[iCell];
         if (_turbulenceSettings.secondOrderReconstruction)
         {
-            const auto displacement =
+            const Eigen::Matrix<real, gDim, 1> displacement =
                 (_vfv->GetFaceQuadraturePPhysFromCell(
                      iFace, iCell, if2c, iG) -
                  _vfv->GetCellQuadraturePPhys(iCell, -1))
@@ -460,7 +460,7 @@ namespace DNDS::ACM
         State reconstructed = flow[iCell];
         if (_turbulenceSettings.secondOrderReconstruction)
         {
-            const auto displacement =
+            const Eigen::Matrix<real, gDim, 1> displacement =
                 (_vfv->GetFaceQuadraturePPhysFromCell(
                      iFace, iCell, if2c, iG) -
                  _vfv->GetCellQuadraturePPhys(iCell, -1))

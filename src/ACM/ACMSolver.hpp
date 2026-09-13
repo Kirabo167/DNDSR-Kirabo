@@ -109,6 +109,9 @@ namespace DNDS::ACM
          */
         void CopyStateFieldToOwned(const StateField &source, TDof &destination) const;
 
+        /** @brief Load and validate same-partition cell data from a VTK-HDF flow output. */
+        void ReadInitialFlowField();
+
         /**
          * @brief Write cell-centered velocity and pressure to one parallel VTK-HDF file.
          * @param iStep Outer pseudo-time or physical-time step used in the file name.

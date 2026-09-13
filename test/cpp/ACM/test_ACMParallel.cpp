@@ -36,6 +36,70 @@ int main(int argc, char **argv)
 using namespace DNDS;
 using namespace DNDS::ACM;
 
+using ACMConvergence2D = std::integral_constant<ACMModel, ACMModel::ConstantDensity2D>;
+using ACMConvergence3D = std::integral_constant<ACMModel, ACMModel::ConstantDensity3D>;
+
+/// @test Check warm-start independence, fixed-state repeatability and collective cap failure in 2D/3D.
+TEST_CASE_TEMPLATE("ACM converged reconstruction defines a repeatable residual", TModel, ACMConvergence2D, ACMConvergence3D)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    KernelConfiguration cfg;
+    cfg.meshSettings.meshFile = (root / (TModel::value == ACMModel::ConstantDensity2D
+                                           ? "data/mesh/ACMVariable_verify2D.cgns"
+                                           : "data/mesh/ACMVariable_verify3D.cgns")).string();
+    cfg.initialState = {0.4, -0.2, 0.0, 0.1};
+    cfg.acmSettings.farFieldValue = cfg.initialState;
+    cfg.boundaryValue = cfg.initialState;
+    cfg.reconstructionSettings.type = ReconstructionType::Variational;
+    cfg.reconstructionSettings.variationalTolerance = 1e-13;
+    cfg.reconstructionSettings.variationalMaxIterations = 10000;
+    cfg.vfvSettings.maxOrder = 2;
+    cfg.Validate();
+    using TSolver = ACMSolver<TModel::value>;
+    TSolver warm(mpi, cfg);
+    warm.ReadMeshAndInitialize();
+    typename TSolver::TDof rhs, repeated, reference;
+    for (auto *field : {&rhs, &repeated, &reference})
+        warm.GetReconstruction()->BuildUDof(*field, 4);
+    const auto setState = [](TSolver &solver, DNDS::real amplitude)
+    {
+        for (DNDS::index i = 0; i < solver.GetMesh()->NumCell(); i++)
+        {
+            const auto x = solver.GetReconstruction()->GetCellBary(i);
+            solver.GetState()[i] << 0.4 + amplitude * std::sin(x(0) + x(1)),
+                -0.2 + amplitude * std::cos(2 * x(0)), 0.0,
+                0.1 + amplitude * std::sin(x(1));
+        }
+    };
+    setState(warm, 0.03);
+    warm.GetEvaluator()->EvaluateRHS(rhs, warm.GetState());
+    setState(warm, 0.08);
+    warm.GetEvaluator()->EvaluateRHS(rhs, warm.GetState());
+    CHECK(warm.GetEvaluator()->GetReconstructionReport().converged);
+    warm.GetEvaluator()->EvaluateRHS(repeated, warm.GetState());
+    repeated.addTo(rhs, -1);
+    CHECK(repeated.norm2() < 1e-13);
+
+    // A fresh reconstruction of the same flow must agree despite the different history.
+    TSolver cold(mpi, cfg);
+    cold.ReadMeshAndInitialize();
+    setState(cold, 0.08);
+    cold.GetEvaluator()->EvaluateRHS(reference, cold.GetState());
+    reference.addTo(rhs, -1);
+    CHECK(reference.norm2() < 1e-8);
+
+    cfg.reconstructionSettings.variationalIterations = 1;
+    cfg.reconstructionSettings.variationalMaxIterations = 1;
+    cfg.reconstructionSettings.variationalTolerance = 1e-30;
+    TSolver capped(mpi, cfg);
+    capped.ReadMeshAndInitialize();
+    setState(capped, 0.08);
+    CHECK_THROWS_WITH_AS(capped.GetEvaluator()->EvaluateRHS(reference, capped.GetState()),
+                         doctest::Contains("reconstruction did not converge"), std::runtime_error);
+}
+
 /// @test Verify face-index independence and rank-count scaling of the MPI all-reduced checksum.
 TEST_CASE("ACM face buffer and MPI reduction are rank-count invariant")
 {

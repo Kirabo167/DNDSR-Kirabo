@@ -217,3 +217,63 @@ Relevant selections are:
 
 The source-level comparison and implemented integration route for WBAP/CWBAP and LU-SGS/GMRES
 is documented in `docs/dev/acm_euler_reuse_comparison.md`.
+
+## Converged reconstruction and steady pseudo-time efficiency
+
+Legacy configurations retain fixed reconstruction sweeps and absolute inner tolerances.
+`LoadConfiguration` inserts defaults for the following optional controls in memory.
+For convergence-controlled VR, add these entries to `reconstructionSettings`:
+
+```json
+"variationalTolerance": 1e-13,
+"variationalMaxIterations": 30000,
+"variationalCheckInterval": 10,
+"variationalRelaxation": 0.7
+```
+
+A positive `variationalTolerance` enables simultaneous relaxed updates of the
+block-Jacobi-preconditioned reconstruction equation defect
+`a - A_i^{-1}(sum_j B_ij a_j + b_i(a_i,U))`. Boundary contributions and the defect
+check use the same, unmodified coefficient field. The legacy SOR path can evaluate
+boundaries using a partially overwritten local polynomial, so simply increasing
+its sweep count is not equivalent to converging this equation.
+
+The stopping norm is the MPI-global maximum absolute defect over owned coefficients,
+scaled by `sqrt(beta2/rho0)` for velocity and `beta2` for pressure. It does not depend
+on the initial warm-start residual or on the update relaxation. A converged warm
+start is accepted without further sweeps. Otherwise, `variationalIterations` is the
+minimum sweep count before periodic checks; the maximum cap is always checked.
+Exceeding the cap raises an error on all ranks instead of using an unchecked residual.
+Setting the tolerance to zero restores legacy fixed sweeps. Controlled updates use
+`variationalRelaxation`, independently of `vfvSettings.SORInstead`/`jacobiRelax`.
+
+This is a reconstruction-equation tolerance, **not** a bound on the flow residual
+error: mesh stretching, polynomial scaling and the spatial operator amplify errors.
+Verify it by a tighter or independently converged reconstruction on the target mesh.
+The example cap/tolerance are diagnostic settings, not universal production values.
+
+For steady implicit Euler only, optional `timeMarchSettings` entries are:
+
+```json
+"steadyRelativeTolerance": 0.01,
+"steadyAdaptiveCFL": true,
+"steadyCFLMin": 0.1,
+"steadyCFLMax": 20.0,
+"steadyCFLGrowth": 1.5,
+"steadyCFLReduction": 0.5
+```
+
+The inner target is `max(implicitTolerance, steadyRelativeTolerance * initialSpatialRMS)`.
+Thus early pseudo-time steps can be solved inexactly while the target tightens as
+the outer residual falls. The absolute tolerance remains the final accuracy floor.
+The raw spatial RMS is reevaluated after the step and any segregated turbulence update;
+it is distinct from the implicit history defect. CFL increases only after inner
+success and spatial residual reduction, by at most `steadyCFLGrowth` and the square
+root of the before/after residual ratio. Inner failure or spatial residual growth
+above 5% reduces CFL. Stagnation holds CFL fixed; bounds always apply. This changes
+the next step and does not roll back an accepted state or certify steady convergence.
+
+Logs expose `innerTarget`, `steadyResidual`, used/next CFL, and reconstruction sweep
+count/last equation defect. `converged` still refers to the inner target, not to the
+global steady solution. Steady-only controls reject explicit and BDF2 integrators;
+physical dual-time accuracy is unchanged. Both steady controls default to disabled.

@@ -99,6 +99,14 @@ namespace DNDS::ACM
     {
         ReconstructionType type = ReconstructionType::GreenGauss; ///< Selected reconstruction family.
         int variationalIterations = 3;                            ///< Fixed-point VR sweeps per residual call.
+        real variationalTolerance = 0;                            ///< Scaled max equation defect; zero keeps fixed sweeps.
+        int variationalMaxIterations = 10000;                     ///< Hard cap for convergence-controlled reconstruction.
+        int variationalCheckInterval = 10;                        ///< Sweeps between equation-defect checks.
+        real variationalRelaxation = 0.7;                         ///< Damping for simultaneous equation-defect updates.
+        bool variationalUseGMRES = false;                         ///< Solve the consistent reconstruction defect with GMRES.
+        int variationalGMRESSubspace = 20;                        ///< Reconstruction Arnoldi vectors per restart.
+        int variationalGMRESRestarts = 2;                         ///< Reconstruction GMRES restart count.
+        real variationalGMRESRelativeTolerance = 0.1;             ///< Relative linear defect target per nonlinear update.
         bool resetVariationalCoefficients = false;                ///< Reset VR coefficients before each solve.
         bool enableLimiter = true;                                ///< Apply the limiter selected by limiterType.
         LimiterType limiterType = LimiterType::LocalExtrema;      ///< Local-extrema, WBAP, or CWBAP procedure.
@@ -108,6 +116,16 @@ namespace DNDS::ACM
             DNDS_FIELD(type, "ACM reconstruction method",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ReconstructionType)));
             DNDS_FIELD(variationalIterations, "Variational reconstruction sweeps", DNDS::Config::range(1));
+            DNDS_FIELD(variationalTolerance, "Scaled maximum reconstruction equation defect; zero disables convergence control",
+                       DNDS::Config::range(0.0));
+            DNDS_FIELD(variationalMaxIterations, "Maximum convergence-controlled reconstruction sweeps", DNDS::Config::range(1));
+            DNDS_FIELD(variationalCheckInterval, "Reconstruction equation-defect check interval", DNDS::Config::range(1));
+            DNDS_FIELD(variationalRelaxation, "Convergence-controlled reconstruction defect relaxation", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(variationalUseGMRES, "Use GMRES for convergence-controlled reconstruction");
+            DNDS_FIELD(variationalGMRESSubspace, "Reconstruction GMRES subspace size", DNDS::Config::range(2));
+            DNDS_FIELD(variationalGMRESRestarts, "Reconstruction GMRES restart count", DNDS::Config::range(0));
+            DNDS_FIELD(variationalGMRESRelativeTolerance, "Reconstruction GMRES relative linear tolerance",
+                       DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(resetVariationalCoefficients, "Reset variational coefficients at every residual call");
             DNDS_FIELD(enableLimiter, "Enable the selected reconstruction limiter");
             DNDS_FIELD(limiterType, "ACM reconstruction limiter",
@@ -133,6 +151,25 @@ namespace DNDS::ACM
         }
     };
 
+    /** @brief Controls initialization from an ACM VTK-HDF flow output. */
+    struct RestartSettings
+    {
+        std::string flowFile;          ///< Empty selects the configured uniform initial state.
+        int completedSteps = 0;        ///< Absolute steady-step index represented by flowFile.
+        int writerRanks = 0;           ///< Required original MPI size; zero is valid only without a file.
+        bool requireTurbulence = false; ///< Reject a RANS restart without turbulence datasets.
+
+        DNDS_DECLARE_CONFIG(RestartSettings)
+        {
+            DNDS_FIELD(flowFile, "VTK-HDF flow field used for initialization; empty disables restart");
+            DNDS_FIELD(completedSteps, "Completed steady steps represented by the initial field",
+                       DNDS::Config::range(0));
+            DNDS_FIELD(writerRanks, "MPI ranks that wrote the VTK-HDF field",
+                       DNDS::Config::range(0));
+            DNDS_FIELD(requireTurbulence, "Require turbulence variables in a RANS restart file");
+        }
+    };
+
     /// Complete kernel-preview configuration read by the `acm3D` application.
     struct KernelConfiguration
     {
@@ -142,6 +179,7 @@ namespace DNDS::ACM
         MeshSettings meshSettings;
         ReconstructionSettings reconstructionSettings;
         OutputSettings outputSettings;
+        RestartSettings restartSettings;
         CFV::VRSettings vfvSettings{3};
         BoundaryType defaultBoundaryType = BoundaryType::FarField;
         std::vector<BoundaryCondition> boundaryConditions; ///< Per-zone Euler-style ACM boundaries.
@@ -166,6 +204,7 @@ namespace DNDS::ACM
             config.field_section(&T::meshSettings, "meshSettings", "Distributed mesh input settings");
             config.field_section(&T::reconstructionSettings, "reconstructionSettings", "ACM high-order reconstruction settings");
             config.field_section(&T::outputSettings, "outputSettings", "Parallel VTK-HDF flow-field output settings");
+            config.field_section(&T::restartSettings, "restartSettings", "Optional same-partition VTK-HDF flow restart");
             config.field_section(&T::vfvSettings, "vfvSettings", "Existing CFV variational-reconstruction settings");
             DNDS_FIELD(defaultBoundaryType, "Boundary type applied to unmapped external zones",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(BoundaryType)));

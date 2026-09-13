@@ -20,8 +20,10 @@
 
 #include "CFV/VariationalReconstruction.hpp"
 #include "Geom/Mesh/Mesh.hpp"
+#include "Solver/Linear.hpp"
 
 #include <functional>
+#include <cstdint>
 
 namespace DNDS::ACM
 {
@@ -45,6 +47,15 @@ namespace DNDS::ACM
         using TVFV = CFV::VariationalReconstruction<gDim>; ///< Existing DNDS CFV reconstruction engine.
         using TpVFV = ssp<TVFV>;                           ///< Shared reconstruction engine pointer.
         using TBoundaryFunction = typename TVFV::template TFBoundary<nVarsFixed>;
+        using TBoundaryDiffFunction = typename TVFV::template TFBoundaryDiff<nVarsFixed>;
+        struct ReconstructionReport
+        {
+            int iterations = 0;
+            real equationDefect = 0;
+            bool converged = false; ///< True only after checking the VR equation defect.
+        };
+        const ReconstructionReport &GetReconstructionReport() const { return _reconstructionReport; }
+        std::uint64_t GetTotalReconstructionSweeps() const { return _totalReconstructionSweeps; }
         using TurbulencePrepareFunction =
             std::function<void(TDof &, real)>; ///< Refresh segregated turbulence data for a flow state.
         using TurbulentViscosityFunction =
@@ -224,6 +235,9 @@ namespace DNDS::ACM
         ssp<BoundaryHandler> _boundaryHandler;          ///< Per-zone boundary data and name mapping.
         TRec _uRec;                                     ///< Current VR coefficients.
         TRec _uRecWork;                                 ///< VR fixed-point workspace.
+        TRec _uRecCorrection;                           ///< Consistent VR defect correction.
+        ReconstructionReport _reconstructionReport;
+        std::uint64_t _totalReconstructionSweeps = 0;
         TRec _uRecLimited;                              ///< WBAP/CWBAP output coefficients.
         TGrad _uGrad;                                   ///< Direct Green-Gauss gradients.
         TScalar _limiter;                               ///< One limiter factor per cell.
@@ -247,6 +261,9 @@ namespace DNDS::ACM
          * @return Callback mapping an interior reconstruction to its ghost state.
          */
         TBoundaryFunction GetBoundaryFunction(real time) const;
+
+        /** @brief Build the finite-increment boundary response used by reconstruction GMRES. */
+        TBoundaryDiffFunction GetBoundaryDiffFunction(real time) const;
 
         /**
          * @brief Generate the exterior state for one mesh boundary face.

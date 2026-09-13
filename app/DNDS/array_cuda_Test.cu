@@ -14,7 +14,7 @@
 namespace DNDS
 {
 
-    DNDS_GLOBAL void op_kernel_adjacency(ArrayAdjacencyDeviceView<DeviceBackend::CUDA, NonUniformSize> arr)
+    DNDS_GLOBAL void op_kernel_adjacency(ArrayAdjacency<NonUniformSize>::t_deviceView<DeviceBackend::CUDA> arr)
     {
         int tid = blockIdx.x * blockDim.x + threadIdx.x;
         if (tid >= arr.Size())
@@ -63,11 +63,7 @@ namespace DNDS
             Eigen::Matrix3d a;
             a.setIdentity();
 
-            Eigen::MatrixXd b;
-            b.setIdentity(30, 30);
-            // row.array() = b.determinant() + 3.0; // ! fails to compute
             row.array() = a.determinant() + 3.0;
-            // row.array() = b.array().sum() + 1.0;
         }
 
         void test(MPIInfo &mpi)
@@ -181,7 +177,7 @@ namespace DNDS
     namespace array_cuda_Test_EigenUniMatrixBatch
     {
         using t_Arr = ArrayEigenUniMatrixBatch<Eigen::Dynamic, Eigen::Dynamic>;
-        DNDS_GLOBAL void op_kernel(ArrayEigenUniMatrixBatchDeviceView<DeviceBackend::CUDA, -1, -1> arr)
+        DNDS_GLOBAL void op_kernel(t_Arr::t_deviceView<DeviceBackend::CUDA> arr)
         {
             int tid = blockIdx.x * blockDim.x + threadIdx.x;
             if (tid >= arr.Size())

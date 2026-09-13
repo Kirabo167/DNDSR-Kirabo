@@ -124,6 +124,12 @@ namespace DNDS::ACM
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
         real implicitTolerance = 1e-10;                                     ///< Global RMS steady or physical defect tolerance.
+        real steadyRelativeTolerance = 0;                                 ///< Steady inner target relative to this outer step's spatial RMS.
+        bool steadyAdaptiveCFL = false;                                   ///< Adapt CFL using post-step spatial residual and inner success.
+        real steadyCFLMin = 0.1;
+        real steadyCFLMax = 20;
+        real steadyCFLGrowth = 1.5;                                        ///< Maximum increase per successful outer step.
+        real steadyCFLReduction = 0.5;                                    ///< Reduction after residual growth or inner failure.
         real implicitRelaxation = 1.0;                                      ///< Damping applied to every implicit correction.
         int lusgsSweeps = 2;                                                ///< Fixed SGS residual-correction applications per solve.
         int gmresSubspace = 10;                                             ///< Arnoldi vectors per GMRES restart.
@@ -151,6 +157,13 @@ namespace DNDS::ACM
                        DNDS::Config::range(1));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(steadyRelativeTolerance, "Steady inner defect relative to current outer spatial residual; zero uses absolute tolerance",
+                       DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(steadyAdaptiveCFL, "Adapt steady implicit CFL using actual spatial residual progress");
+            DNDS_FIELD(steadyCFLMin, "Minimum adaptive steady CFL", DNDS::Config::range(0.0));
+            DNDS_FIELD(steadyCFLMax, "Maximum adaptive steady CFL", DNDS::Config::range(0.0));
+            DNDS_FIELD(steadyCFLGrowth, "Maximum steady CFL growth factor", DNDS::Config::range(1.0));
+            DNDS_FIELD(steadyCFLReduction, "Steady CFL reduction factor", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(implicitRelaxation, "Implicit correction relaxation", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(lusgsSweeps, "ACM fixed LU-SGS residual-correction applications", DNDS::Config::range(1));
             DNDS_FIELD(gmresSubspace, "ACM GMRES Krylov subspace size", DNDS::Config::range(2));
@@ -167,6 +180,10 @@ namespace DNDS::ACM
          * @throws std::runtime_error If a count, time step, tolerance, or relaxation is invalid.
          */
         void Validate() const;
+        /** @brief Absolute/relative target for one steady implicit pseudo-time step. */
+        real SteadyImplicitTarget(real initialSpatialResidual) const;
+        /** @brief Bounded CFL update; stalled steps cannot trigger a CFL increase. */
+        real NextSteadyCFL(real currentCFL, real before, real after, bool innerConverged) const;
     };
 
     using StateField = std::vector<State>;    ///< Rank-local owned ACM states.
@@ -195,6 +212,7 @@ namespace DNDS::ACM
         real initialDefectNorm = 0; ///< Global RMS derivative/defect before updating.
         real finalDefectNorm = 0;   ///< Global RMS derivative/defect after updating.
         bool converged = false;     ///< True when the configured defect tolerance was reached.
+        real defectTolerance = 0;   ///< Actual absolute or combined steady inner target.
     };
 
     /**

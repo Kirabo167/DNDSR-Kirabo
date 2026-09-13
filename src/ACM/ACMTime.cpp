@@ -153,6 +153,22 @@ namespace DNDS::ACM
             std::isfinite(implicitTolerance) && implicitTolerance >= 0,
             "ACM implicitTolerance must be finite and non-negative");
         DNDS_check_throw_info(
+            std::isfinite(steadyRelativeTolerance) && steadyRelativeTolerance >= 0 && steadyRelativeTolerance < 1 &&
+                std::isfinite(steadyCFLMin) && steadyCFLMin > 0 &&
+                std::isfinite(steadyCFLMax) && steadyCFLMax >= steadyCFLMin &&
+                std::isfinite(steadyCFLGrowth) && steadyCFLGrowth >= 1 &&
+                std::isfinite(steadyCFLReduction) && steadyCFLReduction > 0 && steadyCFLReduction < 1,
+            "ACM steady relative tolerance or adaptive CFL bounds/factors are invalid");
+        const bool steadyImplicit = integrator == TimeIntegratorType::ImplicitEulerBlockJacobi ||
+                                    integrator == TimeIntegratorType::ImplicitEulerLUSGS ||
+                                    integrator == TimeIntegratorType::ImplicitEulerGMRES;
+        DNDS_check_throw_info(
+            (steadyRelativeTolerance == 0 && !steadyAdaptiveCFL) || steadyImplicit,
+            "ACM steady convergence controls apply only to implicit steady pseudo-time integrators");
+        DNDS_check_throw_info(
+            !steadyAdaptiveCFL || (useCFLTimeStep && cfl >= steadyCFLMin && cfl <= steadyCFLMax),
+            "ACM adaptive steady CFL requires CFL stepping and an initial CFL within the bounds");
+        DNDS_check_throw_info(
             std::isfinite(implicitRelaxation) && implicitRelaxation > 0 && implicitRelaxation <= 1,
             "ACM implicitRelaxation must be in (0, 1]");
         DNDS_check_throw_info(lusgsSweeps > 0, "ACM lusgsSweeps must be positive");
@@ -161,6 +177,29 @@ namespace DNDS::ACM
         DNDS_check_throw_info(
             std::isfinite(gmresRelativeTolerance) && gmresRelativeTolerance >= 0,
             "ACM gmresRelativeTolerance must be finite and non-negative");
+    }
+
+    real TimeMarchSettings::SteadyImplicitTarget(real initialSpatialResidual) const
+    {
+        DNDS_check_throw_info(std::isfinite(initialSpatialResidual) && initialSpatialResidual >= 0,
+                              "ACM steady initial residual must be finite and non-negative");
+        return std::max(implicitTolerance, steadyRelativeTolerance * initialSpatialResidual);
+    }
+
+    real TimeMarchSettings::NextSteadyCFL(real currentCFL, real before, real after, bool innerConverged) const
+    {
+        if (!steadyAdaptiveCFL)
+            return currentCFL;
+        DNDS_check_throw_info(std::isfinite(currentCFL) && currentCFL > 0 &&
+                                  std::isfinite(before) && before >= 0 && std::isfinite(after) && after >= 0,
+                              "ACM adaptive CFL received a non-finite residual or invalid CFL");
+        real factor = 1;
+        if (!innerConverged || after > before * 1.05)
+            factor = steadyCFLReduction;
+        else if (before > 0 && after < before)
+            factor = after == 0 ? steadyCFLGrowth
+                                : std::min(steadyCFLGrowth, std::sqrt(before / after));
+        return std::clamp(currentCFL * factor, steadyCFLMin, steadyCFLMax);
     }
 
     /** @copydoc ApplyGammaInverseToResidual */
@@ -280,10 +319,13 @@ namespace DNDS::ACM
             FormImplicitDefect(states, statesOld, residual, pseudoTimeStep, settings, defect);
             const real defectNorm = GlobalRMSNorm(defect, mpi);
             if (iteration == 1)
+            {
                 report.initialDefectNorm = defectNorm;
+                report.defectTolerance = timeSettings.SteadyImplicitTarget(defectNorm);
+            }
             report.finalDefectNorm = defectNorm;
             report.iterations = iteration;
-            if (defectNorm <= timeSettings.implicitTolerance)
+            if (defectNorm <= report.defectTolerance)
             {
                 report.converged = true;
                 return report;
@@ -319,7 +361,7 @@ namespace DNDS::ACM
         EvaluateResidualChecked(states, residual, residualEvaluator);
         FormImplicitDefect(states, statesOld, residual, pseudoTimeStep, settings, defect);
         report.finalDefectNorm = GlobalRMSNorm(defect, mpi);
-        report.converged = report.finalDefectNorm <= timeSettings.implicitTolerance;
+        report.converged = report.finalDefectNorm <= report.defectTolerance;
         return report;
     }
 
