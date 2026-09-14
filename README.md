@@ -56,7 +56,7 @@ sudo dnf install gcc-c++ cmake ninja-build openmpi-devel doxygen
 ### 2. Clone the repository
 
 ```bash
-git clone --recursive https://github.com/Kirabo167/DNDSR.git
+git clone --recursive https://github.com/Kirabo167/DNDSR-Kirabo.git
 cd DNDSR
 ```
 
