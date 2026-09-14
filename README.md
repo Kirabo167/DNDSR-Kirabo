@@ -57,7 +57,7 @@ sudo dnf install gcc-c++ cmake ninja-build openmpi-devel doxygen
 
 ```bash
 git clone --recursive https://github.com/Kirabo167/DNDSR-Kirabo.git
-cd DNDSR
+cd DNDSR-Kirabo
 ```
 
 ### 3. Create the Python environment and build dependencies
