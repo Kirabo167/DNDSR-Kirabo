@@ -1,0 +1,15 @@
+case,resolution,control_volumes,L1_error,reported_order,printed_page,pdf_page,source_table
+advection_diffusion,50,50,2.94e-2,,61,75,5.5
+advection_diffusion,100,100,3.73e-3,2.98,61,75,5.5
+advection_diffusion,200,200,4.58e-4,3.02,61,75,5.5
+advection_diffusion,400,400,5.70e-5,3.01,61,75,5.5
+advection_diffusion,800,800,7.11e-6,3.00,61,75,5.5
+burgers,50,50,7.41e-4,,61,75,5.5
+burgers,100,100,9.72e-5,2.93,61,75,5.5
+burgers,200,200,1.37e-5,2.83,61,75,5.5
+burgers,400,400,1.65e-6,3.06,61,75,5.5
+burgers,800,800,2.10e-7,2.97,61,75,5.5
+extruded_vortex,1,745,3.36e-3,,62,76,5.6
+extruded_vortex,2,4752,3.89e-4,3.11,62,76,5.6
+extruded_vortex,4,33694,4.74e-5,3.04,62,76,5.6
+extruded_vortex,8,252780,5.64e-6,3.07,62,76,5.6

@@ -129,10 +129,9 @@ namespace DNDS::NCFV
         ReconstructionSettings _reconstructionSettings;
         PhysicsSettings _physics;
         TimeSettings _time;
-        const PeriodicNodes *_periodic = nullptr;
+        const NodeHalo &_nodeHalo;
         real _maximumStep = veryLargeReal;
         bool _detailedFluxTiming = false;
-        bool _usePrecomputedPhysicalFluxGradients = true;
 
         NodeMatrixPair _stateGradients;
         NodeMatrixPair _physicalFluxGradients;
@@ -161,10 +160,6 @@ namespace DNDS::NCFV
         State PreservePhysical(const State &candidate, const State &anchor) const;
 
         State PhysicalFlux(const State &state, const SpatialVector &normal) const;
-        State PhysicalFluxDerivative(
-            const State &state,
-            const State &stateDerivative,
-            int fluxDirection) const;
         State NumericalFlux(
             const State &left,
             const State &right,
@@ -181,18 +176,18 @@ namespace DNDS::NCFV
         State EvaluateTraditionalState(index anchorNode, const Vector3 &point) const;
         StateGradient EvaluateTraditionalGradient(index anchorNode, const Vector3 &point) const;
         StateGradient EfficientSurfaceGradient(
+            int side,
+            const EdgeControlSurface &surface) const;
+        StateGradient EfficientBoundarySurfaceGradient(
             index anchorNode,
-            const std::vector<SparseScalarWeight> &weights,
-            real measure) const;
+            const BoundaryPiece &piece) const;
         State EfficientIntegratedPhysicalFlux(
-            index anchorNode,
-            const Vector3 &vectorMeasure,
-            const std::vector<SparseMatrixWeight> &weights,
+            int side,
+            const EdgeControlSurface &surface,
             EfficientPhysicalFluxIntegralTiming &timing) const;
         State EfficientSurfaceMean(
-            index anchorNode,
-            real measure,
-            const std::vector<SparseVectorWeight> &weights) const;
+            int side,
+            const EdgeControlSurface &surface) const;
         State InternalViscousFlux(
             const State &left,
             const State &right,
@@ -226,6 +221,14 @@ namespace DNDS::NCFV
             const std::string &name,
             int rows,
             int columns);
+        void AllocateNodeField(
+            NodeStatePair &field,
+            const std::string &name,
+            int rows);
+        void AllocateLocalNodeField(
+            NodeStatePair &field,
+            const std::string &name,
+            int rows);
         void AllocateEdgeField(NodeStatePair &field, const std::string &name, int rows);
         void Reconstruct(NodeStatePair &means);
         void ComputePhysicalFluxGradients();
@@ -243,11 +246,11 @@ namespace DNDS::NCFV
             const ReconstructionSettings &reconstructionSettings,
             const PhysicsSettings &physics,
             const TimeSettings &time,
-            const PeriodicNodes *periodic = nullptr)
+            const NodeHalo &nodeHalo)
             : _mpi(mpi), _mesh(mesh), _topology(topology), _geometry(geometry),
               _reconstruction(reconstruction), _boundaries(boundaries), _mode(mode),
               _reconstructionSettings(reconstructionSettings), _physics(physics),
-              _time(time), _periodic(periodic)
+              _time(time), _nodeHalo(nodeHalo)
         {
         }
 
@@ -255,17 +258,17 @@ namespace DNDS::NCFV
         void SetMaximumStep(real step) { _maximumStep = step; }
         /** Enable intrusive per-kernel interface-flux timing for diagnostics. */
         void EnableDetailedFluxTiming(bool enabled) { _detailedFluxTiming = enabled; }
-        /** Select the default node-precomputed or legacy edge-recomputed flux gradient path. */
-        void UsePrecomputedPhysicalFluxGradients(bool enabled)
-        {
-            _usePrecomputedPhysicalFluxGradients = enabled;
-        }
 
         /**
          * @brief Evaluate d(dual mean)/dt; performs all node and edge halo pulls.
-         * @return Volume-weighted global RMS residual.
+         * @return Volume-weighted global RMS residual, or zero when
+         *         computeResidualNorm is false.
          */
-        real EvaluateRHS(NodeStatePair &means, NodeStatePair &rhs);
+        real EvaluateRHS(
+            NodeStatePair &means,
+            NodeStatePair &rhs,
+            bool updateTimeSteps = true,
+            bool computeResidualNorm = true);
 
         /** @brief Apply configured strong inlet/no-slip conditions to owned nodes. */
         void ApplyStrongBoundaryConditions(NodeStatePair &state) const;

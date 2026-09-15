@@ -5,7 +5,7 @@
 #pragma once
 
 #include "NCFVDualGeometry.hpp"
-#include "NCFVPeriodic.hpp"
+#include "NCFVNodeHalo.hpp"
 
 #include "DNDS/ArrayDOF.hpp"
 
@@ -25,6 +25,8 @@ namespace DNDS::NCFV
         Vector3 referenceLengths = Vector3::Ones(); // Thesis (3-34), basis normalization.
         real conditionNumber = veryLargeReal;
         std::vector<index> stencil;
+        /** Stable global IDs retained while the final exact halo is pruned. */
+        std::vector<index> stencilGlobals;
         Eigen::MatrixXd inverseRows;
         Eigen::VectorXd targetBasisMean;
     };
@@ -44,14 +46,14 @@ namespace DNDS::NCFV
         const DualGeometry &_geometry;
         IntegrationMode _mode;
         ReconstructionSettings _settings;
-        const PeriodicNodes *_periodic = nullptr;
+        const NodeHalo &_nodeHalo;
 
         std::vector<std::vector<index>> _nodeGraph;
+        std::vector<std::vector<index>> _nodeGraphGlobals;
         std::vector<ReconstructionOperator> _operators;
 
         void BuildNodeGraph();
         ReconstructionOperator BuildOperator(index iNode) const;
-        RawMoments GetMoments(index iNode) const;
 
     public:
         Reconstruction(
@@ -61,22 +63,24 @@ namespace DNDS::NCFV
             const DualGeometry &geometry,
             IntegrationMode mode,
             const ReconstructionSettings &settings,
-            const PeriodicNodes *periodic = nullptr)
+            const NodeHalo &nodeHalo)
             : _mpi(mpi), _mesh(mesh), _topology(topology), _geometry(geometry),
-              _mode(mode), _settings(settings), _periodic(periodic)
+              _mode(mode), _settings(settings), _nodeHalo(nodeHalo)
         {
         }
 
         void Build();
+        [[nodiscard]] std::vector<index> CollectNodeDependencies() const;
+        void RemapNodeIndices();
         /** @brief Volume scale for distance weights; not the polynomial reference lengths. */
         [[nodiscard]] real LengthScale(index local) const
         {
-            return std::pow(_periodic ? _periodic->Volume(local) : _geometry.NodeMoments()(local, 0),
+            return std::pow(_nodeHalo.Volume(local),
                             1.0 / _mesh->getDim());
         }
         [[nodiscard]] Vector3 ReferenceLengths(index local) const
         {
-            return _periodic ? _periodic->ReferenceLengths(local) : _geometry.ReferenceLengths(local);
+            return _nodeHalo.ReferenceLengths(local);
         }
 
         [[nodiscard]] int BasisSize() const { return QuadraticBasisSize(_mesh->getDim()); }

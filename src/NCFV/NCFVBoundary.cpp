@@ -41,8 +41,7 @@ namespace DNDS::NCFV
         _settings.clear();
         _idToName.clear();
         for (const auto &[name, id] : nameToID)
-            if (Geom::FaceIDIsExternalBC(id))
-                _idToName.try_emplace(id, name);
+            _idToName.try_emplace(id, name);
 
         for (const BoundaryZoneSettings &input : physics.boundaryZones)
         {
@@ -50,9 +49,14 @@ namespace DNDS::NCFV
             DNDS_check_throw_info(
                 found != nameToID.end(),
                 "NCFV boundary zone is absent from the CGNS mesh: " + input.name);
+            const bool validZone = input.mode == BoundaryMode::Periodic
+                                       ? Geom::FaceIDIsPeriodic(found->second)
+                                       : Geom::FaceIDIsExternalBC(found->second);
             DNDS_check_throw_info(
-                Geom::FaceIDIsExternalBC(found->second),
-                "NCFV boundary name does not identify an external CGNS zone: " + input.name);
+                validZone,
+                input.mode == BoundaryMode::Periodic
+                    ? "NCFV Periodic boundary name is not part of a merged periodic pair: " + input.name
+                    : "NCFV boundary name does not identify an external CGNS zone: " + input.name);
             DNDS_check_throw_info(
                 _settings.count(found->second) == 0,
                 "NCFV boundary aliases configure the same zone more than once: " + input.name);

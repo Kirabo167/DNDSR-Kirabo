@@ -91,19 +91,20 @@ namespace DNDS::NCFV
     struct MeshSettings
     {
         std::string meshFile;
-        int ghostLayers = 2;
         int reorderCells = 0;
         real periodicTolerance = 1e-9;
         std::vector<real> periodicLengths{0.0, 0.0, 0.0};
+        std::vector<std::string> periodicBoundaryPairs;
         Geom::PartitionOptions partitionOptions;
 
         DNDS_DECLARE_CONFIG(MeshSettings)
         {
             DNDS_FIELD(meshFile, "Input O1 CGNS mesh file");
-            DNDS_FIELD(ghostLayers, "Cell halo depth used by node stencils", DNDS::Config::range(2, 8));
             DNDS_FIELD(reorderCells, "Reorder local primal cells", DNDS::Config::range(0, 1));
             DNDS_FIELD(periodicTolerance, "Periodic-node matching tolerance", DNDS::Config::range(0.0));
             DNDS_FIELD(periodicLengths, "Translational periodic box lengths [Lx,Ly,Lz]; zeros disable");
+            DNDS_FIELD(periodicBoundaryPairs,
+                       "Flat [main1,donor1,...] CGNS zone names; empty infers pairs from Periodic boundaryZones order");
             config.field_section(&T::partitionOptions, "partitionOptions", "Existing DNDSR partition options");
         }
     };
@@ -115,10 +116,13 @@ namespace DNDS::NCFV
         bool retainMicroGeometry = true;
         bool checkGeometryClosure = true;
         real closureTolerance = 2e-10;
+        // Diagnostic-only switch set programmatically by initialization probes.
+        // It is intentionally absent from the serialized configuration schema.
+        bool profileIntegrationInitialization = false;
 
         DNDS_DECLARE_CONFIG(AlgorithmSettings)
         {
-            DNDS_FIELD(mode, "Vertex-FV integration implementation",
+            DNDS_FIELD(mode, "NCFV integration implementation",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(IntegrationMode)));
             DNDS_FIELD(quadratureOrder, "Traditional Gauss/Hammer integration order",
                        DNDS::Config::range(2, Geom::Elem::INT_ORDER_MAX));

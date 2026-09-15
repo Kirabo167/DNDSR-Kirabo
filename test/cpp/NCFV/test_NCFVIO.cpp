@@ -37,7 +37,6 @@ namespace
         configuration.dimension = 3;
         configuration.mesh.meshFile =
             (ProjectRoot() / "data/mesh/ACMVariable_verify3D.cgns").string();
-        configuration.mesh.ghostLayers = 2;
         configuration.algorithm.mode = IntegrationMode::EfficientDifferential;
         configuration.algorithm.quadratureOrder = 4;
         configuration.algorithm.retainMicroGeometry = false;

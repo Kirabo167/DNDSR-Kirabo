@@ -1,6 +1,5 @@
 #include "NCFVSpatial.hpp"
 
-#include "CFV/DOFFactory.hpp"
 #include "DNDS/Errors.hpp"
 
 #include <algorithm>
@@ -133,38 +132,6 @@ namespace DNDS::NCFV
         flux.template segment<dimension>(1) = momentum * normalVelocity + pressure * normal;
         flux(dimension + 1) = (state(dimension + 1) + pressure) * normalVelocity;
         return flux;
-    }
-
-    template <int dimension>
-    typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::PhysicalFluxDerivative(
-        const State &state,
-        const State &stateDerivative,
-        int fluxDirection) const
-    {
-        const SpatialVector momentum = state.template segment<dimension>(1);
-        const SpatialVector momentumDerivative =
-            stateDerivative.template segment<dimension>(1);
-        const SpatialVector velocity = momentum / state(0);
-        const SpatialVector velocityDerivative =
-            (momentumDerivative - velocity * stateDerivative(0)) / state(0);
-        const real pressure = Pressure(state);
-        const real pressureDerivative = (_physics.gamma - 1.0) *
-                                        (stateDerivative(dimension + 1) -
-                                         0.5 * (momentumDerivative.dot(velocity) +
-                                                momentum.dot(velocityDerivative)));
-
-        State derivative = State::Zero();
-        derivative(0) = momentumDerivative(fluxDirection);
-        derivative.template segment<dimension>(1) =
-            momentumDerivative * velocity(fluxDirection) +
-            momentum * velocityDerivative(fluxDirection);
-        derivative(1 + fluxDirection) += pressureDerivative;
-        derivative(dimension + 1) =
-            (stateDerivative(dimension + 1) + pressureDerivative) *
-                velocity(fluxDirection) +
-            (state(dimension + 1) + pressure) * velocityDerivative(fluxDirection);
-        return derivative;
     }
 
     template <int dimension>
@@ -340,14 +307,14 @@ namespace DNDS::NCFV
         index anchorNode,
         const Vector3 &point) const
     {
-        const real volume = _geometry.NodeMoments()(anchorNode, 0);
+        const real volume = _nodeHalo.Volume(anchorNode);
         DNDS_check_throw_info(volume > verySmallReal,
                               "NCFV traditional reconstruction has a zero-volume anchor");
         const Vector3 referenceLengths = _reconstruction.ReferenceLengths(anchorNode);
         State state = _pointValues[anchorNode];
         state += _coefficients[anchorNode].transpose() *
                  Reconstruction::EvaluateBasis(
-                     point - _mesh->coords[anchorNode],
+                     _nodeHalo.DisplacementToPoint(anchorNode, point),
                      referenceLengths, dimension);
         return PreservePhysical(state, State(_pointValues[anchorNode]));
     }
@@ -358,83 +325,84 @@ namespace DNDS::NCFV
         index anchorNode,
         const Vector3 &point) const
     {
-        const real volume = _geometry.NodeMoments()(anchorNode, 0);
+        const real volume = _nodeHalo.Volume(anchorNode);
         DNDS_check_throw_info(volume > verySmallReal,
                               "NCFV traditional gradient has a zero-volume anchor");
         const Vector3 referenceLengths = _reconstruction.ReferenceLengths(anchorNode);
         return Reconstruction::EvaluateBasisGradient(
-                   point - _mesh->coords[anchorNode], referenceLengths, dimension) *
+                   _nodeHalo.DisplacementToPoint(anchorNode, point),
+                   referenceLengths, dimension) *
                _coefficients[anchorNode];
     }
 
     template <int dimension>
     typename SpatialOperator<dimension>::StateGradient
     SpatialOperator<dimension>::EfficientSurfaceGradient(
-        index anchorNode,
-        const std::vector<SparseScalarWeight> &weights,
-        real measure) const
+        int side,
+        const EdgeControlSurface &surface) const
     {
-        DNDS_check_throw_info(measure > verySmallReal,
+        DNDS_check_throw_info(side == 0 || side == 1,
+                              "NCFV efficient surface side must be zero or one");
+        DNDS_check_throw_info(surface.measure > verySmallReal,
                               "NCFV efficient surface has zero measure");
         StateGradient gradient = StateGradient::Zero();
-        for (const auto &weight : weights)
-            gradient += weight.value * StateGradient(_stateGradients[weight.node]);
-        return _limiterFactors[anchorNode](0, 0) * gradient / measure;
+        for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+            gradient += entry.gradientWeight *
+                        StateGradient(_stateGradients[entry.node]);
+        const index anchorNode =
+            surface.nodes[static_cast<std::size_t>(side)];
+        return _limiterFactors[anchorNode](0, 0) *
+               gradient / surface.measure;
+    }
+
+    template <int dimension>
+    typename SpatialOperator<dimension>::StateGradient
+    SpatialOperator<dimension>::EfficientBoundarySurfaceGradient(
+        index anchorNode,
+        const BoundaryPiece &piece) const
+    {
+        DNDS_check_throw_info(piece.measure > verySmallReal,
+                              "NCFV efficient boundary surface has zero measure");
+        StateGradient gradient = StateGradient::Zero();
+        for (const EfficientBoundaryNode &entry : piece.efficientStencil)
+            gradient += entry.integrationWeight *
+                        StateGradient(_stateGradients[entry.node]);
+        return _limiterFactors[anchorNode](0, 0) *
+               gradient / piece.measure;
     }
 
     template <int dimension>
     typename SpatialOperator<dimension>::State
     SpatialOperator<dimension>::EfficientIntegratedPhysicalFlux(
-        index anchorNode,
-        const Vector3 &vectorMeasure,
-        const std::vector<SparseMatrixWeight> &weights,
+        int side,
+        const EdgeControlSurface &surface,
         EfficientPhysicalFluxIntegralTiming &timing) const
     {
-        if (!_usePrecomputedPhysicalFluxGradients)
-        {
-            State integral = PhysicalFlux(
-                State(_pointValues[anchorNode]),
-                vectorMeasure.template head<dimension>());
-            State correction = State::Zero();
-            for (const auto &weight : weights)
-            {
-                const State state = _pointValues[weight.node];
-                for (int derivativeDirection = 0;
-                     derivativeDirection < dimension; derivativeDirection++)
-                {
-                    const State stateDerivative =
-                        _stateGradients[weight.node].row(derivativeDirection).transpose();
-                    for (int fluxDirection = 0; fluxDirection < dimension;
-                         fluxDirection++)
-                        correction +=
-                            weight.value(derivativeDirection, fluxDirection) *
-                            PhysicalFluxDerivative(
-                                state, stateDerivative, fluxDirection);
-                }
-            }
-            return integral +
-                   _limiterFactors[anchorNode](0, 0) * correction;
-        }
-
+        DNDS_check_throw_info(side == 0 || side == 1,
+                              "NCFV efficient surface side must be zero or one");
+        const std::size_t sideIndex = static_cast<std::size_t>(side);
+        const index anchorNode = surface.nodes[sideIndex];
         double phaseStart = 0;
         if (_detailedFluxTiming)
             phaseStart = MPI_Wtime();
         State integral = PhysicalFlux(
-            State(_pointValues[anchorNode]), vectorMeasure.template head<dimension>());
+            State(_pointValues[anchorNode]),
+            surface.vectorMeasure.template head<dimension>());
         if (_detailedFluxTiming)
         {
             timing.zeroOrderFluxSeconds += MPI_Wtime() - phaseStart;
             phaseStart = MPI_Wtime();
         }
         State correction = State::Zero();
-        for (const auto &weight : weights)
+        for (const EfficientSurfaceNode &entry : surface.efficientStencil)
         {
             for (int derivativeDirection = 0; derivativeDirection < dimension;
                  derivativeDirection++)
                 for (int fluxDirection = 0; fluxDirection < dimension; fluxDirection++)
                     correction +=
-                        weight.value(derivativeDirection, fluxDirection) *
-                        _physicalFluxGradients[weight.node]
+                        entry.fluxGradientWeights[sideIndex](
+                            derivativeDirection, fluxDirection) *
+                        _physicalFluxGradients[entry.node]
                             .col(FluxGradientColumn(
                                 derivativeDirection, fluxDirection));
         }
@@ -454,20 +422,28 @@ namespace DNDS::NCFV
     template <int dimension>
     typename SpatialOperator<dimension>::State
     SpatialOperator<dimension>::EfficientSurfaceMean(
-        index anchorNode,
-        real measure,
-        const std::vector<SparseVectorWeight> &weights) const
+        int side,
+        const EdgeControlSurface &surface) const
     {
-        State integral = measure * State(_pointValues[anchorNode]);
+        DNDS_check_throw_info(side == 0 || side == 1,
+                              "NCFV efficient surface side must be zero or one");
+        DNDS_check_throw_info(surface.measure > verySmallReal,
+                              "NCFV efficient surface has zero measure");
+        const std::size_t sideIndex = static_cast<std::size_t>(side);
+        const index anchorNode = surface.nodes[sideIndex];
+        State integral = surface.measure * State(_pointValues[anchorNode]);
         State correction = State::Zero();
-        for (const auto &weight : weights)
-            correction += _stateGradients[weight.node].transpose() *
-                          weight.value.template head<dimension>();
+        for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+        {
+            correction += _stateGradients[entry.node].transpose() *
+                          entry.stateGradientWeights[sideIndex]
+                              .template head<dimension>();
+        }
         // One coefficient for the complete side reconstruction is required by
         // thesis (3-96); scaling each contributing nodal gradient by its own
         // coefficient would define a different interface mean.
         integral += _limiterFactors[anchorNode](0, 0) * correction;
-        const State mean = integral / measure;
+        const State mean = integral / surface.measure;
         return PreservePhysical(mean, State(_pointValues[anchorNode]));
     }
 
@@ -609,12 +585,8 @@ namespace DNDS::NCFV
         const index node1 = surface.nodes[1];
         const SpatialVector unitNormal =
             surface.vectorMeasure.template head<dimension>().normalized();
-        const real volume0 = _periodic
-                                 ? _periodic->Volume(node0)
-                                 : _geometry.NodeMoments()(node0, 0);
-        const real volume1 = _periodic
-                                 ? _periodic->Volume(node1)
-                                 : _geometry.NodeMoments()(node1, 0);
+        const real volume0 = _nodeHalo.Volume(node0);
+        const real volume1 = _nodeHalo.Volume(node1);
         // Thesis (4-155), not the projected primal-edge length.
         const real characteristicDistance =
             std::min(volume0, volume1) / surface.measure;
@@ -662,7 +634,7 @@ namespace DNDS::NCFV
         if (_detailedFluxTiming)
             phaseStart = MPI_Wtime();
         const State leftIntegral = EfficientIntegratedPhysicalFlux(
-            node0, surface.vectorMeasure, surface.leftFluxWeights,
+            0, surface,
             _lastRhsTiming.edgeLeftPhysicalFluxDetail);
         if (_detailedFluxTiming)
         {
@@ -671,7 +643,7 @@ namespace DNDS::NCFV
             phaseStart = MPI_Wtime();
         }
         const State rightIntegral = EfficientIntegratedPhysicalFlux(
-            node1, surface.vectorMeasure, surface.rightFluxWeights,
+            1, surface,
             _lastRhsTiming.edgeRightPhysicalFluxDetail);
         if (_detailedFluxTiming)
         {
@@ -679,16 +651,14 @@ namespace DNDS::NCFV
                 MPI_Wtime() - phaseStart;
             phaseStart = MPI_Wtime();
         }
-        const State leftMean = EfficientSurfaceMean(
-            node0, surface.measure, surface.leftStateWeights);
+        const State leftMean = EfficientSurfaceMean(0, surface);
         if (_detailedFluxTiming)
         {
             _lastRhsTiming.edgeLeftStatePreparationSeconds +=
                 MPI_Wtime() - phaseStart;
             phaseStart = MPI_Wtime();
         }
-        const State rightMean = EfficientSurfaceMean(
-            node1, surface.measure, surface.rightStateWeights);
+        const State rightMean = EfficientSurfaceMean(1, surface);
         if (_detailedFluxTiming)
         {
             _lastRhsTiming.edgeRightStatePreparationSeconds +=
@@ -731,9 +701,9 @@ namespace DNDS::NCFV
             if (_detailedFluxTiming)
                 phaseStart = MPI_Wtime();
             const StateGradient leftSurfaceGradient = EfficientSurfaceGradient(
-                node0, surface.gradientIntegralWeights, surface.measure);
+                0, surface);
             const StateGradient rightSurfaceGradient = EfficientSurfaceGradient(
-                node1, surface.gradientIntegralWeights, surface.measure);
+                1, surface);
             integral -= surface.measure *
                         InternalViscousFlux(
                             leftMean, rightMean,
@@ -757,10 +727,10 @@ namespace DNDS::NCFV
         const SpatialVector normal =
             surface.vectorMeasure.template head<dimension>().normalized();
         const real length0 = std::pow(
-            _geometry.NodeMoments()(surface.nodes[0], 0),
+            _nodeHalo.Volume(surface.nodes[0]),
             1.0 / static_cast<real>(dimension));
         const real length1 = std::pow(
-            _geometry.NodeMoments()(surface.nodes[1], 0),
+            _nodeHalo.Volume(surface.nodes[1]),
             1.0 / static_cast<real>(dimension));
         return SurfaceSpectralRadius(
             mean, normal, surface.measure, std::min(length0, length1));
@@ -796,8 +766,8 @@ namespace DNDS::NCFV
             return total;
         }
 
-        // No Gaussian points: inviscid boundary fluxes use construction
-        // vertices and viscous gradients use their exact affine surface mean.
+        // No Gaussian points: the initialization-built stencil already merges
+        // every construction-point support into one sorted local/ghost node set.
         for (const auto &piece : controlVolume.boundaryPieces)
         {
             const auto &boundary = _boundaries.Get(piece.zone);
@@ -805,38 +775,27 @@ namespace DNDS::NCFV
                 continue;
             const SpatialVector unitNormal =
                 piece.vectorMeasure.template head<dimension>() / piece.measure;
-            State vertexFluxSum = State::Zero();
-            State insideMean = State::Zero();
-            for (int iPoint = 0; iPoint < piece.nPoints; iPoint++)
+            State insideIntegral = State::Zero();
+            State inviscidIntegral = State::Zero();
+            for (const EfficientBoundaryNode &entry : piece.efficientStencil)
             {
-                State affineState = State::Zero();
-                State affineFlux = State::Zero();
-                for (const auto &coefficient :
-                     piece.points[static_cast<std::size_t>(iPoint)].support)
-                {
-                    const State nodalState = _pointValues[coefficient.node];
-                    affineState += coefficient.coefficient *
-                                   nodalState;
-                    // Thesis section 4.3.2 interpolates already evaluated
-                    // nodal numerical fluxes. Evaluating the nonlinear flux
-                    // after interpolating U is not the same operation.
-                    affineFlux += coefficient.coefficient *
-                                  BoundaryNumericalFlux(
-                                      nodalState, unitNormal, boundary);
-                }
-                affineState = PreservePhysical(affineState, State(_pointValues[iNode]));
-                insideMean += affineState;
-                vertexFluxSum += affineFlux;
+                const State nodalState = _pointValues[entry.node];
+                insideIntegral += entry.integrationWeight * nodalState;
+                // Thesis section 4.3.2 interpolates already evaluated nodal
+                // numerical fluxes, so the same precomputed value weight is
+                // applied after BoundaryNumericalFlux().
+                inviscidIntegral += entry.integrationWeight *
+                                    BoundaryNumericalFlux(
+                                        nodalState, unitNormal, boundary);
             }
-            insideMean /= static_cast<real>(piece.nPoints);
-            total += piece.measure / static_cast<real>(piece.nPoints) * vertexFluxSum;
+            const State insideMean = PreservePhysical(
+                insideIntegral / piece.measure, State(_pointValues[iNode]));
+            total += inviscidIntegral;
             if (_physics.viscous.enabled)
                 total -= piece.measure * BoundaryViscousFlux(
                                              insideMean,
-                                             EfficientSurfaceGradient(
-                                                 iNode,
-                                                 piece.gradientIntegralWeights,
-                                                 piece.measure),
+                                             EfficientBoundarySurfaceGradient(
+                                                 iNode, piece),
                                              unitNormal, boundary,
                                              controlVolume.lengthScale);
         }
@@ -871,8 +830,10 @@ namespace DNDS::NCFV
     {
         field.InitPair(name, _mpi);
         field.father->Resize(_mesh->NumNode(), rows, columns);
-        field.son->Resize(_mesh->NumNodeGhost(), rows, columns);
-        field.BorrowSetup(_mesh->coords);
+        field.son->Resize(
+            _nodeHalo.NumNodeGhost(),
+            rows, columns);
+        field.BorrowSetup(_nodeHalo.Layout());
         field.trans.initPersistentPull();
         for (index iNode = 0; iNode < field.Size(); iNode++)
             field[iNode].setZero();
@@ -889,7 +850,39 @@ namespace DNDS::NCFV
         // synchronized inputs, so it deliberately has no MPI transformer.
         field.InitPair(name, _mpi);
         field.father->Resize(_mesh->NumNode(), rows, columns);
-        field.son->Resize(_mesh->NumNodeGhost(), rows, columns);
+        field.son->Resize(
+            _nodeHalo.NumNodeGhost(),
+            rows, columns);
+        for (index iNode = 0; iNode < field.Size(); iNode++)
+            field[iNode].setZero();
+    }
+
+    template <int dimension>
+    void SpatialOperator<dimension>::AllocateNodeField(
+        NodeStatePair &field,
+        const std::string &name,
+        int rows)
+    {
+        field.InitPair(name, _mpi);
+        field.father->Resize(_mesh->NumNode(), rows, 1);
+        field.son->Resize(
+            _nodeHalo.NumNodeGhost(),
+            rows, 1);
+        field.BorrowSetup(_nodeHalo.Layout());
+        field.trans.initPersistentPull();
+        for (index iNode = 0; iNode < field.Size(); iNode++)
+            field[iNode].setZero();
+    }
+
+    template <int dimension>
+    void SpatialOperator<dimension>::AllocateLocalNodeField(
+        NodeStatePair &field,
+        const std::string &name,
+        int rows)
+    {
+        field.InitPair(name, _mpi);
+        field.father->Resize(_mesh->NumNode(), rows, 1);
+        field.son->Resize(0, rows, 1);
         for (index iNode = 0; iNode < field.Size(); iNode++)
             field[iNode].setZero();
     }
@@ -920,15 +913,12 @@ namespace DNDS::NCFV
         else
             AllocateNodeMatrix(_coefficients, "NCFV.coefficients",
                                Reconstruction::QuadraticBasisSize(dimension));
-        CFV::BuildUDofOnMesh(
-            _pointValues, "NCFV.pointValues", _mpi, _mesh,
-            dimension + 2, true, true, Geom::MeshLoc::Node);
-        CFV::BuildUDofOnMesh(
-            _limiterFactors, "NCFV.limiterFactors", _mpi, _mesh,
-            1, true, true, Geom::MeshLoc::Node);
-        CFV::BuildUDofOnMesh(
-            _localTimeSteps, "NCFV.localTimeSteps", _mpi, _mesh,
-            1, true, true, Geom::MeshLoc::Node);
+        AllocateNodeField(
+            _pointValues, "NCFV.pointValues", dimension + 2);
+        AllocateNodeField(
+            _limiterFactors, "NCFV.limiterFactors", 1);
+        AllocateLocalNodeField(
+            _localTimeSteps, "NCFV.localTimeSteps", 1);
 
         AllocateEdgeField(_edgeFlux, "NCFV.edgeFlux", dimension + 2);
         AllocateEdgeField(_edgeSpectralRadius, "NCFV.edgeSpectralRadius", 1);
@@ -1034,15 +1024,6 @@ namespace DNDS::NCFV
                 _time.minimumTimeStep, _time.maximumTimeStep);
         }
 
-        // Combine inverse steps on the quotient: sum spectra / sum volumes.
-        if (_periodic && _time.useCFLTimeStep)
-        {
-            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
-                _localTimeSteps[iNode](0, 0) = 1.0 / candidate[iNode];
-            _periodic->Average(_localTimeSteps);
-            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
-                candidate[iNode] = 1.0 / _localTimeSteps[iNode](0, 0);
-        }
         for (real &step : candidate)
             step = std::min(step, _maximumStep);
 
@@ -1066,12 +1047,18 @@ namespace DNDS::NCFV
             localMinimum = std::min(localMinimum, value);
             localMaximum = std::max(localMaximum, value);
         }
-        MPI_Allreduce(&localMinimum, &_lastMinimumTimeStep, 1,
-                      DNDS_MPI_REAL, MPI_MIN, _mpi.comm);
-        MPI_Allreduce(&localMaximum, &_lastMaximumTimeStep, 1,
-                      DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
-        _localTimeSteps.trans.startPersistentPull();
-        _localTimeSteps.trans.waitPersistentPull();
+        if (_time.useCFLTimeStep && _time.useLocalTimeStep)
+        {
+            MPI_Allreduce(&localMinimum, &_lastMinimumTimeStep, 1,
+                          DNDS_MPI_REAL, MPI_MIN, _mpi.comm);
+            MPI_Allreduce(&localMaximum, &_lastMaximumTimeStep, 1,
+                          DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
+        }
+        else
+        {
+            _lastMinimumTimeStep = localMinimum;
+            _lastMaximumTimeStep = localMaximum;
+        }
     }
 
     template <int dimension>
@@ -1126,7 +1113,9 @@ namespace DNDS::NCFV
     template <int dimension>
     real SpatialOperator<dimension>::EvaluateRHS(
         NodeStatePair &means,
-        NodeStatePair &rhs)
+        NodeStatePair &rhs,
+        bool updateTimeSteps,
+        bool computeResidualNorm)
     {
         _lastRhsTiming = {};
         const double totalStart = MPI_Wtime();
@@ -1134,8 +1123,7 @@ namespace DNDS::NCFV
         Reconstruct(means);
         _lastRhsTiming.reconstructionSeconds = MPI_Wtime() - phaseStart;
 
-        if (_mode == IntegrationMode::EfficientDifferential &&
-            _usePrecomputedPhysicalFluxGradients)
+        if (_mode == IntegrationMode::EfficientDifferential)
         {
             phaseStart = MPI_Wtime();
             ComputePhysicalFluxGradients();
@@ -1159,12 +1147,13 @@ namespace DNDS::NCFV
         _edgeSpectralRadius.trans.waitPersistentPull();
         _lastRhsTiming.edgeHaloSeconds = MPI_Wtime() - phaseStart;
 
-        phaseStart = MPI_Wtime();
-        UpdateLocalTimeSteps();
-        _lastRhsTiming.localTimeStepSeconds = MPI_Wtime() - phaseStart;
+        if (updateTimeSteps)
+        {
+            phaseStart = MPI_Wtime();
+            UpdateLocalTimeSteps();
+            _lastRhsTiming.localTimeStepSeconds = MPI_Wtime() - phaseStart;
+        }
 
-        real localSquared = 0;
-        real localVolume = 0;
         phaseStart = MPI_Wtime();
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
@@ -1174,27 +1163,30 @@ namespace DNDS::NCFV
             const real volume = _geometry.NodeVolume(iNode).moments.measure;
             rhs[iNode] = -residual / volume;
         }
-        if (_periodic)
-            _periodic->Average(rhs);
         _lastRhsTiming.residualAssemblySeconds = MPI_Wtime() - phaseStart;
 
-        phaseStart = MPI_Wtime();
-        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        real residualNorm = 0;
+        if (computeResidualNorm)
         {
-            const real volume = _geometry.NodeVolume(iNode).moments.measure;
-            localSquared += volume * rhs[iNode].squaredNorm();
-            localVolume += volume;
-        }
+            phaseStart = MPI_Wtime();
+            real localTotals[2]{0, 0};
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            {
+                const real volume = _geometry.NodeVolume(iNode).moments.measure;
+                localTotals[0] += volume * rhs[iNode].squaredNorm();
+                localTotals[1] += volume;
+            }
 
-        real globalSquared = 0;
-        real globalVolume = 0;
-        MPI_Allreduce(&localSquared, &globalSquared, 1,
-                      DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
-        MPI_Allreduce(&localVolume, &globalVolume, 1,
-                      DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
-        _lastRhsTiming.residualNormSeconds = MPI_Wtime() - phaseStart;
+            real globalTotals[2]{};
+            MPI_Allreduce(localTotals, globalTotals, 2,
+                          DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+            residualNorm = std::sqrt(
+                globalTotals[0] /
+                std::max(globalTotals[1], verySmallReal));
+            _lastRhsTiming.residualNormSeconds = MPI_Wtime() - phaseStart;
+        }
         _lastRhsTiming.totalSeconds = MPI_Wtime() - totalStart;
-        return std::sqrt(globalSquared / std::max(globalVolume, verySmallReal));
+        return residualNorm;
     }
 
     template class SpatialOperator<2>;

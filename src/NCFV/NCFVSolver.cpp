@@ -51,6 +51,35 @@ namespace DNDS::NCFV
         DNDS_MAKE_SSP(_reader, _mesh, 0);
 
         Geom::AutoAppendName2ID nameMapper;
+        const bool periodicRequested =
+            _configuration.mesh.periodicLengths[0] > 0;
+        const std::array<Geom::t_index, 6> periodicPairIDs{
+            Geom::BC_ID_PERIODIC_1, Geom::BC_ID_PERIODIC_1_DONOR,
+            Geom::BC_ID_PERIODIC_2, Geom::BC_ID_PERIODIC_2_DONOR,
+            Geom::BC_ID_PERIODIC_3, Geom::BC_ID_PERIODIC_3_DONOR};
+        if (periodicRequested)
+        {
+            _mesh->periodicInfo.translation[1].map() =
+                Vector3{_configuration.mesh.periodicLengths[0], 0, 0};
+            _mesh->periodicInfo.translation[2].map() =
+                Vector3{0, _configuration.mesh.periodicLengths[1], 0};
+            _mesh->periodicInfo.translation[3].map() =
+                Vector3{0, 0, _configuration.mesh.periodicLengths[2]};
+
+            std::vector<std::string> pairNames =
+                _configuration.mesh.periodicBoundaryPairs;
+            if (pairNames.empty())
+            {
+                pairNames.reserve(6);
+                for (const auto &zone : _configuration.physics.boundaryZones)
+                    pairNames.push_back(zone.name);
+            }
+            DNDS_check_throw_info(
+                pairNames.size() == 6,
+                "NCFV requires three ordered periodic boundary pairs");
+            for (std::size_t i = 0; i < pairNames.size(); i++)
+                nameMapper.n2id_map[pairNames[i]] = periodicPairIDs[i];
+        }
         Geom::t_FBCName_2_ID resolveBoundaryName =
             [&nameMapper](const std::string &name)
         {
@@ -65,7 +94,8 @@ namespace DNDS::NCFV
         _reader->BuildCell2Cell();
         _reader->MeshPartitionCell2Cell(_configuration.mesh.partitionOptions);
         _reader->PartitionReorderToMeshCell2Cell();
-        Geom::BuildGhostPrimary(*_mesh, _configuration.mesh.ghostLayers);
+        constexpr int geometryCellLayers = 1;
+        Geom::BuildGhostPrimary(*_mesh, geometryCellLayers);
 
         Geom::PrepareMeshOptions options;
         options.reorderCells = _configuration.mesh.reorderCells;
@@ -77,9 +107,40 @@ namespace DNDS::NCFV
         options.buildSerialOut = false;
         Geom::PrepareMesh(*_mesh, *_reader, options);
 
+        if (periodicRequested)
+        {
+            std::array<index, 6> localPairCounts{};
+            std::array<index, 6> globalPairCounts{};
+            for (index iBoundary = 0; iBoundary < _mesh->NumBnd(); iBoundary++)
+            {
+                const Geom::t_index zone =
+                    _mesh->bndElemInfo(iBoundary, 0).zone;
+                const auto found = std::find(
+                    periodicPairIDs.begin(), periodicPairIDs.end(), zone);
+                if (found != periodicPairIDs.end())
+                    localPairCounts[static_cast<std::size_t>(
+                        std::distance(periodicPairIDs.begin(), found))]++;
+            }
+            MPI_Allreduce(localPairCounts.data(), globalPairCounts.data(), 6,
+                          DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
+            for (std::size_t i = 0; i < globalPairCounts.size(); i++)
+                DNDS_check_throw_info(
+                    globalPairCounts[i] > 0,
+                    fmt::format(
+                        "NCFV exact periodic topology did not find boundary side {} (periodic ID {})",
+                        i, periodicPairIDs[i]));
+        }
+
         DNDS_check_throw_info(
-            !_mesh->isPeriodic,
-            "NCFV rejects periodic meshes until edge-frame transforms are implemented");
+            _mesh->isPeriodic == periodicRequested,
+            periodicRequested
+                ? "NCFV did not find all configured periodic boundary pairs in the CGNS mesh"
+                : "NCFV mesh contains periodic boundary IDs but periodicLengths is disabled");
+        if (_mpi.rank == 0)
+            log() << "NCFV mesh preprocessing: periodic topology="
+                  << _mesh->isPeriodic
+                  << ", point-complete cell halo layers="
+                  << geometryCellLayers << std::endl;
     }
 
     template <int dimension>
@@ -150,12 +211,19 @@ namespace DNDS::NCFV
     template <int dimension>
     void Solver<dimension>::AllocateFields()
     {
-        CFV::BuildUDofOnMesh(
-            _state, "NCFV.state", _mpi, _mesh, dimension + 2,
-            true, true, Geom::MeshLoc::Node);
-        CFV::BuildUDofOnMesh(
-            _stageState, "NCFV.stageState", _mpi, _mesh, dimension + 2,
-            true, true, Geom::MeshLoc::Node);
+        const auto allocateCommunicated = [&](NodeStatePair &field,
+                                               const std::string &name)
+        {
+            field.InitPair(name, _mpi);
+            field.father->Resize(_mesh->NumNode(), dimension + 2, 1);
+            field.son->Resize(
+                _nodeHalo->NumNodeGhost(), dimension + 2, 1);
+            field.BorrowSetup(_nodeHalo->Layout());
+            field.trans.initPersistentPull();
+            field.trans.initPersistentPush();
+        };
+        allocateCommunicated(_state, "NCFV.state");
+        allocateCommunicated(_stageState, "NCFV.stageState");
         CFV::BuildUDofOnMesh(
             _baseState, "NCFV.baseState", _mpi, _mesh, dimension + 2,
             false, false, Geom::MeshLoc::Node);
@@ -339,8 +407,6 @@ namespace DNDS::NCFV
         ReadInitialNodeFile();
         if (_configuration.initialField.isentropicVortex)
             InitializeVortex();
-        if (_periodic)
-            _periodic->Average(_state);
         _currentIteration = 0;
         _simulationTime = 0;
     }
@@ -361,10 +427,13 @@ namespace DNDS::NCFV
             if (_configuration.algorithm.mode == IntegrationMode::EfficientDifferential)
             {
                 _state[iNode] = IsentropicVortex<dimension>(_configuration, _mesh->coords[iNode], 0).first;
-                for (const auto &weight : volume.pointRecoveryWeights)
+                for (const auto &entry : volume.pointRecoveryStencil)
+                {
+                    const Vector3 coordinate = _nodeHalo->Coordinate(entry.node);
                     _state[iNode] += IsentropicVortex<dimension>(
-                        _configuration, _mesh->coords[weight.node], 0).second.transpose() *
-                        weight.value.head(dimension);
+                        _configuration, coordinate, 0).second.transpose() *
+                        entry.gradientWeight.head(dimension);
+                }
             }
             else
             {
@@ -544,7 +613,27 @@ namespace DNDS::NCFV
     template <int dimension>
     void Solver<dimension>::WriteOutput(const std::string &baseName)
     {
-        SynchronizeState(_state);
+        NodeStatePair meshState;
+        NodeStatePair meshTimeStep;
+        const NodeStatePair *stateForOutput = &_state;
+        const NodeStatePair *timeStepForOutput =
+            &_spatial->LocalTimeSteps();
+        meshState.InitPair("NCFV.outputMeshState", _mpi);
+        meshState.father->Resize(_mesh->NumNode(), dimension + 2, 1);
+        meshState.son->Resize(_mesh->NumNodeGhost(), dimension + 2, 1);
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            meshState[iNode] = _state[iNode];
+        meshState.BorrowAndPull(_mesh->coords);
+
+        meshTimeStep.InitPair("NCFV.outputMeshTimeStep", _mpi);
+        meshTimeStep.father->Resize(_mesh->NumNode(), 1, 1);
+        meshTimeStep.son->Resize(_mesh->NumNodeGhost(), 1, 1);
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            meshTimeStep[iNode](0, 0) =
+                _spatial->LocalTimeStep(iNode);
+        meshTimeStep.BorrowAndPull(_mesh->coords);
+        stateForOutput = &meshState;
+        timeStepForOutput = &meshTimeStep;
         _reader->SetASCIIPrecision(_configuration.io.asciiPrecision);
         _reader->SetVTKFloatEncodeMode(_configuration.io.vtkFloatEncoding);
 
@@ -553,7 +642,7 @@ namespace DNDS::NCFV
             "TotalEnergy", "LocalTimeStep"};
         const auto scalarValue = [&](int field, index iNode)
         {
-            const State conservative = _state[iNode];
+            const State conservative = (*stateForOutput)[iNode];
             const State primitive = ConservativeToPrimitive(conservative);
             const auto velocity = primitive.template segment<dimension>(1);
             const real pressure = primitive(dimension + 1);
@@ -575,7 +664,7 @@ namespace DNDS::NCFV
             case 4:
                 return conservative(dimension + 1);
             case 5:
-                return _spatial->LocalTimeStep(iNode);
+                return (*timeStepForOutput)[iNode](0, 0);
             default:
                 return 0.0;
             }
@@ -595,7 +684,7 @@ namespace DNDS::NCFV
             {
                 if (component >= dimension)
                     return 0.0;
-                const State conservative = _state[iNode];
+                const State conservative = (*stateForOutput)[iNode];
                 return conservative(1 + component) / conservative(0);
             },
             _simulationTime, 1);
@@ -635,18 +724,34 @@ namespace DNDS::NCFV
         _topology->Build();
         _geometry = std::make_unique<DualGeometry>(
             _mpi, _mesh, *_topology, _configuration.algorithm,
-            _configuration.reconstruction.enableLimiter);
+            _configuration.reconstruction.enableLimiter,
+            &_configuration.mesh);
         _geometry->Build();
-        if (_configuration.mesh.periodicLengths[0] > 0)
-        {
-            _periodic = std::make_unique<PeriodicNodes>(_mpi, _mesh, *_geometry, _configuration.mesh);
-            _periodic->Build(*_topology, _configuration.mesh.periodicTolerance);
-        }
+        _nodeHalo = std::make_unique<NodeHalo>(
+            _mpi, _mesh, _configuration.mesh);
+        _nodeHalo->BuildPreliminary(
+            *_geometry,
+            _configuration.reconstruction.maximumStencilRings,
+            _geometry->CollectNodeDependencies());
         _reconstruction = std::make_unique<Reconstruction>(
             _mpi, _mesh, *_topology, *_geometry,
             _configuration.algorithm.mode,
-            _configuration.reconstruction, _periodic.get());
+            _configuration.reconstruction, *_nodeHalo);
         _reconstruction->Build();
+        std::vector<index> runtimeDependencies =
+            _geometry->CollectNodeDependencies();
+        const std::vector<index> reconstructionDependencies =
+            _reconstruction->CollectNodeDependencies();
+        runtimeDependencies.insert(
+            runtimeDependencies.end(),
+            reconstructionDependencies.begin(),
+            reconstructionDependencies.end());
+        _nodeHalo->Finalize(
+            *_geometry, std::move(runtimeDependencies));
+        _geometry->RemapNodeIndices(
+            [this](index meshLocal)
+            { return _nodeHalo->MeshLocalToLocal(meshLocal); });
+        _reconstruction->RemapNodeIndices();
         _boundaries = std::make_unique<BoundaryRegistry>(
             _mpi, dimension, _configuration.physics);
         _boundaries->Build(
@@ -657,7 +762,7 @@ namespace DNDS::NCFV
             _mpi, _mesh, *_topology, *_geometry, *_reconstruction,
             *_boundaries, _configuration.algorithm.mode,
             _configuration.reconstruction,
-            _configuration.physics, _configuration.time, _periodic.get());
+            _configuration.physics, _configuration.time, *_nodeHalo);
         _spatial->Initialize();
 
         if (_configuration.io.restartInput.empty())
@@ -712,7 +817,7 @@ namespace DNDS::NCFV
             _lastStepTiming.baseStateCopySeconds = MPI_Wtime() - baseCopyStart;
 
             _spatial->ResetRiemannSolverCallCount();
-            residual = _spatial->EvaluateRHS(_state, _rhs);
+            _spatial->EvaluateRHS(_state, _rhs, true, false);
             _lastStepTiming.rhs += _spatial->LastRhsTiming();
             const real physicalStep = _spatial->LastMinimumTimeStep();
             std::vector<real> stepSize(static_cast<std::size_t>(_mesh->NumNode()));
@@ -729,7 +834,7 @@ namespace DNDS::NCFV
             CheckOwnedState(_stageState, "SSPRK3 stage 1");
             _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
 
-            residual = _spatial->EvaluateRHS(_stageState, _rhs);
+            _spatial->EvaluateRHS(_stageState, _rhs, false, false);
             _lastStepTiming.rhs += _spatial->LastRhsTiming();
             stageUpdateStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
@@ -741,7 +846,7 @@ namespace DNDS::NCFV
             CheckOwnedState(_stageState, "SSPRK3 stage 2");
             _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
 
-            residual = _spatial->EvaluateRHS(_stageState, _rhs);
+            residual = _spatial->EvaluateRHS(_stageState, _rhs, false, true);
             _lastStepTiming.rhs += _spatial->LastRhsTiming();
             stageUpdateStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)

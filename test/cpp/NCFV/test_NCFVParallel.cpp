@@ -56,7 +56,6 @@ namespace
         configuration.dimension = 3;
         configuration.mesh.meshFile =
             (ProjectRoot() / "data/mesh/ACMVariable_verify3D.cgns").string();
-        configuration.mesh.ghostLayers = 2;
         configuration.algorithm.mode = mode;
         configuration.algorithm.quadratureOrder = 4;
         configuration.algorithm.retainMicroGeometry = true;
@@ -75,6 +74,37 @@ namespace
         configuration.time.useCFLTimeStep = true;
         configuration.time.useLocalTimeStep = true;
         configuration.time.cfl = 0.5;
+        configuration.Validate();
+        return configuration;
+    }
+
+    Configuration MakeExactPeriodicConfiguration(IntegrationMode mode)
+    {
+        Configuration configuration = MakeConfiguration(mode);
+        configuration.mesh.meshFile =
+            (ProjectRoot() / "cases/NCFV/generated_periodic_meshes/periodic_hex_iv10.cgns").string();
+        configuration.mesh.periodicLengths = {10, 10, 4};
+        configuration.mesh.periodicBoundaryPairs = {
+            "bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"};
+        configuration.algorithm.retainMicroGeometry = false;
+        configuration.reconstruction.enableLimiter = false;
+        configuration.reconstruction.maximumStencilRings = 4;
+        configuration.physics.initialPrimitive = {1.0, 0.2, -0.1, 0.05, 1.0};
+        configuration.physics.farFieldPrimitive = configuration.physics.initialPrimitive;
+        configuration.physics.viscous.enabled = false;
+        configuration.physics.boundaryZones.clear();
+        for (const std::string &name : configuration.mesh.periodicBoundaryPairs)
+        {
+            BoundaryZoneSettings periodic;
+            periodic.name = name;
+            periodic.mode = BoundaryMode::Periodic;
+            configuration.physics.boundaryZones.push_back(periodic);
+        }
+        configuration.time.iterations = 1;
+        configuration.time.useCFLTimeStep = true;
+        configuration.time.useLocalTimeStep = false;
+        configuration.time.cfl = 0.1;
+        configuration.time.maximumTimeStep = 1e-3;
         configuration.Validate();
         return configuration;
     }
@@ -136,23 +166,23 @@ namespace
         for (const auto &surface : solver.Geometry().EdgeSurfaces())
         {
             DNDS::real sum = 0;
-            for (const auto &weight : surface.gradientIntegralWeights)
-                sum += weight.value;
+            for (const auto &entry : surface.efficientStencil)
+                sum += entry.gradientWeight;
             localMaximumError = std::max(
                 localMaximumError,
                 std::abs(sum - surface.measure) / surface.measure);
-            localWeightSets += !surface.gradientIntegralWeights.empty();
+            localWeightSets += !surface.efficientStencil.empty();
         }
         for (const auto &volume : solver.Geometry().NodeVolumes())
             for (const auto &piece : volume.boundaryPieces)
             {
                 DNDS::real sum = 0;
-                for (const auto &weight : piece.gradientIntegralWeights)
-                    sum += weight.value;
+                for (const auto &entry : piece.efficientStencil)
+                    sum += entry.integrationWeight;
                 localMaximumError = std::max(
                     localMaximumError,
                     std::abs(sum - piece.measure) / piece.measure);
-                localWeightSets += !piece.gradientIntegralWeights.empty();
+                localWeightSets += !piece.efficientStencil.empty();
             }
 
         DNDS::real globalMaximumError = 0;
@@ -165,10 +195,89 @@ namespace
         CHECK(globalMaximumError < 2e-14);
     }
 
+    void VerifyEfficientStencilLayout(const Solver<3> &solver)
+    {
+        const auto &mesh = solver.Mesh();
+        const NodeHalo &nodeHalo = solver.NodeCommunication();
+        const DNDS::index processNodeCount = nodeHalo.NumNodeProc();
+        DNDS::real localMaximumMomentError = 0;
+        DNDS::index localInvalidOrdering = 0;
+        DNDS::index localGhostReferences = 0;
+        DNDS::index localStencilEntries = 0;
+
+        const auto auditNode = [&](DNDS::index node, DNDS::index &previous)
+        {
+            localInvalidOrdering +=
+                node < 0 || node >= processNodeCount ||
+                (previous != UnInitIndex && node <= previous);
+            localGhostReferences += node >= mesh->NumNode();
+            localStencilEntries++;
+            previous = node;
+        };
+
+        for (const auto &volume : solver.Geometry().NodeVolumes())
+        {
+            DNDS::index previous = UnInitIndex;
+            for (const auto &entry : volume.pointRecoveryStencil)
+                auditNode(entry.node, previous);
+            for (const auto &piece : volume.boundaryPieces)
+            {
+                previous = UnInitIndex;
+                DNDS::real valueSum = 0;
+                DNDS::real gradientSum = 0;
+                for (const EfficientBoundaryNode &entry : piece.efficientStencil)
+                {
+                    auditNode(entry.node, previous);
+                    valueSum += entry.integrationWeight;
+                    gradientSum += entry.integrationWeight;
+                }
+                localMaximumMomentError = std::max(
+                    localMaximumMomentError,
+                    std::abs(valueSum - piece.measure) / piece.measure);
+                localMaximumMomentError = std::max(
+                    localMaximumMomentError,
+                    std::abs(gradientSum - piece.measure) / piece.measure);
+            }
+        }
+
+        for (const auto &surface : solver.Geometry().EdgeSurfaces())
+        {
+            DNDS::index previous = UnInitIndex;
+            for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+            {
+                auditNode(entry.node, previous);
+            }
+            for (DNDS::index anchor : surface.nodes)
+                localInvalidOrdering +=
+                    anchor < 0 || anchor >= processNodeCount;
+            localInvalidOrdering +=
+                !(surface.measure > 0) || !surface.vectorMeasure.allFinite();
+        }
+
+        DNDS::real globalMaximumMomentError = 0;
+        DNDS::index localCounts[3]{
+            localInvalidOrdering, localGhostReferences, localStencilEntries};
+        DNDS::index globalCounts[3]{};
+        MPI_Allreduce(&localMaximumMomentError, &globalMaximumMomentError, 1,
+                      DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        MPI_Allreduce(localCounts, globalCounts, 3,
+                      DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalMaximumMomentError < 2e-14);
+        CHECK(globalCounts[0] == 0);
+        CHECK(globalCounts[2] > 0);
+        if (gMPI.size > 1)
+            CHECK(globalCounts[1] > 0);
+    }
+
     void VerifyEfficientPolynomialWeights(const Solver<3> &solver)
     {
         const auto &mesh = solver.Mesh();
         const auto &geometry = solver.Geometry();
+        const NodeHalo &nodeHalo = solver.NodeCommunication();
+        const auto coordinate = [&](DNDS::index node) -> Vector3
+        {
+            return nodeHalo.Coordinate(node);
+        };
 
         QuadraticField state;
         state.constant = 0.73;
@@ -199,9 +308,9 @@ namespace
             const auto &volume = geometry.NodeVolume(iNode);
             const DNDS::real exactIntegral = state.Integral(volume.moments);
             DNDS::real recovered = exactIntegral / volume.moments.measure;
-            for (const auto &weight : volume.pointRecoveryWeights)
-                recovered -= weight.value.dot(
-                    state.Gradient(mesh->coords[weight.node]));
+            for (const auto &entry : volume.pointRecoveryStencil)
+                recovered -= entry.gradientWeight.dot(
+                    state.Gradient(coordinate(entry.node)));
             localPointError = std::max(
                 localPointError,
                 std::abs(recovered - state.Value(mesh->coords[iNode])) /
@@ -229,51 +338,49 @@ namespace
                                          fluxes[static_cast<std::size_t>(f)].Integral(moments);
             }
 
-            const auto stateIntegral = [&](
-                                           DNDS::index anchor,
-                                           const std::vector<SparseVectorWeight> &weights)
+            const auto stateIntegral = [&](int side)
             {
-                DNDS::real integral =
-                    surface.measure * state.Value(mesh->coords[anchor]);
-                for (const auto &weight : weights)
-                    integral += weight.value.dot(
-                        state.Gradient(mesh->coords[weight.node]));
+                const std::size_t sideIndex = static_cast<std::size_t>(side);
+                const DNDS::index anchor = surface.nodes[sideIndex];
+                DNDS::real integral = surface.measure *
+                                      state.Value(coordinate(anchor));
+                for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                {
+                    integral += entry.stateGradientWeights[sideIndex].dot(
+                        state.Gradient(coordinate(entry.node)));
+                }
                 return integral;
             };
-            const auto fluxIntegral = [&](
-                                          DNDS::index anchor,
-                                          const std::vector<SparseMatrixWeight> &weights)
+            const auto fluxIntegral = [&](int side)
             {
+                const std::size_t sideIndex = static_cast<std::size_t>(side);
+                const DNDS::index anchor = surface.nodes[sideIndex];
                 Vector3 anchorFlux;
                 for (int f = 0; f < 3; f++)
                     anchorFlux(f) = fluxes[static_cast<std::size_t>(f)].Value(
-                        mesh->coords[anchor]);
-                DNDS::real integral = anchorFlux.dot(surface.vectorMeasure);
-                for (const auto &weight : weights)
+                        coordinate(anchor));
+                DNDS::real integral = anchorFlux.dot(
+                    surface.vectorMeasure);
+                for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                {
                     for (int d = 0; d < 3; d++)
                         for (int f = 0; f < 3; f++)
-                            integral += weight.value(d, f) *
+                            integral += entry.fluxGradientWeights[sideIndex](d, f) *
                                         fluxes[static_cast<std::size_t>(f)]
-                                            .Gradient(mesh->coords[weight.node])(d);
+                                            .Gradient(coordinate(entry.node))(d);
+                }
                 return integral;
             };
 
             for (int side = 0; side < 2; side++)
             {
-                const DNDS::index anchor = surface.nodes[static_cast<std::size_t>(side)];
-                const auto &stateWeights = side == 0
-                                               ? surface.leftStateWeights
-                                               : surface.rightStateWeights;
-                const auto &fluxWeights = side == 0
-                                              ? surface.leftFluxWeights
-                                              : surface.rightFluxWeights;
                 localStateMeanError = std::max(
                     localStateMeanError,
-                    std::abs(stateIntegral(anchor, stateWeights) - exactStateIntegral) /
+                    std::abs(stateIntegral(side) - exactStateIntegral) /
                         std::max<DNDS::real>(1.0, std::abs(exactStateIntegral)));
                 localFluxError = std::max(
                     localFluxError,
-                    std::abs(fluxIntegral(anchor, fluxWeights) - exactFluxIntegral) /
+                    std::abs(fluxIntegral(side) - exactFluxIntegral) /
                         std::max<DNDS::real>(1.0, std::abs(exactFluxIntegral)));
             }
             localSurfaceCount++;
@@ -298,22 +405,35 @@ namespace
         const auto &mesh = solver.Mesh();
         const auto &topology = solver.EdgeTopology();
         const auto &geometry = solver.Geometry();
+        const NodeHalo &nodeHalo = solver.NodeCommunication();
+        const DNDS::index ghostCount = nodeHalo.NumNodeGhost();
+        const auto coordinate = [&](DNDS::index node) -> Vector3
+        {
+            return nodeHalo.Coordinate(node);
+        };
 
         NodeStatePair means, points;
-        CFV::BuildUDofOnMesh(
-            means, "NCFV.test.limiterMeans", gMPI, mesh,
-            1, true, true, Geom::MeshLoc::Node);
-        CFV::BuildUDofOnMesh(
-            points, "NCFV.test.limiterPoints", gMPI, mesh,
-            1, true, true, Geom::MeshLoc::Node);
+        const auto allocateState = [&](NodeStatePair &field,
+                                       const std::string &name)
+        {
+            field.InitPair(name, gMPI);
+            field.father->Resize(mesh->NumNode(), 1, 1);
+            field.son->Resize(ghostCount, 1, 1);
+            field.BorrowSetup(nodeHalo.Layout());
+            field.trans.initPersistentPull();
+            for (DNDS::index iNode = 0; iNode < field.Size(); iNode++)
+                field[iNode].setZero();
+        };
+        allocateState(means, "NCFV.test.limiterMeans");
+        allocateState(points, "NCFV.test.limiterPoints");
         NodeMatrixPair gradients, coefficients;
         const auto allocate = [&](NodeMatrixPair &field,
                                   const std::string &name, int rows)
         {
             field.InitPair(name, gMPI);
             field.father->Resize(mesh->NumNode(), rows, 1);
-            field.son->Resize(mesh->NumNodeGhost(), rows, 1);
-            field.BorrowSetup(mesh->coords);
+            field.son->Resize(ghostCount, rows, 1);
+            field.BorrowSetup(nodeHalo.Layout());
             field.trans.initPersistentPull();
             for (DNDS::index iNode = 0; iNode < field.Size(); iNode++)
                 field[iNode].setZero();
@@ -364,13 +484,15 @@ namespace
                 const auto &surface = geometry.EdgeSurface(incidence.edge);
                 const bool isLeft = surface.nodes[0] == iNode;
                 const DNDS::index neighbor = surface.nodes[isLeft ? 1 : 0];
-                const auto &weights = isLeft
-                                          ? surface.leftStateWeights
-                                          : surface.rightStateWeights;
-                DNDS::real candidate = points[iNode](0);
-                for (const auto &weight : weights)
-                    candidate += weight.value.dot(gradients[weight.node].col(0)) /
-                                 surface.measure;
+                const std::size_t side = isLeft ? 0 : 1;
+                DNDS::real candidate =
+                    surface.measure * points[iNode](0);
+                for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                {
+                    candidate += entry.stateGradientWeights[side].dot(
+                        gradients[entry.node].col(0));
+                }
+                candidate /= surface.measure;
                 const DNDS::real increment = candidate - points[iNode](0);
                 const DNDS::real minimum =
                     std::min(points[iNode](0), points[neighbor](0));
@@ -389,7 +511,7 @@ namespace
                     std::max({minimum - limited, limited - maximum, 0.0}));
 
                 const Vector3 midpoint =
-                    0.5 * (mesh->coords[iNode] + mesh->coords[neighbor]);
+                    0.5 * (mesh->coords[iNode] + coordinate(neighbor));
                 const DNDS::real legacyCandidate =
                     points[iNode](0) + gradients[iNode].col(0).dot(
                                            midpoint - mesh->coords[iNode]);
@@ -469,6 +591,7 @@ namespace
             CHECK(globalCounts[0] == 0);
             CHECK(globalCounts[1] == 0);
             CHECK(globalCounts[2] == 0);
+            VerifyEfficientStencilLayout(solver);
             VerifyEfficientGradientWeights(solver);
             VerifyEfficientPolynomialWeights(solver);
             VerifyEfficientLimiterUsesMacroSurfaceMeans(solver);
@@ -510,45 +633,65 @@ TEST_CASE("NCFV 3-D efficient and traditional modes are MPI invariant")
     VerifyMode(IntegrationMode::TraditionalQuadrature);
 }
 
-TEST_CASE("NCFV periodic quotient preserves a uniform flow and conserves transported density")
+TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topology")
 {
-    for (IntegrationMode mode : {IntegrationMode::EfficientDifferential, IntegrationMode::TraditionalQuadrature})
+    for (IntegrationMode mode : {IntegrationMode::EfficientDifferential,
+                                 IntegrationMode::TraditionalQuadrature})
     {
-        Configuration configuration = MakeConfiguration(mode);
-        configuration.mesh.periodicLengths = {1, 1, 1};
-        configuration.reconstruction.enableLimiter = false;
-        configuration.physics.viscous.enabled = false;
-        configuration.physics.boundaryZones.front().mode = BoundaryMode::Periodic;
-        configuration.time.useLocalTimeStep = false;
-        configuration.time.cfl = 0.1;
-        configuration.time.iterations = 2;
-        Solver<3> uniform(gMPI, configuration);
-        uniform.Initialize();
-        CHECK(uniform.EvaluateResidual() < 2e-12);
-        // This fixture has four uniform cells per direction. Periodic face,
-        // edge and corner pieces must all recover the complete dual extent.
-        for (DNDS::index i = 0; i < uniform.Mesh()->NumNodeProc(); i++)
-            CHECK((uniform.ReconstructionData().ReferenceLengths(i) -
-                   Vector3::Constant(0.125))
-                      .norm() < 2e-13);
+        Configuration configuration = MakeExactPeriodicConfiguration(mode);
+        Solver<3> solver(gMPI, configuration);
+        solver.Initialize();
 
-        configuration.initialField.expressions = {{{"inRegion := 1;", "UPrim[0] := 1 + 0.01 * sin(2*pi*x[0]);", "0;"}}};
+        CHECK(solver.NodeCommunication().IsFinalized());
+        CHECK(solver.Mesh()->isPeriodic);
+        CHECK(solver.Mesh()->NumNodeGlobal() == 1000);
+        CHECK(solver.Mesh()->NumCellGlobal() == 1000);
+        CHECK(solver.EdgeTopology().NumEdgeGlobal() == 3000);
+        CHECK(solver.Geometry().MaximumClosureError() < 2e-13);
+
+        DNDS::index localHaloCounts[2]{
+            solver.NodeCommunication().PreliminaryGhostCount(),
+            solver.NodeCommunication().NumNodeGhost()};
+        DNDS::index globalHaloCounts[2]{};
+        MPI_Allreduce(localHaloCounts, globalHaloCounts, 2,
+                      DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalHaloCounts[1] <= globalHaloCounts[0]);
+        if (gMPI.size > 1)
+            CHECK(globalHaloCounts[1] > 0);
+
+        CHECK(solver.EvaluateResidual() < 2e-11);
+        Eigen::Vector<double, 5> initial = solver.StateField()[0];
+        solver.Run();
+        DNDS::real localStateChange = 0;
+        for (DNDS::index iNode = 0; iNode < solver.Mesh()->NumNode(); iNode++)
+            localStateChange = std::max(
+                localStateChange,
+                (solver.StateField()[iNode] - initial).norm());
+        DNDS::real globalStateChange = 0;
+        MPI_Allreduce(&localStateChange, &globalStateChange, 1,
+                      DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        CHECK(globalStateChange < 2e-12);
+
+        configuration.initialField.expressions = {{{
+            "inRegion := 1;",
+            "UPrim[0] := 1 + 0.01 * sin(2*pi*x[0]/10);",
+            "0;"}}};
         Solver<3> transported(gMPI, configuration);
         transported.Initialize();
         const auto totals = [&]()
         {
             Eigen::Vector<double, 5> local = Eigen::Vector<double, 5>::Zero();
-            for (DNDS::index i = 0; i < transported.Mesh()->NumNode(); i++)
-                local += transported.Geometry().NodeVolume(i).moments.measure * transported.StateField()[i];
+            for (DNDS::index iNode = 0; iNode < transported.Mesh()->NumNode(); iNode++)
+                local += transported.Geometry().NodeVolume(iNode).moments.measure *
+                         transported.StateField()[iNode];
             Eigen::Vector<double, 5> global;
-            MPI_Allreduce(local.data(), global.data(), 5, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+            MPI_Allreduce(local.data(), global.data(), 5,
+                          DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
             return global;
         };
-        const auto initial = totals();
+        const auto initialTotals = totals();
         transported.Run();
-        CHECK((totals() - initial).norm() < 2e-12);
-        CHECK(transported.CurrentIteration() == 2);
-        CHECK(transported.SimulationTime() > 0);
+        CHECK((totals() - initialTotals).norm() < 5e-11);
     }
 }
 
@@ -586,21 +729,53 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
         configuration.algorithm.retainMicroGeometry = false;
         DualGeometry geometry(gMPI, mesh, topology, configuration.algorithm);
         geometry.Build();
-        Reconstruction reconstruction(gMPI, mesh, topology, geometry, mode, configuration.reconstruction);
+        const std::vector<DNDS::index> integrationDependencies =
+            geometry.CollectNodeDependencies();
+        NodeHalo nodeHalo(gMPI, mesh, configuration.mesh);
+        nodeHalo.BuildPreliminary(
+            geometry,
+            configuration.reconstruction.maximumStencilRings,
+            integrationDependencies);
+        Reconstruction reconstruction(
+            gMPI, mesh, topology, geometry, mode,
+            configuration.reconstruction, nodeHalo);
         reconstruction.Build();
+        std::vector<DNDS::index> runtimeDependencies = integrationDependencies;
+        const std::vector<DNDS::index> reconstructionDependencies =
+            reconstruction.CollectNodeDependencies();
+        runtimeDependencies.insert(
+            runtimeDependencies.end(),
+            reconstructionDependencies.begin(),
+            reconstructionDependencies.end());
+        nodeHalo.Finalize(geometry, std::move(runtimeDependencies));
+        geometry.RemapNodeIndices(
+            [&](DNDS::index meshLocal)
+            { return nodeHalo.MeshLocalToLocal(meshLocal); });
+        reconstruction.RemapNodeIndices();
 
         NodeStatePair means, points;
-        CFV::BuildUDofOnMesh(means, "NCFV.test.means", gMPI, mesh, 1, true, true, Geom::MeshLoc::Node);
-        CFV::BuildUDofOnMesh(points, "NCFV.test.points", gMPI, mesh, 1, true, true, Geom::MeshLoc::Node);
+        const auto allocateState = [&](NodeStatePair &field,
+                                       const std::string &name)
+        {
+            field.InitPair(name, gMPI);
+            field.father->Resize(mesh->NumNode(), 1, 1);
+            field.son->Resize(nodeHalo.NumNodeGhost(), 1, 1);
+            field.BorrowSetup(nodeHalo.Layout());
+            field.trans.initPersistentPull();
+            for (DNDS::index i = 0; i < field.Size(); i++)
+                field[i].setZero();
+        };
+        allocateState(means, "NCFV.test.means");
+        allocateState(points, "NCFV.test.points");
         NodeMatrixPair gradients, coefficients;
         const auto allocate = [&](NodeMatrixPair &field, const std::string &name, int rows)
         {
             field.InitPair(name, gMPI);
             field.father->Resize(mesh->NumNode(), rows, 1);
-            field.son->Resize(mesh->NumNodeGhost(), rows, 1);
-            for (DNDS::index i = 0; i < mesh->NumNodeProc(); i++)
+            field.son->Resize(nodeHalo.NumNodeGhost(), rows, 1);
+            for (DNDS::index i = 0; i < nodeHalo.NumNodeProc(); i++)
                 field[i].setZero();
-            field.BorrowSetup(mesh->coords);
+            field.BorrowSetup(nodeHalo.Layout());
             field.trans.initPersistentPull();
         };
         allocate(gradients, "NCFV.test.gradients", 3);
@@ -647,37 +822,24 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
                 CHECK((gradients[i].col(0) - gradient(mesh->coords[i])).norm() < 2e-9);
         }
         // Both owner and ghost evaluations use the owner's directional scales.
-        for (DNDS::index i = 0; i < mesh->NumNodeProc(); i++)
+        for (DNDS::index i = 0; i < nodeHalo.NumNodeProc(); i++)
         {
             Vector3 expected = stretch / 8;
+            const Vector3 coordinate = nodeHalo.Coordinate(i);
             for (int d = 0; d < 3; d++)
-                if (std::abs(mesh->coords[i](d)) < 1e-12 ||
-                    std::abs(mesh->coords[i](d) - stretch(d)) < 1e-12)
+                if (std::abs(coordinate(d)) < 1e-12 ||
+                    std::abs(coordinate(d) - stretch(d)) < 1e-12)
                     expected(d) *= 0.5;
-            CHECK((geometry.ReferenceLengths(i) - expected).norm() < 2e-13);
+            CHECK((nodeHalo.ReferenceLengths(i) - expected).norm() < 2e-13);
             if (mode == IntegrationMode::TraditionalQuadrature)
             {
                 const Vector3 offset = stretch.cwiseProduct(Vector3{0.01, -0.02, 0.03});
                 const Vector3 computed = Reconstruction::EvaluateBasisGradient(
                                              offset, reconstruction.ReferenceLengths(i), 3) *
                                          coefficients[i];
-                CHECK((computed - gradient(mesh->coords[i] + offset)).norm() < 2e-9);
+                CHECK((computed - gradient(coordinate + offset)).norm() < 2e-9);
             }
         }
-
-        MeshSettings periodicSettings = configuration.mesh;
-        periodicSettings.periodicLengths = {stretch(0), stretch(1), stretch(2)};
-        PeriodicNodes periodic(gMPI, mesh, geometry, periodicSettings);
-        periodic.Build(topology, periodicSettings.periodicTolerance);
-        Reconstruction periodicReconstruction(gMPI, mesh, topology, geometry, mode,
-                                              configuration.reconstruction, &periodic);
-        periodicReconstruction.Build();
-        for (DNDS::index i = 0; i < mesh->NumNodeProc(); i++)
-            CHECK((periodicReconstruction.ReferenceLengths(i) - stretch / 8).norm() < 2e-13);
-        // Rebuilding must not accumulate old periodic moments or bounds.
-        const DNDS::real previousVolume = periodic.Volume(0);
-        periodic.Build(topology, periodicSettings.periodicTolerance);
-        CHECK(periodic.Volume(0) == doctest::Approx(previousVolume).epsilon(2e-14));
     }
 }
 

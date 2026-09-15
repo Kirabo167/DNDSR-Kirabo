@@ -10,7 +10,7 @@
 #include "DNDS/ArrayDerived/ArrayEigenVector.hpp"
 
 #include <array>
-#include <unordered_map>
+#include <functional>
 #include <vector>
 
 namespace DNDS::NCFV
@@ -37,17 +37,46 @@ namespace DNDS::NCFV
         Vector3 value = Vector3::Zero();
     };
 
-    /** @brief Scalar affine-integration weight, normally carrying surface measure. */
-    struct SparseScalarWeight
+    /**
+     * @brief One node addressed by point-value recovery of a dual control volume.
+     *
+     * node is a process-local DNDS node index.  It may address either the
+     * owned part or the ghost part of a synchronized node field.
+     */
+    struct EfficientPointRecoveryNode
     {
         index node = UnInitIndex;
-        real value = 0;
+        Vector3 gradientWeight = Vector3::Zero();
     };
 
-    struct SparseMatrixWeight
+    /**
+     * @brief All efficient-integration weights associated with one macro-surface node.
+     *
+     * The outer EdgeControlSurface::efficientStencil is the unique, sorted
+     * support-node set.  side 0/1 denotes the left/right primal-edge endpoint.
+     * Every derivative weight below is an integral weight; division by surface
+     * measure is performed only when a mean is requested.  The zero-order
+     * entries are represented without duplication by EdgeControlSurface::nodes
+     * together with measure/vectorMeasure because they are nonzero only at the
+     * two anchor nodes and have the same geometric weight on both sides.
+     */
+    struct EfficientSurfaceNode
     {
         index node = UnInitIndex;
-        Matrix3 value = Matrix3::Zero();
+        std::array<Vector3, 2> stateGradientWeights{
+            Vector3::Zero(), Vector3::Zero()};
+        std::array<Matrix3, 2> fluxGradientWeights{
+            Matrix3::Zero(), Matrix3::Zero()};
+        real gradientWeight = 0;
+    };
+
+    /** @brief Compact support-node weights for one boundary micro-surface. */
+    struct EfficientBoundaryNode
+    {
+        index node = UnInitIndex;
+        // The affine value and affine-gradient surface rules have the same
+        // nodal coefficient on a boundary simplex.
+        real integrationWeight = 0;
     };
 
     struct RawMoments
@@ -89,6 +118,31 @@ namespace DNDS::NCFV
         real measure = 0;
     };
 
+    /** Method-specific work performed while constructing integration data. */
+    struct IntegrationInitializationTiming
+    {
+        double volumeSeconds = 0;
+        double internalSurfaceSeconds = 0;
+        double boundarySurfaceSeconds = 0;
+        double volumeNormalizationSeconds = 0;
+        index volumeCalls = 0;
+        index internalSurfaceCalls = 0;
+        index boundarySurfaceCalls = 0;
+        index volumeNormalizationCalls = 0;
+
+        [[nodiscard]] double TotalSeconds() const
+        {
+            return volumeSeconds + internalSurfaceSeconds +
+                   boundarySurfaceSeconds + volumeNormalizationSeconds;
+        }
+
+        [[nodiscard]] index TimedBlockCalls() const
+        {
+            return volumeCalls + internalSurfaceCalls +
+                   boundarySurfaceCalls + volumeNormalizationCalls;
+        }
+    };
+
     struct BoundaryPiece
     {
         Geom::t_index zone = Geom::INTERNAL_ZONE;
@@ -96,7 +150,7 @@ namespace DNDS::NCFV
         std::array<AffinePoint, 3> points{};
         Vector3 vectorMeasure = Vector3::Zero();
         real measure = 0;
-        std::vector<SparseScalarWeight> gradientIntegralWeights;
+        std::vector<EfficientBoundaryNode> efficientStencil;
         std::vector<SurfaceQuadraturePoint> quadrature;
     };
 
@@ -111,7 +165,7 @@ namespace DNDS::NCFV
         Vector3 referenceLengths = Vector3::Ones();
         // Volume scale is retained for CFL/wall models, not polynomial bases.
         real lengthScale = 0;
-        std::vector<SparseVectorWeight> pointRecoveryWeights;
+        std::vector<EfficientPointRecoveryNode> pointRecoveryStencil;
         std::vector<MicroVolume> microVolumes;
         std::vector<VolumeQuadraturePoint> volumeQuadrature;
         std::vector<BoundaryPiece> boundaryPieces;
@@ -121,14 +175,13 @@ namespace DNDS::NCFV
     {
         index edge = UnInitIndex;
         std::array<index, 2> nodes{UnInitIndex, UnInitIndex};
+        /** Endpoint coordinates in this macro-surface's minimum-image frame. */
+        std::array<Vector3, 2> nodeCoordinates{
+            Vector3::Zero(), Vector3::Zero()};
         Vector3 edgePoint = Vector3::Zero();
         Vector3 vectorMeasure = Vector3::Zero();
         real measure = 0;
-        std::vector<SparseVectorWeight> leftStateWeights;
-        std::vector<SparseVectorWeight> rightStateWeights;
-        std::vector<SparseMatrixWeight> leftFluxWeights;
-        std::vector<SparseMatrixWeight> rightFluxWeights;
-        std::vector<SparseScalarWeight> gradientIntegralWeights;
+        std::vector<EfficientSurfaceNode> efficientStencil;
         std::vector<MicroSurface> microSurfaces;
         std::vector<SurfaceQuadraturePoint> quadrature;
     };
@@ -150,6 +203,8 @@ namespace DNDS::NCFV
         const Topology &_topology;
         AlgorithmSettings _settings;
         bool _buildGhostEdgeSurfaces = false;
+        Vector3 _periodicLengths = Vector3::Zero();
+        bool _nodeIndicesRemapped = false;
 
         std::vector<Vector3> _cellPoints;
         std::vector<Vector3> _facePoints;
@@ -165,12 +220,25 @@ namespace DNDS::NCFV
         NodeReferenceLengthPair _nodeReferenceLengths;
         EdgeMetricPair _edgeMetrics;
         real _maximumClosureError = 0;
+        mutable IntegrationInitializationTiming _integrationInitializationTiming;
 
         AffinePoint MakeNodePoint(index iNode) const;
-        AffinePoint MakeAveragePoint(const std::vector<index> &nodes) const;
-        AffinePoint MakeCellPoint(index iCell) const;
-        AffinePoint MakeFacePoint(index iFace) const;
-        AffinePoint MakeEdgePoint(index node0, index node1) const;
+        AffinePoint MakeAveragePoint(
+            const std::vector<index> &nodes,
+            const Vector3 *frameAnchor = nullptr) const;
+        AffinePoint MakeCellPoint(
+            index iCell,
+            const Vector3 *frameAnchor = nullptr) const;
+        AffinePoint MakeFacePoint(
+            index iFace,
+            const Vector3 *frameAnchor = nullptr) const;
+        AffinePoint MakeEdgePoint(
+            index node0,
+            index node1,
+            const Vector3 *frameAnchor = nullptr) const;
+        [[nodiscard]] Vector3 CoordinateInFrame(
+            index iNode,
+            const Vector3 &frameAnchor) const;
 
         void BuildConstructionPoints();
         void BuildOwnedEdgeSurfaces();
@@ -199,13 +267,29 @@ namespace DNDS::NCFV
             const ssp<Geom::UnstructuredMesh> &mesh,
             const Topology &topology,
             const AlgorithmSettings &settings,
-            bool buildGhostEdgeSurfaces = false)
+            bool buildGhostEdgeSurfaces = false,
+            const MeshSettings *meshSettings = nullptr)
             : _mpi(mpi), _mesh(mesh), _topology(topology), _settings(settings),
               _buildGhostEdgeSurfaces(buildGhostEdgeSurfaces)
         {
+            if (meshSettings)
+            {
+                DNDS_check_throw_info(
+                    meshSettings->periodicLengths.size() == 3,
+                    "NCFV dual geometry requires three periodic lengths");
+                for (int d = 0; d < 3; d++)
+                    _periodicLengths(d) =
+                        meshSettings->periodicLengths[static_cast<std::size_t>(d)];
+            }
         }
 
         void Build();
+
+        /** Global node IDs referenced by all retained integration data. */
+        [[nodiscard]] std::vector<index> CollectNodeDependencies() const;
+
+        /** Convert mesh-local integration support IDs to the exact node halo once. */
+        void RemapNodeIndices(const std::function<index(index)> &meshLocalToHalo);
 
         [[nodiscard]] const std::vector<Vector3> &CellConstructionPoints() const { return _cellPoints; }
         [[nodiscard]] const std::vector<Vector3> &FaceConstructionPoints() const { return _facePoints; }
@@ -235,6 +319,10 @@ namespace DNDS::NCFV
         [[nodiscard]] const EdgeMetricPair &EdgeMetrics() const { return _edgeMetrics; }
         [[nodiscard]] real MaximumClosureError() const { return _maximumClosureError; }
         [[nodiscard]] IntegrationMode Mode() const { return _settings.mode; }
+        [[nodiscard]] const IntegrationInitializationTiming &IntegrationInitializationProfile() const
+        {
+            return _integrationInitializationTiming;
+        }
 
         /** @brief Exact raw moments of a line/triangle/tetrahedron simplex. */
         static RawMoments ExactSimplexMoments(const std::vector<Vector3> &points, real measure);

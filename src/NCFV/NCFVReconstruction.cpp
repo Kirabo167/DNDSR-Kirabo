@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <deque>
 #include <set>
 
 namespace DNDS::NCFV
@@ -127,63 +126,22 @@ namespace DNDS::NCFV
         return result;
     }
 
-    RawMoments Reconstruction::GetMoments(index iNode) const
-    {
-        const auto &stored = _geometry.NodeMoments();
-        RawMoments moments;
-        moments.measure = stored(iNode, 0);
-        moments.first << stored(iNode, 1), stored(iNode, 2), stored(iNode, 3);
-        moments.second.setZero();
-        moments.second(0, 0) = stored(iNode, 4);
-        moments.second(1, 1) = stored(iNode, 5);
-        moments.second(2, 2) = stored(iNode, 6);
-        moments.second(0, 1) = moments.second(1, 0) = stored(iNode, 7);
-        moments.second(1, 2) = moments.second(2, 1) = stored(iNode, 8);
-        moments.second(2, 0) = moments.second(0, 2) = stored(iNode, 9);
-        return moments;
-    }
-
     void Reconstruction::BuildNodeGraph()
     {
-        if (_periodic)
+        _nodeGraph.assign(
+            static_cast<std::size_t>(_nodeHalo.NumNodeProc()), {});
+        _nodeGraphGlobals.assign(
+            static_cast<std::size_t>(_mesh->NumNode()), {});
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
-            _nodeGraph = _periodic->Graph();
-            return;
-        }
-        const index nNodes = _mesh->NumNodeProc();
-        std::vector<std::set<index>> graphSets(static_cast<std::size_t>(nNodes));
-        for (index iCell = 0; iCell < _mesh->NumCellProc(); iCell++)
-        {
-            auto cell = _mesh->GetCellElement(iCell);
-            const int nEdges = _mesh->getDim() == 2
-                                   ? cell.GetNumFaces()
-                                   : cell.GetNumEdges();
-            for (int iEdge = 0; iEdge < nEdges; iEdge++)
-            {
-                const auto edge = _mesh->getDim() == 2
-                                      ? cell.ObtainFace(iEdge)
-                                      : cell.ObtainEdge(iEdge);
-                std::vector<index> edgeNodes(static_cast<std::size_t>(edge.GetNumNodes()));
-                if (_mesh->getDim() == 2)
-                    cell.ExtractFaceNodes(iEdge, _mesh->cell2node[iCell], edgeNodes);
-                else
-                    cell.ExtractEdgeNodes(iEdge, _mesh->cell2node[iCell], edgeNodes);
-                DNDS_check_throw_info(edgeNodes.size() >= 2,
-                                      "NCFV graph encountered an invalid primal edge");
-                graphSets[static_cast<std::size_t>(edgeNodes[0])].insert(edgeNodes[1]);
-                graphSets[static_cast<std::size_t>(edgeNodes[1])].insert(edgeNodes[0]);
-            }
-        }
-
-        _nodeGraph.resize(static_cast<std::size_t>(nNodes));
-        for (index iNode = 0; iNode < nNodes; iNode++)
-        {
+            const auto &rings = _nodeHalo.RingsGlobal(iNode);
+            if (rings.empty())
+                continue;
+            _nodeGraphGlobals[static_cast<std::size_t>(iNode)] = rings.front();
             auto &neighbors = _nodeGraph[static_cast<std::size_t>(iNode)];
-            neighbors.assign(graphSets[static_cast<std::size_t>(iNode)].begin(),
-                             graphSets[static_cast<std::size_t>(iNode)].end());
-            std::sort(neighbors.begin(), neighbors.end(), [this](index left, index right)
-                      { return _mesh->NodeIndexLocal2Global(left) <
-                               _mesh->NodeIndexLocal2Global(right); });
+            neighbors.reserve(rings.front().size());
+            for (index global : rings.front())
+                neighbors.push_back(_nodeHalo.GlobalToLocal(global));
         }
     }
 
@@ -194,12 +152,12 @@ namespace DNDS::NCFV
         const int targetStencilSize = std::max(
             nBasis,
             static_cast<int>(std::ceil(_settings.stencilSizeFactor * nBasis)));
-        const index graphNode = _periodic ? _periodic->Representative(iNode) : iNode;
-        const Vector3 anchor = _periodic ? Vector3::Zero().eval() : Vector3(_mesh->coords[iNode]);
+        const index graphNode = iNode;
+        const Vector3 anchor = Vector3::Zero();
         const real lengthScale = LengthScale(iNode);
         const auto momentsAt = [&](index node)
         {
-            return _periodic ? _periodic->Moments(node, _periodic->Displacement(graphNode, node)) : GetMoments(node);
+            return _nodeHalo.MomentsRelative(iNode, node);
         };
 
         ReconstructionOperator result;
@@ -219,12 +177,19 @@ namespace DNDS::NCFV
         for (int ring = 1; ring <= _settings.maximumStencilRings; ring++)
         {
             std::vector<index> next;
-            for (index current : frontier)
-                for (index neighbor : _nodeGraph[static_cast<std::size_t>(current)])
+            const auto &rings = _nodeHalo.RingsGlobal(iNode);
+            if (ring <= static_cast<int>(rings.size()))
+                for (index global : rings[static_cast<std::size_t>(ring - 1)])
+                {
+                    const index neighbor = _nodeHalo.GlobalToLocal(global);
                     if (visited.insert(neighbor).second)
                         next.push_back(neighbor);
+                }
             std::sort(next.begin(), next.end(), [this](index left, index right)
-                      { return _periodic ? left < right : _mesh->NodeIndexLocal2Global(left) < _mesh->NodeIndexLocal2Global(right); });
+                      {
+                          return _nodeHalo.LocalToGlobal(left) <
+                                 _nodeHalo.LocalToGlobal(right);
+                      });
             stencil.insert(stencil.end(), next.begin(), next.end());
             frontier = std::move(next);
             const bool graphExhausted = frontier.empty();
@@ -249,7 +214,8 @@ namespace DNDS::NCFV
                      result.targetBasisMean)
                         .transpose();
                 const real normalizedDistance = std::max(
-                    (_periodic ? _periodic->Displacement(graphNode, neighbor).norm() : (_mesh->coords[neighbor] - anchor).norm()) / lengthScale,
+                    _nodeHalo.Displacement(iNode, neighbor).norm() /
+                        lengthScale,
                     _settings.distanceWeightFloor);
                 weights(static_cast<Eigen::Index>(row)) =
                     std::pow(normalizedDistance, -_settings.distanceWeightPower);
@@ -294,7 +260,7 @@ namespace DNDS::NCFV
                         _mesh->NodeIndexLocal2Global(iNode), stencil.size(), nBasis));
         DNDS_check_throw_info(
             acceptedRank == nBasis,
-            fmt::format("NCFV node {} quadratic stencil rank is {}/{}; increase ghostLayers or stencil rings",
+            fmt::format("NCFV node {} quadratic stencil rank is {}/{}; increase maximumStencilRings",
                         _mesh->NodeIndexLocal2Global(iNode), acceptedRank, nBasis));
         DNDS_check_throw_info(
             acceptedCondition <= _settings.maximumConditionNumber,
@@ -305,6 +271,10 @@ namespace DNDS::NCFV
         result.numericalRank = acceptedRank;
         result.conditionNumber = acceptedCondition;
         result.stencil = std::move(stencil);
+        result.stencilGlobals.reserve(result.stencil.size());
+        for (index local : result.stencil)
+            result.stencilGlobals.push_back(
+                _nodeHalo.LocalToGlobal(local));
         result.inverseRows = _mode == IntegrationMode::EfficientDifferential
                                  ? acceptedInverse.topRows(dimension)
                                  : acceptedInverse;
@@ -344,6 +314,60 @@ namespace DNDS::NCFV
                   << ", normalization=dual-bounds-half-span (thesis 3-34)" << std::endl;
     }
 
+    std::vector<index> Reconstruction::CollectNodeDependencies() const
+    {
+        std::vector<index> globals;
+        for (const auto &op : _operators)
+            globals.insert(
+                globals.end(), op.stencilGlobals.begin(),
+                op.stencilGlobals.end());
+        if (_settings.enableLimiter)
+            for (const auto &neighbors : _nodeGraphGlobals)
+                globals.insert(globals.end(), neighbors.begin(), neighbors.end());
+        std::sort(globals.begin(), globals.end());
+        globals.erase(std::unique(globals.begin(), globals.end()), globals.end());
+        return globals;
+    }
+
+    void Reconstruction::RemapNodeIndices()
+    {
+        DNDS_check_throw_info(
+            _nodeHalo.IsFinalized(),
+            "NCFV reconstruction requires a finalized exact node halo before remapping");
+        for (auto &op : _operators)
+        {
+            DNDS_check_throw_info(
+                op.stencilGlobals.size() == op.stencil.size(),
+                "NCFV reconstruction lost stable stencil IDs before halo remapping");
+            for (std::size_t i = 0; i < op.stencil.size(); i++)
+                op.stencil[i] =
+                    _nodeHalo.GlobalToLocal(op.stencilGlobals[i]);
+            op.stencilGlobals.clear();
+            op.stencilGlobals.shrink_to_fit();
+        }
+        if (_settings.enableLimiter)
+        {
+            _nodeGraph.assign(
+                static_cast<std::size_t>(_nodeHalo.NumNodeProc()), {});
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            {
+                auto &neighbors = _nodeGraph[static_cast<std::size_t>(iNode)];
+                const auto &globals =
+                    _nodeGraphGlobals[static_cast<std::size_t>(iNode)];
+                neighbors.reserve(globals.size());
+                for (index global : globals)
+                    neighbors.push_back(_nodeHalo.GlobalToLocal(global));
+            }
+        }
+        else
+        {
+            _nodeGraph.clear();
+            _nodeGraph.shrink_to_fit();
+        }
+        _nodeGraphGlobals.clear();
+        _nodeGraphGlobals.shrink_to_fit();
+    }
+
     void Reconstruction::ComputeCoefficients(
         const NodeStatePair &means,
         NodeMatrixPair &gradients,
@@ -351,19 +375,14 @@ namespace DNDS::NCFV
     {
         const int nVars = means.father->MatRowSize();
         const int dimension = _mesh->getDim();
-        const Eigen::MatrixXd globalMeans = _periodic ? _periodic->Gather(means) : Eigen::MatrixXd{};
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
             const ReconstructionOperator &op = _operators[static_cast<std::size_t>(iNode)];
             Eigen::MatrixXd differences(op.stencil.size(), nVars);
             for (std::size_t row = 0; row < op.stencil.size(); row++)
             {
-                if (_periodic)
-                    differences.row(static_cast<Eigen::Index>(row)) =
-                        (globalMeans.col(op.stencil[row]) - means[iNode]).transpose();
-                else
-                    differences.row(static_cast<Eigen::Index>(row)) =
-                        (means[op.stencil[row]] - means[iNode]).transpose();
+                differences.row(static_cast<Eigen::Index>(row)) =
+                    (means[op.stencil[row]] - means[iNode]).transpose();
             }
             const Eigen::MatrixXd reconstructed = op.inverseRows * differences;
             if (_mode == IntegrationMode::EfficientDifferential)
@@ -385,9 +404,9 @@ namespace DNDS::NCFV
             pointValues[iNode] = means[iNode];
             if (_mode == IntegrationMode::EfficientDifferential)
             {
-                for (const auto &weight : _geometry.NodeVolume(iNode).pointRecoveryWeights)
-                    pointValues[iNode] -= gradients[weight.node].transpose() *
-                                          weight.value.head(_mesh->getDim());
+                for (const auto &entry : _geometry.NodeVolume(iNode).pointRecoveryStencil)
+                    pointValues[iNode] -= gradients[entry.node].transpose() *
+                                          entry.gradientWeight.head(_mesh->getDim());
             }
             else
             {
@@ -395,8 +414,6 @@ namespace DNDS::NCFV
                 pointValues[iNode] -= coefficients[iNode].transpose() * op.targetBasisMean;
             }
         }
-        if (_periodic && _mode == IntegrationMode::EfficientDifferential)
-            _periodic->Average(pointValues);
     }
 
     std::vector<real> Reconstruction::ComputeLimiterFactors(
@@ -422,15 +439,14 @@ namespace DNDS::NCFV
                         isLeft || surface.nodes[1] == iNode,
                         "NCFV limiter encountered an edge not incident to its node");
                     const index neighbor = surface.nodes[isLeft ? 1 : 0];
-                    const auto &weights = isLeft
-                                              ? surface.leftStateWeights
-                                              : surface.rightStateWeights;
+                    const std::size_t side = isLeft ? 0 : 1;
 
-                    Eigen::VectorXd candidate = pointValues[iNode];
-                    for (const SparseVectorWeight &weight : weights)
-                        candidate += gradients[weight.node].transpose() *
-                                     weight.value.head(_mesh->getDim()) /
-                                     surface.measure;
+                    Eigen::VectorXd candidate =
+                        surface.measure * pointValues[iNode];
+                    for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                        candidate += gradients[entry.node].transpose() *
+                                     entry.stateGradientWeights[side].head(_mesh->getDim());
+                    candidate /= surface.measure;
 
                     const Eigen::VectorXd minimum =
                         pointValues[iNode].cwiseMin(pointValues[neighbor]);
@@ -471,11 +487,12 @@ namespace DNDS::NCFV
             real factor = 1.0;
             for (index neighbor : _nodeGraph[static_cast<std::size_t>(iNode)])
             {
-                const Vector3 point = 0.5 * (_mesh->coords[iNode] + _mesh->coords[neighbor]);
+                const Vector3 displacement =
+                    0.5 * _nodeHalo.Displacement(iNode, neighbor);
                 Eigen::VectorXd candidate = pointValues[iNode];
                 const auto &op = _operators[static_cast<std::size_t>(iNode)];
                 candidate += coefficients[iNode].transpose() *
-                             EvaluateBasis(point - _mesh->coords[iNode],
+                             EvaluateBasis(displacement,
                                            op.referenceLengths, _mesh->getDim());
 
                 for (int iVar = 0; iVar < nVars; iVar++)

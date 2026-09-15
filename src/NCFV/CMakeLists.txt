@@ -5,9 +5,9 @@ set(LIBNAME ncfv)
 set(CPPS
     NCFVConfig.cpp
     NCFVBoundary.cpp
-    NCFVPeriodic.cpp
     NCFVTopology.cpp
     NCFVDualGeometry.cpp
+    NCFVNodeHalo.cpp
     NCFVReconstruction.cpp
     NCFVSpatial.cpp
     NCFVSolver.cpp

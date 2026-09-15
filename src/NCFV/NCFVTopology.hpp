@@ -29,6 +29,7 @@ namespace DNDS::NCFV
 
         Geom::tAdjPair _cell2edge;
         Geom::tAdjPair _edge2node;
+        Geom::tPbiPair _edge2nodePbi;
         Geom::tAdjPair _edge2cell;
         Geom::tElemInfoArrayPair _edgeElemInfo;
         Geom::tAdjPair _face2node;
@@ -66,6 +67,10 @@ namespace DNDS::NCFV
         [[nodiscard]] const Geom::tAdjPair &Cell2Edge() const { return _cell2edge; }
         [[nodiscard]] Geom::tAdjPair &Edge2Node() { return _edge2node; }
         [[nodiscard]] const Geom::tAdjPair &Edge2Node() const { return _edge2node; }
+        [[nodiscard]] const Geom::tPbiPair &Edge2NodePbi() const
+        {
+            return _edge2nodePbi;
+        }
         [[nodiscard]] const Geom::tAdjPair &Edge2Cell() const { return _edge2cell; }
         [[nodiscard]] const Geom::tElemInfoArrayPair &EdgeElemInfo() const { return _edgeElemInfo; }
         [[nodiscard]] const Geom::tAdjPair &Face2Node() const { return _face2node; }

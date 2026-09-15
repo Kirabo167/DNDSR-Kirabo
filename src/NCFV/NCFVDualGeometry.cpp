@@ -4,78 +4,219 @@
 #include "Geom/Quadrature.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <map>
-#include <set>
 
 namespace DNDS::NCFV
 {
     namespace
     {
-        void MergeVectorWeights(
-            std::vector<SparseVectorWeight> &destination,
-            const std::vector<SparseVectorWeight> &source,
-            real scale = 1.0)
+        constexpr std::size_t MaxAffineSupportNodes = 8;
+
+        template <class TEntry>
+        TEntry &FindStencilNode(
+            std::vector<TEntry> &stencil,
+            index node)
         {
-            std::map<index, Vector3> merged;
-            for (const auto &weight : destination)
-            {
-                auto [iterator, inserted] = merged.try_emplace(weight.node, Vector3::Zero());
-                iterator->second += weight.value;
-            }
-            for (const auto &weight : source)
-            {
-                auto [iterator, inserted] = merged.try_emplace(weight.node, Vector3::Zero());
-                iterator->second += scale * weight.value;
-            }
-            destination.clear();
-            destination.reserve(merged.size());
-            for (const auto &[node, value] : merged)
-                if (value.squaredNorm() > sqr(verySmallReal))
-                    destination.push_back({node, value});
+            const auto iterator = std::lower_bound(
+                stencil.begin(), stencil.end(), node,
+                [](const TEntry &entry, index value)
+                { return entry.node < value; });
+            DNDS_check_throw_info(
+                iterator != stencil.end() && iterator->node == node,
+                "NCFV efficient stencil was not initialized with every support node");
+            return *iterator;
         }
 
-        void MergeFluxWeights(
-            std::vector<SparseMatrixWeight> &destination,
-            const std::vector<SparseVectorWeight> &source,
-            const Vector3 &unitNormal)
+        std::vector<index> CollectSupportNodes(
+            const std::vector<AffinePoint> &points)
         {
-            std::map<index, Matrix3> merged;
-            for (const auto &weight : destination)
-            {
-                auto [iterator, inserted] = merged.try_emplace(weight.node, Matrix3::Zero());
-                iterator->second += weight.value;
-            }
-            for (const auto &weight : source)
-            {
-                auto [iterator, inserted] = merged.try_emplace(weight.node, Matrix3::Zero());
-                iterator->second += weight.value * unitNormal.transpose();
-            }
-            destination.clear();
-            destination.reserve(merged.size());
-            for (const auto &[node, value] : merged)
-                if (value.squaredNorm() > sqr(verySmallReal))
-                    destination.push_back({node, value});
+            std::size_t capacity = 0;
+            for (const AffinePoint &point : points)
+                capacity += point.support.size();
+
+            std::vector<index> nodes;
+            nodes.reserve(capacity);
+            for (const AffinePoint &point : points)
+                for (const AffineCoefficient &coefficient : point.support)
+                    nodes.push_back(coefficient.node);
+            std::sort(nodes.begin(), nodes.end());
+            nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+            return nodes;
         }
 
-        void MergeScalarWeights(
-            std::vector<SparseScalarWeight> &destination,
+        template <class TEntry>
+        void InitializeStencil(
+            std::vector<TEntry> &stencil,
+            const std::vector<index> &nodes)
+        {
+            DNDS_check_throw_info(stencil.empty(),
+                                  "NCFV efficient stencil was initialized more than once");
+            stencil.reserve(nodes.size());
+            for (index node : nodes)
+                stencil.emplace_back(TEntry{node});
+        }
+
+        template <class TCallback>
+        void ForEachDifferentialWeight(
+            const std::vector<AffinePoint> &points,
+            index anchorNode,
+            const Vector3 &anchorCoordinate,
+            real measure,
+            TCallback &&callback)
+        {
+            DNDS_check_throw_info(points.size() >= 2 && points.size() <= 4,
+                                  "DifferentialWeights accepts line, triangle, or tetrahedron vertices");
+
+            std::array<Vector3, 4> displacements;
+            Vector3 displacementSum = Vector3::Zero();
+            std::array<index, MaxAffineSupportNodes> supportNodes;
+            std::size_t supportNodeCount = 0;
+            const auto appendSupportNode = [&](index node)
+            {
+                for (std::size_t i = 0; i < supportNodeCount; i++)
+                    if (supportNodes[i] == node)
+                        return;
+                DNDS_check_throw_info(
+                    supportNodeCount < supportNodes.size(),
+                    "NCFV affine simplex exceeds the supported O1 cell vertex count");
+                supportNodes[supportNodeCount++] = node;
+            };
+
+            appendSupportNode(anchorNode);
+            for (std::size_t i = 0; i < points.size(); i++)
+            {
+                displacements[i] = points[i].coordinate - anchorCoordinate;
+                displacementSum += displacements[i];
+                for (const AffineCoefficient &coefficient : points[i].support)
+                    appendSupportNode(coefficient.node);
+            }
+            for (std::size_t i = 1; i < supportNodeCount; i++)
+            {
+                const index node = supportNodes[i];
+                std::size_t insertion = i;
+                while (insertion > 0 && supportNodes[insertion - 1] > node)
+                {
+                    supportNodes[insertion] = supportNodes[insertion - 1];
+                    insertion--;
+                }
+                supportNodes[insertion] = node;
+            }
+
+            std::array<real, MaxAffineSupportNodes> coefficientSums{};
+            std::array<Vector3, MaxAffineSupportNodes> displacementCoefficientSums;
+            for (std::size_t i = 0; i < supportNodeCount; i++)
+                displacementCoefficientSums[i].setZero();
+            for (std::size_t iPoint = 0; iPoint < points.size(); iPoint++)
+                for (const AffineCoefficient &coefficient : points[iPoint].support)
+                {
+                    const auto iterator = std::lower_bound(
+                        supportNodes.begin(), supportNodes.begin() + supportNodeCount,
+                        coefficient.node);
+                    const std::size_t iNode = static_cast<std::size_t>(
+                        iterator - supportNodes.begin());
+                    DNDS_assert(iNode < supportNodeCount &&
+                                supportNodes[iNode] == coefficient.node);
+                    coefficientSums[iNode] += coefficient.coefficient;
+                    displacementCoefficientSums[iNode] +=
+                        displacements[iPoint] * coefficient.coefficient;
+                }
+
+            const real n = static_cast<real>(points.size());
+            const real secondFactor = measure / (2.0 * n * (n + 1.0));
+            for (std::size_t iNode = 0; iNode < supportNodeCount; iNode++)
+            {
+                const real delta = supportNodes[iNode] == anchorNode ? 1.0 : 0.0;
+                const real coefficientSum = coefficientSums[iNode] - n * delta;
+                const Vector3 displacementCoefficientSum =
+                    displacementCoefficientSums[iNode] - delta * displacementSum;
+                Vector3 value = measure / n * displacementSum * delta;
+                value += secondFactor *
+                         (displacementSum * coefficientSum +
+                          displacementCoefficientSum);
+                if (value.squaredNorm() > sqr(verySmallReal))
+                    callback(supportNodes[iNode], value);
+            }
+        }
+
+        template <class TEntry>
+        void CheckStencilNodes(
+            const std::vector<TEntry> &stencil,
+            index processNodeCount)
+        {
+            index previous = UnInitIndex;
+            for (const TEntry &entry : stencil)
+            {
+                DNDS_check_throw_info(
+                    entry.node >= 0 && entry.node < processNodeCount,
+                    "NCFV efficient stencil contains an invalid local/ghost node index");
+                DNDS_check_throw_info(
+                    previous == UnInitIndex || previous < entry.node,
+                    "NCFV efficient stencil node indices are not sorted and unique");
+                previous = entry.node;
+            }
+        }
+
+        void MergePointRecoveryWeights(
+            std::vector<EfficientPointRecoveryNode> &stencil,
+            const std::vector<AffinePoint> &points,
+            index anchorNode,
+            const Vector3 &anchorCoordinate,
+            real measure)
+        {
+            ForEachDifferentialWeight(
+                points, anchorNode, anchorCoordinate, measure,
+                [&](index node, const Vector3 &value)
+                { FindStencilNode(stencil, node).gradientWeight += value; });
+        }
+
+        void MergeSurfaceDifferentialWeights(
+            std::vector<EfficientSurfaceNode> &stencil,
+            const std::vector<AffinePoint> &points,
+            index anchorNode,
+            const Vector3 &anchorCoordinate,
+            real measure,
+            const Vector3 &unitNormal,
+            int side)
+        {
+            DNDS_assert(side == 0 || side == 1);
+            ForEachDifferentialWeight(
+                points, anchorNode, anchorCoordinate, measure,
+                [&](index node, const Vector3 &value)
+                {
+                    EfficientSurfaceNode &entry = FindStencilNode(stencil, node);
+                    entry.stateGradientWeights[static_cast<std::size_t>(side)] += value;
+                    entry.fluxGradientWeights[static_cast<std::size_t>(side)] +=
+                        value * unitNormal.transpose();
+                });
+        }
+
+        void MergeSurfaceGradientWeights(
+            std::vector<EfficientSurfaceNode> &stencil,
             const std::vector<AffinePoint> &points,
             real measure)
         {
-            std::map<index, real> merged;
-            for (const auto &weight : destination)
-                merged[weight.node] += weight.value;
             const real pointFactor = measure / static_cast<real>(points.size());
             for (const auto &point : points)
                 for (const auto &coefficient : point.support)
-                    merged[coefficient.node] += pointFactor * coefficient.coefficient;
+                    FindStencilNode(stencil, coefficient.node).gradientWeight +=
+                        pointFactor * coefficient.coefficient;
+        }
 
-            destination.clear();
-            destination.reserve(merged.size());
-            for (const auto &[node, value] : merged)
-                if (std::abs(value) > verySmallReal)
-                    destination.push_back({node, value});
+        void MergeBoundaryWeights(
+            std::vector<EfficientBoundaryNode> &stencil,
+            const std::vector<AffinePoint> &points,
+            real measure)
+        {
+            InitializeStencil(stencil, CollectSupportNodes(points));
+            const real pointFactor = measure / static_cast<real>(points.size());
+            for (const auto &point : points)
+                for (const auto &coefficient : point.support)
+                {
+                    EfficientBoundaryNode &entry = FindStencilNode(stencil, coefficient.node);
+                    const real weight = pointFactor * coefficient.coefficient;
+                    entry.integrationWeight += weight;
+                }
         }
 
         bool ContainsNode(const std::vector<index> &nodes, index target)
@@ -205,44 +346,12 @@ namespace DNDS::NCFV
         const Vector3 &anchorCoordinate,
         real measure)
     {
-        DNDS_check_throw_info(points.size() >= 2 && points.size() <= 4,
-                              "DifferentialWeights accepts line, triangle, or tetrahedron vertices");
-        const real n = static_cast<real>(points.size());
-        std::vector<Vector3> displacement(points.size(), Vector3::Zero());
-        Vector3 displacementSum = Vector3::Zero();
-        std::set<index> supportNodes{anchorNode};
-        for (std::size_t i = 0; i < points.size(); i++)
-        {
-            displacement[i] = points[i].coordinate - anchorCoordinate;
-            displacementSum += displacement[i];
-            for (const auto &coefficient : points[i].support)
-                supportNodes.insert(coefficient.node);
-        }
-
-        const real secondFactor = measure / (2.0 * n * (n + 1.0));
         std::vector<SparseVectorWeight> result;
-        result.reserve(supportNodes.size());
-        for (index node : supportNodes)
-        {
-            const real delta = node == anchorNode ? 1.0 : 0.0;
-            real coefficientSum = 0;
-            Vector3 displacementCoefficientSum = Vector3::Zero();
-            for (std::size_t i = 0; i < points.size(); i++)
-            {
-                real coefficient = 0;
-                for (const auto &entry : points[i].support)
-                    if (entry.node == node)
-                        coefficient += entry.coefficient;
-                coefficientSum += coefficient - delta;
-                displacementCoefficientSum += displacement[i] * (coefficient - delta);
-            }
-
-            Vector3 value = measure / n * displacementSum * delta;
-            value += secondFactor *
-                     (displacementSum * coefficientSum + displacementCoefficientSum);
-            if (value.squaredNorm() > sqr(verySmallReal))
-                result.push_back({node, value});
-        }
+        result.reserve(MaxAffineSupportNodes);
+        ForEachDifferentialWeight(
+            points, anchorNode, anchorCoordinate, measure,
+            [&](index node, const Vector3 &value)
+            { result.push_back({node, value}); });
         return result;
     }
 
@@ -254,15 +363,33 @@ namespace DNDS::NCFV
         return point;
     }
 
-    AffinePoint DualGeometry::MakeAveragePoint(const std::vector<index> &nodes) const
+    Vector3 DualGeometry::CoordinateInFrame(
+        index iNode,
+        const Vector3 &frameAnchor) const
+    {
+        Vector3 displacement = _mesh->coords[iNode] - frameAnchor;
+        for (int d = 0; d < _mesh->getDim(); d++)
+            if (_periodicLengths(d) > 0)
+                displacement(d) -= _periodicLengths(d) *
+                                   std::round(displacement(d) /
+                                              _periodicLengths(d));
+        return frameAnchor + displacement;
+    }
+
+    AffinePoint DualGeometry::MakeAveragePoint(
+        const std::vector<index> &nodes,
+        const Vector3 *frameAnchor) const
     {
         DNDS_check_throw_info(!nodes.empty(), "Cannot average an empty primal-vertex set");
         AffinePoint point;
+        const Vector3 anchor = frameAnchor
+                                   ? *frameAnchor
+                                   : Vector3(_mesh->coords[nodes.front()]);
         const real coefficient = 1.0 / static_cast<real>(nodes.size());
         point.support.reserve(nodes.size());
         for (index node : nodes)
         {
-            point.coordinate += coefficient * _mesh->coords[node];
+            point.coordinate += coefficient * CoordinateInFrame(node, anchor);
             point.support.push_back({node, coefficient});
         }
         std::sort(point.support.begin(), point.support.end(), [](const auto &left, const auto &right)
@@ -270,27 +397,34 @@ namespace DNDS::NCFV
         return point;
     }
 
-    AffinePoint DualGeometry::MakeCellPoint(index iCell) const
+    AffinePoint DualGeometry::MakeCellPoint(
+        index iCell,
+        const Vector3 *frameAnchor) const
     {
         const auto element = _mesh->GetCellElement(iCell);
         std::vector<index> vertices(static_cast<std::size_t>(element.GetNumVertices()));
         for (int i = 0; i < element.GetNumVertices(); i++)
             vertices[static_cast<std::size_t>(i)] = _mesh->cell2node(iCell, i);
-        return MakeAveragePoint(vertices);
+        return MakeAveragePoint(vertices, frameAnchor);
     }
 
-    AffinePoint DualGeometry::MakeFacePoint(index iFace) const
+    AffinePoint DualGeometry::MakeFacePoint(
+        index iFace,
+        const Vector3 *frameAnchor) const
     {
         const auto element = _topology.GetFaceElement(iFace);
         std::vector<index> vertices(static_cast<std::size_t>(element.GetNumVertices()));
         for (int i = 0; i < element.GetNumVertices(); i++)
             vertices[static_cast<std::size_t>(i)] = _topology.Face2Node()(iFace, i);
-        return MakeAveragePoint(vertices);
+        return MakeAveragePoint(vertices, frameAnchor);
     }
 
-    AffinePoint DualGeometry::MakeEdgePoint(index node0, index node1) const
+    AffinePoint DualGeometry::MakeEdgePoint(
+        index node0,
+        index node1,
+        const Vector3 *frameAnchor) const
     {
-        return MakeAveragePoint({node0, node1});
+        return MakeAveragePoint({node0, node1}, frameAnchor);
     }
 
     void DualGeometry::BuildConstructionPoints()
@@ -344,9 +478,10 @@ namespace DNDS::NCFV
         DNDS_check_throw_info(measure > verySmallReal,
                               "NCFV generated a degenerate dual micro-volume");
 
+        const Vector3 anchorCoordinate = points.front().coordinate;
         for (const Vector3 &point : coordinates)
         {
-            const Vector3 offset = point - _mesh->coords[controlVolume.node];
+            const Vector3 offset = point - anchorCoordinate;
             controlVolume.lowerOffset = controlVolume.lowerOffset.cwiseMin(offset);
             controlVolume.upperOffset = controlVolume.upperOffset.cwiseMax(offset);
         }
@@ -354,19 +489,26 @@ namespace DNDS::NCFV
         if (_settings.mode == IntegrationMode::EfficientDifferential)
         {
             AccumulateMoments(controlVolume.moments, ExactSimplexMoments(coordinates, measure));
-            MergeVectorWeights(
-                controlVolume.pointRecoveryWeights,
-                DifferentialWeights(points, controlVolume.node,
-                                    _mesh->coords[controlVolume.node], measure));
+            const double weightStart = _settings.profileIntegrationInitialization
+                                           ? MPI_Wtime()
+                                           : 0.0;
+            MergePointRecoveryWeights(
+                controlVolume.pointRecoveryStencil,
+                points, controlVolume.node,
+                anchorCoordinate, measure);
+            if (_settings.profileIntegrationInitialization)
+            {
+                _integrationInitializationTiming.volumeSeconds += MPI_Wtime() - weightStart;
+                _integrationInitializationTiming.volumeCalls++;
+            }
         }
         else
         {
             const auto simplexElement = dimension == 2
                                             ? Geom::Elem::Element{Geom::Elem::Tri3}
                                             : Geom::Elem::Element{Geom::Elem::Tet4};
-            Geom::Elem::Quadrature quadrature(simplexElement, _settings.quadratureOrder);
             const real jacobian = dimension == 2 ? 2.0 * measure : 6.0 * measure;
-            for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
+            const auto appendQuadraturePoint = [&](const Geom::Elem::Quadrature &quadrature, int iG)
             {
                 const auto [parametric, referenceWeight] = quadrature.GetQuadraturePointInfo(iG);
                 Vector3 physical = points[0].coordinate;
@@ -376,9 +518,39 @@ namespace DNDS::NCFV
                     physical += parametric[2] * (points[3].coordinate - points[0].coordinate);
                 const real physicalWeight = referenceWeight * jacobian;
                 controlVolume.volumeQuadrature.push_back({physical, physicalWeight});
-                controlVolume.moments.measure += physicalWeight;
-                controlVolume.moments.first += physicalWeight * physical;
-                controlVolume.moments.second += physicalWeight * physical * physical.transpose();
+            };
+
+            if (_settings.profileIntegrationInitialization)
+            {
+                const std::size_t firstPoint = controlVolume.volumeQuadrature.size();
+                const double quadratureStart = MPI_Wtime();
+                Geom::Elem::Quadrature quadrature(simplexElement, _settings.quadratureOrder);
+                for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
+                    appendQuadraturePoint(quadrature, iG);
+                _integrationInitializationTiming.volumeSeconds += MPI_Wtime() - quadratureStart;
+                _integrationInitializationTiming.volumeCalls++;
+                for (std::size_t iPoint = firstPoint;
+                     iPoint < controlVolume.volumeQuadrature.size(); iPoint++)
+                {
+                    const auto &point = controlVolume.volumeQuadrature[iPoint];
+                    controlVolume.moments.measure += point.weight;
+                    controlVolume.moments.first += point.weight * point.coordinate;
+                    controlVolume.moments.second +=
+                        point.weight * point.coordinate * point.coordinate.transpose();
+                }
+            }
+            else
+            {
+                Geom::Elem::Quadrature quadrature(simplexElement, _settings.quadratureOrder);
+                for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
+                {
+                    appendQuadraturePoint(quadrature, iG);
+                    const auto &point = controlVolume.volumeQuadrature.back();
+                    controlVolume.moments.measure += point.weight;
+                    controlVolume.moments.first += point.weight * point.coordinate;
+                    controlVolume.moments.second +=
+                        point.weight * point.coordinate * point.coordinate.transpose();
+                }
             }
         }
 
@@ -402,7 +574,7 @@ namespace DNDS::NCFV
         const std::vector<AffinePoint> &points) const
     {
         const Vector3 edgeDirection =
-            _mesh->coords[surface.nodes[1]] - _mesh->coords[surface.nodes[0]];
+            surface.nodeCoordinates[1] - surface.nodeCoordinates[0];
         const Vector3 vectorMeasure = OrientedSurfaceVector(points, edgeDirection);
         const real measure = vectorMeasure.norm();
         DNDS_check_throw_info(measure > verySmallReal,
@@ -413,18 +585,29 @@ namespace DNDS::NCFV
 
         if (_settings.mode == IntegrationMode::EfficientDifferential)
         {
-            const auto leftWeights = DifferentialWeights(
-                points, surface.nodes[0], _mesh->coords[surface.nodes[0]], measure);
-            const auto rightWeights = DifferentialWeights(
-                points, surface.nodes[1], _mesh->coords[surface.nodes[1]], measure);
-            MergeVectorWeights(surface.leftStateWeights, leftWeights);
-            MergeVectorWeights(surface.rightStateWeights, rightWeights);
-            MergeFluxWeights(surface.leftFluxWeights, leftWeights, unitNormal);
-            MergeFluxWeights(surface.rightFluxWeights, rightWeights, unitNormal);
-            MergeScalarWeights(surface.gradientIntegralWeights, points, measure);
+            const double weightStart = _settings.profileIntegrationInitialization
+                                           ? MPI_Wtime()
+                                           : 0.0;
+            MergeSurfaceDifferentialWeights(
+                surface.efficientStencil, points, surface.nodes[0],
+                surface.nodeCoordinates[0], measure, unitNormal, 0);
+            MergeSurfaceDifferentialWeights(
+                surface.efficientStencil, points, surface.nodes[1],
+                surface.nodeCoordinates[1], measure, unitNormal, 1);
+            MergeSurfaceGradientWeights(
+                surface.efficientStencil, points, measure);
+            if (_settings.profileIntegrationInitialization)
+            {
+                _integrationInitializationTiming.internalSurfaceSeconds +=
+                    MPI_Wtime() - weightStart;
+                _integrationInitializationTiming.internalSurfaceCalls++;
+            }
         }
         else
         {
+            const double quadratureStart = _settings.profileIntegrationInitialization
+                                               ? MPI_Wtime()
+                                               : 0.0;
             if (_mesh->getDim() == 2)
             {
                 Geom::Elem::Quadrature quadrature(
@@ -455,6 +638,12 @@ namespace DNDS::NCFV
                     surface.quadrature.push_back(
                         {physical, unitNormal * physicalWeight, physicalWeight});
                 }
+            }
+            if (_settings.profileIntegrationInitialization)
+            {
+                _integrationInitializationTiming.internalSurfaceSeconds +=
+                    MPI_Wtime() - quadratureStart;
+                _integrationInitializationTiming.internalSurfaceCalls++;
             }
         }
 
@@ -478,9 +667,10 @@ namespace DNDS::NCFV
         index iFace,
         const std::vector<AffinePoint> &points) const
     {
+        const Vector3 frameAnchor = points.front().coordinate;
         const Vector3 outwardDirection =
-            _facePoints.at(static_cast<std::size_t>(iFace)) -
-            _cellPoints.at(static_cast<std::size_t>(iCell));
+            MakeFacePoint(iFace, &frameAnchor).coordinate -
+            MakeCellPoint(iCell, &frameAnchor).coordinate;
         const Vector3 vectorMeasure = OrientedSurfaceVector(points, outwardDirection);
         const real measure = vectorMeasure.norm();
         DNDS_check_throw_info(measure > verySmallReal,
@@ -496,9 +686,23 @@ namespace DNDS::NCFV
             piece.points[static_cast<std::size_t>(i)] = points[static_cast<std::size_t>(i)];
 
         if (_settings.mode == IntegrationMode::EfficientDifferential)
-            MergeScalarWeights(piece.gradientIntegralWeights, points, measure);
+        {
+            const double weightStart = _settings.profileIntegrationInitialization
+                                           ? MPI_Wtime()
+                                           : 0.0;
+            MergeBoundaryWeights(piece.efficientStencil, points, measure);
+            if (_settings.profileIntegrationInitialization)
+            {
+                _integrationInitializationTiming.boundarySurfaceSeconds +=
+                    MPI_Wtime() - weightStart;
+                _integrationInitializationTiming.boundarySurfaceCalls++;
+            }
+        }
         else
         {
+            const double quadratureStart = _settings.profileIntegrationInitialization
+                                               ? MPI_Wtime()
+                                               : 0.0;
             if (_mesh->getDim() == 2)
             {
                 Geom::Elem::Quadrature quadrature(
@@ -530,7 +734,24 @@ namespace DNDS::NCFV
                         {physical, unitNormal * physicalWeight, physicalWeight});
                 }
             }
+            if (_settings.profileIntegrationInitialization)
+            {
+                _integrationInitializationTiming.boundarySurfaceSeconds +=
+                    MPI_Wtime() - quadratureStart;
+                _integrationInitializationTiming.boundarySurfaceCalls++;
+            }
         }
+        if (_settings.mode == IntegrationMode::EfficientDifferential)
+        {
+            DNDS_check_throw_info(!piece.efficientStencil.empty() &&
+                                      piece.quadrature.empty(),
+                                  "Efficient NCFV boundary stencil is empty or stores Gauss points");
+            CheckStencilNodes(piece.efficientStencil, _mesh->NumNodeProc());
+        }
+        else
+            DNDS_check_throw_info(piece.efficientStencil.empty() &&
+                                      !piece.quadrature.empty(),
+                                  "Traditional NCFV boundary integration storage is invalid");
         controlVolume.boundaryPieces.push_back(std::move(piece));
     }
 
@@ -545,15 +766,50 @@ namespace DNDS::NCFV
             surface.edge = iEdge;
             surface.nodes = {_topology.Edge2Node()(iEdge, 0),
                              _topology.Edge2Node()(iEdge, 1)};
-            surface.edgePoint = _edgePoints[static_cast<std::size_t>(iEdge)];
-            const AffinePoint edgePoint = MakeEdgePoint(surface.nodes[0], surface.nodes[1]);
+            const Vector3 frameAnchor = _mesh->coords[surface.nodes[0]];
+            surface.nodeCoordinates[0] = frameAnchor;
+            surface.nodeCoordinates[1] =
+                CoordinateInFrame(surface.nodes[1], frameAnchor);
+            const AffinePoint edgePoint =
+                MakeEdgePoint(surface.nodes[0], surface.nodes[1], &frameAnchor);
+            surface.edgePoint = edgePoint.coordinate;
+
+            if (_settings.mode == IntegrationMode::EfficientDifferential)
+            {
+                const double layoutStart = _settings.profileIntegrationInitialization
+                                               ? MPI_Wtime()
+                                               : 0.0;
+                std::vector<index> supportNodes;
+                supportNodes.reserve(
+                    static_cast<std::size_t>(_topology.Edge2Cell()[iEdge].size()) *
+                    MaxAffineSupportNodes);
+                for (index iCell : _topology.Edge2Cell()[iEdge])
+                {
+                    DNDS_check_throw_info(iCell >= 0,
+                                          "NCFV edge geometry has an unresolved parent cell");
+                    const auto cell = _mesh->GetCellElement(iCell);
+                    for (int iNode = 0; iNode < cell.GetNumVertices(); iNode++)
+                        supportNodes.push_back(_mesh->cell2node(iCell, iNode));
+                }
+                std::sort(supportNodes.begin(), supportNodes.end());
+                supportNodes.erase(
+                    std::unique(supportNodes.begin(), supportNodes.end()),
+                    supportNodes.end());
+                InitializeStencil(surface.efficientStencil, supportNodes);
+                if (_settings.profileIntegrationInitialization)
+                {
+                    _integrationInitializationTiming.internalSurfaceSeconds +=
+                        MPI_Wtime() - layoutStart;
+                    _integrationInitializationTiming.internalSurfaceCalls++;
+                }
+            }
 
             for (index iCell : _topology.Edge2Cell()[iEdge])
             {
                 DNDS_check_throw_info(iCell >= 0,
                                       "NCFV edge geometry has an unresolved parent cell");
                 auto cell = _mesh->GetCellElement(iCell);
-                const AffinePoint cellPoint = MakeCellPoint(iCell);
+                const AffinePoint cellPoint = MakeCellPoint(iCell, &frameAnchor);
                 int matches = 0;
                 for (int iLocalFace = 0; iLocalFace < cell.GetNumFaces(); iLocalFace++)
                 {
@@ -567,7 +823,7 @@ namespace DNDS::NCFV
                     else
                         AddEdgeSurfaceSimplex(
                             surface, iCell, iFace,
-                            {edgePoint, MakeFacePoint(iFace), cellPoint});
+                            {edgePoint, MakeFacePoint(iFace, &frameAnchor), cellPoint});
                     matches++;
                 }
                 const int expectedMatches = _mesh->getDim() == 2 ? 1 : 2;
@@ -578,11 +834,16 @@ namespace DNDS::NCFV
                                       surface.vectorMeasure.norm() > verySmallReal,
                                   "NCFV generated an empty or folded primal-edge macro surface");
             if (_settings.mode == IntegrationMode::EfficientDifferential)
-                DNDS_check_throw_info(surface.quadrature.empty(),
-                                      "Efficient NCFV unexpectedly stored Gauss points");
+            {
+                DNDS_check_throw_info(!surface.efficientStencil.empty() &&
+                                          surface.quadrature.empty(),
+                                      "Efficient NCFV macro-surface stencil is empty or stores Gauss points");
+                CheckStencilNodes(surface.efficientStencil, _mesh->NumNodeProc());
+            }
             else
-                DNDS_check_throw_info(!surface.quadrature.empty(),
-                                      "Traditional NCFV did not store surface quadrature points");
+                DNDS_check_throw_info(surface.efficientStencil.empty() &&
+                                          !surface.quadrature.empty(),
+                                      "Traditional NCFV surface integration storage is invalid");
         };
 
         for (index iEdge = 0; iEdge < _topology.NumEdge(); iEdge++)
@@ -612,6 +873,7 @@ namespace DNDS::NCFV
             NodeControlVolume &controlVolume = _nodeVolumes[static_cast<std::size_t>(iNode)];
             controlVolume.node = iNode;
             const AffinePoint nodePoint = MakeNodePoint(iNode);
+            const Vector3 frameAnchor = nodePoint.coordinate;
 
             std::vector<index> incidentCells(_mesh->node2cell[iNode].begin(),
                                              _mesh->node2cell[iNode].end());
@@ -620,12 +882,40 @@ namespace DNDS::NCFV
             incidentCells.erase(std::unique(incidentCells.begin(), incidentCells.end()),
                                 incidentCells.end());
 
+            if (_settings.mode == IntegrationMode::EfficientDifferential)
+            {
+                const double layoutStart = _settings.profileIntegrationInitialization
+                                               ? MPI_Wtime()
+                                               : 0.0;
+                std::vector<index> supportNodes;
+                supportNodes.reserve(incidentCells.size() * MaxAffineSupportNodes);
+                for (index iCell : incidentCells)
+                {
+                    DNDS_check_throw_info(iCell >= 0,
+                                          "NCFV owned node has an unresolved incident cell");
+                    const auto cell = _mesh->GetCellElement(iCell);
+                    for (int iLocalNode = 0; iLocalNode < cell.GetNumVertices(); iLocalNode++)
+                        supportNodes.push_back(_mesh->cell2node(iCell, iLocalNode));
+                }
+                std::sort(supportNodes.begin(), supportNodes.end());
+                supportNodes.erase(
+                    std::unique(supportNodes.begin(), supportNodes.end()),
+                    supportNodes.end());
+                InitializeStencil(controlVolume.pointRecoveryStencil, supportNodes);
+                if (_settings.profileIntegrationInitialization)
+                {
+                    _integrationInitializationTiming.volumeSeconds +=
+                        MPI_Wtime() - layoutStart;
+                    _integrationInitializationTiming.volumeCalls++;
+                }
+            }
+
             for (index iCell : incidentCells)
             {
                 DNDS_check_throw_info(iCell >= 0,
                                       "NCFV owned node has an unresolved incident cell");
                 auto cell = _mesh->GetCellElement(iCell);
-                const AffinePoint cellPoint = MakeCellPoint(iCell);
+                const AffinePoint cellPoint = MakeCellPoint(iCell, &frameAnchor);
                 for (int iLocalFace = 0; iLocalFace < cell.GetNumFaces(); iLocalFace++)
                 {
                     const auto face = cell.ObtainFace(iLocalFace);
@@ -641,7 +931,8 @@ namespace DNDS::NCFV
                         DNDS_check_throw_info(faceNodes.size() == 2,
                                               "A 2-D O1 primal edge must have two vertices");
                         const index neighbor = faceNodes[0] == iNode ? faceNodes[1] : faceNodes[0];
-                        const AffinePoint edgePoint = MakeEdgePoint(iNode, neighbor);
+                        const AffinePoint edgePoint =
+                            MakeEdgePoint(iNode, neighbor, &frameAnchor);
                         AddVolumeSimplex(controlVolume, iCell,
                                          {nodePoint, edgePoint, cellPoint});
                         if (isBoundary)
@@ -650,7 +941,8 @@ namespace DNDS::NCFV
                     }
                     else
                     {
-                        const AffinePoint facePoint = MakeFacePoint(iFace);
+                        const AffinePoint facePoint =
+                            MakeFacePoint(iFace, &frameAnchor);
                         for (int iLocalEdge = 0; iLocalEdge < face.GetNumFaces(); iLocalEdge++)
                         {
                             const std::vector<index> edgeNodes =
@@ -660,7 +952,8 @@ namespace DNDS::NCFV
                             DNDS_check_throw_info(edgeNodes.size() == 2,
                                                   "A 3-D O1 primal edge must have two vertices");
                             const index neighbor = edgeNodes[0] == iNode ? edgeNodes[1] : edgeNodes[0];
-                            const AffinePoint edgePoint = MakeEdgePoint(iNode, neighbor);
+                            const AffinePoint edgePoint =
+                                MakeEdgePoint(iNode, neighbor, &frameAnchor);
                             AddVolumeSimplex(controlVolume, iCell,
                                              {nodePoint, edgePoint, facePoint, cellPoint});
                             if (isBoundary)
@@ -680,8 +973,28 @@ namespace DNDS::NCFV
                 controlVolume.lowerOffset, controlVolume.upperOffset, _mesh->getDim());
             if (_settings.mode == IntegrationMode::EfficientDifferential)
             {
-                for (auto &weight : controlVolume.pointRecoveryWeights)
-                    weight.value /= controlVolume.moments.measure;
+                const double normalizationStart = _settings.profileIntegrationInitialization
+                                                      ? MPI_Wtime()
+                                                      : 0.0;
+                controlVolume.pointRecoveryStencil.erase(
+                    std::remove_if(
+                        controlVolume.pointRecoveryStencil.begin(),
+                        controlVolume.pointRecoveryStencil.end(),
+                        [](const EfficientPointRecoveryNode &entry)
+                        { return entry.gradientWeight.squaredNorm() == 0; }),
+                    controlVolume.pointRecoveryStencil.end());
+                for (auto &entry : controlVolume.pointRecoveryStencil)
+                    entry.gradientWeight /= controlVolume.moments.measure;
+                if (_settings.profileIntegrationInitialization)
+                {
+                    _integrationInitializationTiming.volumeNormalizationSeconds +=
+                        MPI_Wtime() - normalizationStart;
+                    _integrationInitializationTiming.volumeNormalizationCalls++;
+                }
+                DNDS_check_throw_info(!controlVolume.pointRecoveryStencil.empty(),
+                                      "Efficient NCFV point-recovery stencil is empty");
+                CheckStencilNodes(
+                    controlVolume.pointRecoveryStencil, _mesh->NumNodeProc());
                 DNDS_check_throw_info(controlVolume.volumeQuadrature.empty(),
                                       "Efficient NCFV unexpectedly stored volume Gauss points");
             }
@@ -689,7 +1002,7 @@ namespace DNDS::NCFV
             {
                 DNDS_check_throw_info(!controlVolume.volumeQuadrature.empty(),
                                       "Traditional NCFV did not store volume quadrature points");
-                DNDS_check_throw_info(controlVolume.pointRecoveryWeights.empty(),
+                DNDS_check_throw_info(controlVolume.pointRecoveryStencil.empty(),
                                       "Traditional NCFV unexpectedly stored differential recovery weights");
             }
         }
@@ -775,8 +1088,105 @@ namespace DNDS::NCFV
                             _maximumClosureError, localFailureNode));
     }
 
+    std::vector<index> DualGeometry::CollectNodeDependencies() const
+    {
+        DNDS_check_throw_info(
+            !_nodeIndicesRemapped,
+            "NCFV integration dependencies must be collected before halo remapping");
+        std::vector<index> globals;
+        const auto append = [&](index meshLocal)
+        {
+            DNDS_check_throw_info(
+                meshLocal >= 0 && meshLocal < _mesh->NumNodeProc(),
+                "NCFV integration data contains an invalid mesh-local node");
+            globals.push_back(_mesh->NodeIndexLocal2Global(meshLocal));
+        };
+        const auto appendPoint = [&](const AffinePoint &point)
+        {
+            for (const auto &coefficient : point.support)
+                append(coefficient.node);
+        };
+        for (const auto &volume : _nodeVolumes)
+        {
+            for (const auto &entry : volume.pointRecoveryStencil)
+                append(entry.node);
+            for (const auto &piece : volume.boundaryPieces)
+            {
+                for (const auto &entry : piece.efficientStencil)
+                    append(entry.node);
+                for (int iPoint = 0; iPoint < piece.nPoints; iPoint++)
+                    appendPoint(piece.points[static_cast<std::size_t>(iPoint)]);
+            }
+        }
+        const auto appendSurface = [&](const EdgeControlSurface &surface)
+        {
+            append(surface.nodes[0]);
+            append(surface.nodes[1]);
+            for (const auto &entry : surface.efficientStencil)
+                append(entry.node);
+        };
+        for (const auto &surface : _edgeSurfaces)
+            appendSurface(surface);
+        for (const auto &surface : _ghostEdgeSurfaces)
+            appendSurface(surface);
+        std::sort(globals.begin(), globals.end());
+        globals.erase(std::unique(globals.begin(), globals.end()), globals.end());
+        return globals;
+    }
+
+    void DualGeometry::RemapNodeIndices(
+        const std::function<index(index)> &meshLocalToHalo)
+    {
+        DNDS_check_throw_info(
+            !_nodeIndicesRemapped,
+            "NCFV integration node indices were already remapped");
+        const auto remapPoint = [&](AffinePoint &point)
+        {
+            for (auto &coefficient : point.support)
+                coefficient.node = meshLocalToHalo(coefficient.node);
+            std::sort(point.support.begin(), point.support.end(),
+                      [](const auto &left, const auto &right)
+                      { return left.node < right.node; });
+        };
+        const auto remapStencil = [&](auto &stencil)
+        {
+            for (auto &entry : stencil)
+                entry.node = meshLocalToHalo(entry.node);
+            std::sort(stencil.begin(), stencil.end(),
+                      [](const auto &left, const auto &right)
+                      { return left.node < right.node; });
+        };
+        for (auto &volume : _nodeVolumes)
+        {
+            const index remappedNode = meshLocalToHalo(volume.node);
+            DNDS_check_throw_info(
+                remappedNode == volume.node,
+                "NCFV exact node halo changed an owned-node local index");
+            volume.node = remappedNode;
+            remapStencil(volume.pointRecoveryStencil);
+            for (auto &piece : volume.boundaryPieces)
+            {
+                remapStencil(piece.efficientStencil);
+                for (int iPoint = 0; iPoint < piece.nPoints; iPoint++)
+                    remapPoint(piece.points[static_cast<std::size_t>(iPoint)]);
+            }
+        }
+        const auto remapSurface = [&](EdgeControlSurface &surface)
+        {
+            surface.nodes[0] = meshLocalToHalo(surface.nodes[0]);
+            surface.nodes[1] = meshLocalToHalo(surface.nodes[1]);
+            remapStencil(surface.efficientStencil);
+        };
+        for (auto &surface : _edgeSurfaces)
+            remapSurface(surface);
+        for (auto &surface : _ghostEdgeSurfaces)
+            remapSurface(surface);
+        _nodeIndicesRemapped = true;
+    }
+
     void DualGeometry::Build()
     {
+        _integrationInitializationTiming = {};
         BuildConstructionPoints();
         BuildOwnedEdgeSurfaces();
         BuildOwnedNodeVolumes();

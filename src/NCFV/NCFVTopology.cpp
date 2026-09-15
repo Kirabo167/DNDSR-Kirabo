@@ -14,19 +14,33 @@ namespace DNDS::NCFV
 {
     namespace
     {
-        using EdgeKey = std::pair<index, index>;
+        struct EdgeKey
+        {
+            std::array<index, 2> nodes{UnInitIndex, UnInitIndex};
+            index relativePbi = 0;
+
+            bool operator<(const EdgeKey &other) const
+            {
+                if (nodes != other.nodes)
+                    return nodes < other.nodes;
+                return relativePbi < other.relativePbi;
+            }
+        };
 
         struct FaceKey
         {
             int nVertices = 0;
             std::array<index, 4> nodes{
                 UnInitIndex, UnInitIndex, UnInitIndex, UnInitIndex};
+            std::array<index, 4> normalizedPbi{0, 0, 0, 0};
 
             bool operator<(const FaceKey &other) const
             {
                 if (nVertices != other.nVertices)
                     return nVertices < other.nVertices;
-                return nodes < other.nodes;
+                if (nodes != other.nodes)
+                    return nodes < other.nodes;
+                return normalizedPbi < other.normalizedPbi;
             }
         };
 
@@ -36,15 +50,26 @@ namespace DNDS::NCFV
             std::vector<int> receiveOffsets;
         };
 
-        EdgeKey CanonicalEdgeKey(index node0, index node1)
+        EdgeKey CanonicalEdgeKey(
+            index node0,
+            index node1,
+            Geom::NodePeriodicBits pbi0 = {},
+            Geom::NodePeriodicBits pbi1 = {})
         {
-            return node0 < node1 ? EdgeKey{node0, node1} : EdgeKey{node1, node0};
+            EdgeKey key;
+            key.nodes = node0 < node1
+                            ? std::array<index, 2>{node0, node1}
+                            : std::array<index, 2>{node1, node0};
+            key.relativePbi = static_cast<index>(pbi0 ^ pbi1);
+            return key;
         }
 
         MPI_int EdgeDirectoryRank(const EdgeKey &key, MPI_int nRanks)
         {
-            std::uint64_t value = static_cast<std::uint64_t>(key.first);
-            value ^= static_cast<std::uint64_t>(key.second) +
+            std::uint64_t value = static_cast<std::uint64_t>(key.nodes[0]);
+            value ^= static_cast<std::uint64_t>(key.nodes[1]) +
+                     UINT64_C(0x9e3779b97f4a7c15) + (value << 6U) + (value >> 2U);
+            value ^= static_cast<std::uint64_t>(key.relativePbi) +
                      UINT64_C(0x9e3779b97f4a7c15) + (value << 6U) + (value >> 2U);
             value ^= value >> 30U;
             value *= UINT64_C(0xbf58476d1ce4e5b9);
@@ -54,15 +79,48 @@ namespace DNDS::NCFV
             return static_cast<MPI_int>(value % static_cast<std::uint64_t>(nRanks));
         }
 
-        FaceKey CanonicalFaceKey(std::vector<index> nodes)
+        FaceKey CanonicalFaceKey(
+            const std::vector<index> &nodes,
+            const std::vector<Geom::NodePeriodicBits> &pbi = {})
         {
             DNDS_check_throw_info(nodes.size() >= 2 && nodes.size() <= 4,
                                   "NCFV supports O1 line, triangle, and quadrilateral faces");
-            std::sort(nodes.begin(), nodes.end());
-            FaceKey key;
-            key.nVertices = static_cast<int>(nodes.size());
-            std::copy(nodes.begin(), nodes.end(), key.nodes.begin());
-            return key;
+            DNDS_check_throw_info(
+                pbi.empty() || pbi.size() == nodes.size(),
+                "NCFV periodic face key has mismatched node/pbi lengths");
+
+            FaceKey best;
+            bool hasBest = false;
+            // A sub-entity frame may be XOR-shifted uniformly between parent
+            // cells.  Minimize over all three-bit shifts to obtain a frame-
+            // invariant key, including meshes where node IDs repeat on a very
+            // coarse periodic quotient.
+            for (index shift = 0; shift < 8; shift++)
+            {
+                std::vector<std::pair<index, index>> pairs;
+                pairs.reserve(nodes.size());
+                for (std::size_t i = 0; i < nodes.size(); i++)
+                {
+                    const index bits = pbi.empty()
+                                           ? 0
+                                           : static_cast<index>(uint8_t(pbi[i]));
+                    pairs.emplace_back(nodes[i], bits ^ shift);
+                }
+                std::sort(pairs.begin(), pairs.end());
+                FaceKey candidate;
+                candidate.nVertices = static_cast<int>(pairs.size());
+                for (std::size_t i = 0; i < pairs.size(); i++)
+                {
+                    candidate.nodes[i] = pairs[i].first;
+                    candidate.normalizedPbi[i] = pairs[i].second;
+                }
+                if (!hasBest || candidate < best)
+                {
+                    best = candidate;
+                    hasBest = true;
+                }
+            }
+            return best;
         }
 
         MPI_int FaceDirectoryRank(const FaceKey &key, MPI_int nRanks)
@@ -75,6 +133,10 @@ namespace DNDS::NCFV
                 value ^= value >> 30U;
                 value *= UINT64_C(0xbf58476d1ce4e5b9);
                 value ^= value >> 27U;
+                value ^= static_cast<std::uint64_t>(
+                             key.normalizedPbi[static_cast<std::size_t>(i)]) +
+                         UINT64_C(0x9e3779b97f4a7c15) + (value << 6U) +
+                         (value >> 2U);
             }
             return static_cast<MPI_int>(value % static_cast<std::uint64_t>(nRanks));
         }
@@ -86,6 +148,9 @@ namespace DNDS::NCFV
         {
             message.push_back(static_cast<index>(key.nVertices));
             message.insert(message.end(), key.nodes.begin(), key.nodes.end());
+            message.insert(
+                message.end(), key.normalizedPbi.begin(),
+                key.normalizedPbi.end());
             message.push_back(payload);
         }
 
@@ -98,6 +163,9 @@ namespace DNDS::NCFV
             for (int i = 0; i < 4; i++)
                 key.nodes[static_cast<std::size_t>(i)] =
                     message[offset + static_cast<std::size_t>(i + 1)];
+            for (int i = 0; i < 4; i++)
+                key.normalizedPbi[static_cast<std::size_t>(i)] =
+                    message[offset + static_cast<std::size_t>(i + 5)];
             return key;
         }
 
@@ -185,15 +253,117 @@ namespace DNDS::NCFV
             for (int i = 0; i < edge.GetNumNodes(); i++)
                 out[i] = edgeNodes[static_cast<std::size_t>(i)];
         };
+        if (_mesh->isPeriodic)
+        {
+            query.matchExtra = [this](index iParent, int iSub,
+                                      index /*candidateEntity*/,
+                                      index candidateParent,
+                                      int candidateSub) -> bool
+            {
+                auto parentA = _mesh->GetCellElement(iParent);
+                const auto edgeA = _mesh->getDim() == 2
+                                       ? parentA.ObtainFace(iSub)
+                                       : parentA.ObtainEdge(iSub);
+                const int nNodes = edgeA.GetNumNodes();
+                std::vector<index> nodesA(static_cast<std::size_t>(nNodes));
+                std::vector<Geom::NodePeriodicBits> pbiA(
+                    static_cast<std::size_t>(nNodes));
+                if (_mesh->getDim() == 2)
+                {
+                    parentA.ExtractFaceNodes(
+                        iSub, _mesh->cell2node[iParent], nodesA);
+                    parentA.ExtractFaceNodes(
+                        iSub, _mesh->cell2nodePbi[iParent], pbiA);
+                }
+                else
+                {
+                    parentA.ExtractEdgeNodes(
+                        iSub, _mesh->cell2node[iParent], nodesA);
+                    parentA.ExtractEdgeNodes(
+                        iSub, _mesh->cell2nodePbi[iParent], pbiA);
+                }
+
+                auto parentB = _mesh->GetCellElement(candidateParent);
+                std::vector<index> nodesB(static_cast<std::size_t>(nNodes));
+                std::vector<Geom::NodePeriodicBits> pbiB(
+                    static_cast<std::size_t>(nNodes));
+                if (_mesh->getDim() == 2)
+                {
+                    parentB.ExtractFaceNodes(
+                        candidateSub, _mesh->cell2node[candidateParent], nodesB);
+                    parentB.ExtractFaceNodes(
+                        candidateSub, _mesh->cell2nodePbi[candidateParent], pbiB);
+                }
+                else
+                {
+                    parentB.ExtractEdgeNodes(
+                        candidateSub, _mesh->cell2node[candidateParent], nodesB);
+                    parentB.ExtractEdgeNodes(
+                        candidateSub, _mesh->cell2nodePbi[candidateParent], pbiB);
+                }
+                using NodeAndPbi = std::pair<index, Geom::NodePeriodicBits>;
+                const auto compare = [](const NodeAndPbi &left,
+                                        const NodeAndPbi &right)
+                {
+                    return left.first == right.first
+                               ? uint8_t(left.second) < uint8_t(right.second)
+                               : left.first < right.first;
+                };
+                std::vector<NodeAndPbi> pairsA(static_cast<std::size_t>(nNodes));
+                std::vector<NodeAndPbi> pairsB(static_cast<std::size_t>(nNodes));
+                for (int i = 0; i < nNodes; i++)
+                {
+                    pairsA[static_cast<std::size_t>(i)] =
+                        {nodesA[static_cast<std::size_t>(i)],
+                         pbiA[static_cast<std::size_t>(i)]};
+                    pairsB[static_cast<std::size_t>(i)] =
+                        {nodesB[static_cast<std::size_t>(i)],
+                         pbiB[static_cast<std::size_t>(i)]};
+                }
+                std::sort(pairsA.begin(), pairsA.end(), compare);
+                std::sort(pairsB.begin(), pairsB.end(), compare);
+                const auto frameXor = pairsA.front().second ^
+                                      pairsB.front().second;
+                for (int i = 1; i < nNodes; i++)
+                    if ((pairsA[static_cast<std::size_t>(i)].second ^
+                         pairsB[static_cast<std::size_t>(i)].second) != frameXor)
+                        return false;
+                return true;
+            };
+            query.extractPbi = [this](
+                                       index iParent,
+                                       int iSub,
+                                       const std::function<Geom::NodePeriodicBits(int)> &parentPbi,
+                                       Geom::NodePeriodicBits *out)
+            {
+                auto parent = _mesh->GetCellElement(iParent);
+                const auto edge = _mesh->getDim() == 2
+                                      ? parent.ObtainFace(iSub)
+                                      : parent.ObtainEdge(iSub);
+                std::vector<Geom::NodePeriodicBits> parentBits(
+                    static_cast<std::size_t>(parent.GetNumNodes()));
+                for (int i = 0; i < parent.GetNumNodes(); i++)
+                    parentBits[static_cast<std::size_t>(i)] = parentPbi(i);
+                std::vector<Geom::NodePeriodicBits> edgeBits(
+                    static_cast<std::size_t>(edge.GetNumNodes()));
+                if (_mesh->getDim() == 2)
+                    parent.ExtractFaceNodes(iSub, parentBits, edgeBits);
+                else
+                    parent.ExtractEdgeNodes(iSub, parentBits, edgeBits);
+                for (int i = 0; i < edge.GetNumNodes(); i++)
+                    out[i] = edgeBits[static_cast<std::size_t>(i)];
+            };
+        }
         return query;
     }
 
     void Topology::Build()
     {
-        DNDS_check_throw_info(!_mesh->isPeriodic,
-                              "NCFV v1 does not yet support periodic edge frames");
         DNDS_check_throw_info(_mesh->cell2node.isLocal(),
                               "NCFV requires local primal cell-to-node indices");
+        DNDS_check_throw_info(
+            !_mesh->isPeriodic || _mesh->cell2nodePbi.father,
+            "NCFV periodic topology requires cell-to-node periodic bits");
 
         for (index iCell = 0; iCell < _mesh->NumCellProc(); iCell++)
         {
@@ -228,7 +398,7 @@ namespace DNDS::NCFV
 
         auto result = Geom::MeshConnectivity::InterpolateGlobal(
             _mesh->cell2node,
-            Geom::tPbiPair{},
+            _mesh->isPeriodic ? _mesh->cell2nodePbi : Geom::tPbiPair{},
             *_mesh->cell2node.trans.pLGhostMapping,
             *_mesh->cell2node.father->pLGlobalMapping,
             *_mesh->coords.trans.pLGhostMapping,
@@ -244,6 +414,11 @@ namespace DNDS::NCFV
 
         _edge2node.father = result.entity2node.father;
         _edge2node.son = result.entity2node.son;
+        if (_mesh->isPeriodic)
+        {
+            _edge2nodePbi.father = result.entity2nodePbi.father;
+            _edge2nodePbi.son = result.entity2nodePbi.son;
+        }
         _edge2node.TransAttach();
         _edge2node.trans.createFatherGlobalMapping();
 
@@ -284,6 +459,9 @@ namespace DNDS::NCFV
         _edge2node.trans.createMPITypes();
         _edge2node.trans.pullOnce();
 
+        if (_mesh->isPeriodic)
+            _edge2nodePbi.BorrowAndPull(_edge2node);
+
         _edge2cell.father = result.entity2parent.father;
         _edge2cell.son = result.entity2parent.son;
         _edge2cell.BorrowAndPull(_edge2node);
@@ -309,26 +487,35 @@ namespace DNDS::NCFV
         {
             const EdgeKey key = CanonicalEdgeKey(
                 _edge2node.father->operator()(iEdge, 0),
-                _edge2node.father->operator()(iEdge, 1));
+                _edge2node.father->operator()(iEdge, 1),
+                _mesh->isPeriodic
+                    ? _edge2nodePbi.father->operator()(iEdge, 0)
+                    : Geom::NodePeriodicBits{},
+                _mesh->isPeriodic
+                    ? _edge2nodePbi.father->operator()(iEdge, 1)
+                    : Geom::NodePeriodicBits{});
             const index globalEdge =
                 _edge2node.father->pLGlobalMapping->operator()(_mpi.rank, iEdge);
             auto &message = advertisements[static_cast<std::size_t>(
                 EdgeDirectoryRank(key, _mpi.size))];
-            message.insert(message.end(), {key.first, key.second, globalEdge});
+            message.insert(
+                message.end(),
+                {key.nodes[0], key.nodes[1], key.relativePbi, globalEdge});
         }
 
         const ExchangeResult receivedAdvertisements =
             ExchangeByRank(advertisements, _mpi);
-        DNDS_check_throw_info(receivedAdvertisements.values.size() % 3 == 0,
+        DNDS_check_throw_info(receivedAdvertisements.values.size() % 4 == 0,
                               "NCFV edge-directory advertisement is malformed");
         std::map<EdgeKey, index> directory;
         for (std::size_t offset = 0; offset < receivedAdvertisements.values.size();
-             offset += 3)
+             offset += 4)
         {
             const EdgeKey key{
-                receivedAdvertisements.values[offset],
-                receivedAdvertisements.values[offset + 1]};
-            const index globalEdge = receivedAdvertisements.values[offset + 2];
+                {receivedAdvertisements.values[offset],
+                 receivedAdvertisements.values[offset + 1]},
+                receivedAdvertisements.values[offset + 2]};
+            const index globalEdge = receivedAdvertisements.values[offset + 3];
             const auto [iterator, inserted] = directory.emplace(key, globalEdge);
             DNDS_check_throw_info(
                 inserted || iterator->second == globalEdge,
@@ -351,17 +538,30 @@ namespace DNDS::NCFV
                                           ? cell.ObtainFace(iLocalEdge)
                                           : cell.ObtainEdge(iLocalEdge);
                     std::vector<index> nodes(static_cast<std::size_t>(edge.GetNumNodes()));
+                    std::vector<Geom::NodePeriodicBits> pbi(
+                        static_cast<std::size_t>(edge.GetNumNodes()));
                     if (_mesh->getDim() == 2)
+                    {
                         cell.ExtractFaceNodes(iLocalEdge, _mesh->cell2node[iCell], nodes);
+                        if (_mesh->isPeriodic)
+                            cell.ExtractFaceNodes(
+                                iLocalEdge, _mesh->cell2nodePbi[iCell], pbi);
+                    }
                     else
+                    {
                         cell.ExtractEdgeNodes(iLocalEdge, _mesh->cell2node[iCell], nodes);
+                        if (_mesh->isPeriodic)
+                            cell.ExtractEdgeNodes(
+                                iLocalEdge, _mesh->cell2nodePbi[iCell], pbi);
+                    }
                     DNDS_check_throw_info(nodes.size() >= 2,
                                           "NCFV encountered an invalid primal edge");
                     if (nodes[0] != iNode && nodes[1] != iNode)
                         continue;
                     requiredSet.insert(CanonicalEdgeKey(
                         _mesh->NodeIndexLocal2Global(nodes[0]),
-                        _mesh->NodeIndexLocal2Global(nodes[1])));
+                        _mesh->NodeIndexLocal2Global(nodes[1]),
+                        pbi[0], pbi[1]));
                 }
             }
 
@@ -373,7 +573,8 @@ namespace DNDS::NCFV
             auto &message = queries[static_cast<std::size_t>(
                 EdgeDirectoryRank(key, _mpi.size))];
             message.insert(message.end(),
-                           {key.first, key.second, static_cast<index>(slot)});
+                           {key.nodes[0], key.nodes[1], key.relativePbi,
+                            static_cast<index>(slot)});
         }
 
         const ExchangeResult receivedQueries = ExchangeByRank(queries, _mpi);
@@ -382,21 +583,23 @@ namespace DNDS::NCFV
         {
             const int begin = receivedQueries.receiveOffsets[static_cast<std::size_t>(sourceRank)];
             const int end = receivedQueries.receiveOffsets[static_cast<std::size_t>(sourceRank + 1)];
-            DNDS_check_throw_info((end - begin) % 3 == 0,
+            DNDS_check_throw_info((end - begin) % 4 == 0,
                                   "NCFV edge-directory query is malformed");
             auto &reply = replies[static_cast<std::size_t>(sourceRank)];
-            for (int offset = begin; offset < end; offset += 3)
+            for (int offset = begin; offset < end; offset += 4)
             {
                 const EdgeKey key{
-                    receivedQueries.values[static_cast<std::size_t>(offset)],
-                    receivedQueries.values[static_cast<std::size_t>(offset + 1)]};
+                    {receivedQueries.values[static_cast<std::size_t>(offset)],
+                     receivedQueries.values[static_cast<std::size_t>(offset + 1)]},
+                    receivedQueries.values[static_cast<std::size_t>(offset + 2)]};
                 const index slot =
-                    receivedQueries.values[static_cast<std::size_t>(offset + 2)];
+                    receivedQueries.values[static_cast<std::size_t>(offset + 3)];
                 const auto iterator = directory.find(key);
                 DNDS_check_throw_info(
                     iterator != directory.end(),
-                    fmt::format("NCFV could not resolve edge ({}, {}) in the distributed directory",
-                                key.first, key.second));
+                    fmt::format(
+                        "NCFV could not resolve edge ({}, {}, pbi={}) in the distributed directory",
+                        key.nodes[0], key.nodes[1], key.relativePbi));
                 reply.push_back(slot);
                 reply.push_back(iterator->second);
             }
@@ -423,7 +626,7 @@ namespace DNDS::NCFV
 
     void Topology::BuildFaceHalo()
     {
-        constexpr std::size_t recordWidth = 6;
+        constexpr std::size_t recordWidth = 10;
 
         // The mesh face halo is cell-centred: it contains every face needed by
         // owned cells.  A node-centred dual volume additionally needs faces of
@@ -437,10 +640,17 @@ namespace DNDS::NCFV
             const auto face = _mesh->GetFaceElement(iFace);
             std::vector<index> globalNodes(
                 static_cast<std::size_t>(face.GetNumVertices()));
+            std::vector<Geom::NodePeriodicBits> pbi(
+                static_cast<std::size_t>(face.GetNumVertices()));
             for (int iNode = 0; iNode < face.GetNumVertices(); iNode++)
+            {
                 globalNodes[static_cast<std::size_t>(iNode)] =
                     _mesh->NodeIndexLocal2Global(_mesh->face2node(iFace, iNode));
-            const FaceKey key = CanonicalFaceKey(std::move(globalNodes));
+                if (_mesh->isPeriodic)
+                    pbi[static_cast<std::size_t>(iNode)] =
+                        _mesh->face2nodePbi(iFace, iNode);
+            }
+            const FaceKey key = CanonicalFaceKey(globalNodes, pbi);
             auto &message = advertisements[static_cast<std::size_t>(
                 FaceDirectoryRank(key, _mpi.size))];
             AppendFaceRecord(message, key, _mesh->FaceIndexLocal2Global(iFace));
@@ -456,7 +666,7 @@ namespace DNDS::NCFV
              offset += recordWidth)
         {
             const FaceKey key = ReadFaceRecord(receivedAdvertisements.values, offset);
-            const index globalFace = receivedAdvertisements.values[offset + 5];
+            const index globalFace = receivedAdvertisements.values[offset + 9];
             const auto [iterator, inserted] = directory.emplace(key, globalFace);
             DNDS_check_throw_info(
                 inserted || iterator->second == globalFace,
@@ -475,12 +685,18 @@ namespace DNDS::NCFV
             {
                 const auto face = cell.ObtainFace(iLocalFace);
                 std::vector<index> localNodes(static_cast<std::size_t>(face.GetNumNodes()));
+                std::vector<Geom::NodePeriodicBits> facePbi(
+                    static_cast<std::size_t>(face.GetNumNodes()));
                 cell.ExtractFaceNodes(iLocalFace, _mesh->cell2node[iCell], localNodes);
+                if (_mesh->isPeriodic)
+                    cell.ExtractFaceNodes(
+                        iLocalFace, _mesh->cell2nodePbi[iCell], facePbi);
                 localNodes.resize(static_cast<std::size_t>(face.GetNumVertices()));
+                facePbi.resize(static_cast<std::size_t>(face.GetNumVertices()));
                 std::vector<index> globalNodes(localNodes.size());
                 for (std::size_t iNode = 0; iNode < localNodes.size(); iNode++)
                     globalNodes[iNode] = _mesh->NodeIndexLocal2Global(localNodes[iNode]);
-                FaceKey key = CanonicalFaceKey(std::move(globalNodes));
+                FaceKey key = CanonicalFaceKey(globalNodes, facePbi);
                 keys.push_back(key);
                 requiredSet.insert(std::move(key));
             }
@@ -509,7 +725,7 @@ namespace DNDS::NCFV
             {
                 const FaceKey key = ReadFaceRecord(
                     receivedQueries.values, static_cast<std::size_t>(offset));
-                const index slot = receivedQueries.values[static_cast<std::size_t>(offset) + 5];
+                const index slot = receivedQueries.values[static_cast<std::size_t>(offset) + 9];
                 const auto iterator = directory.find(key);
                 DNDS_check_throw_info(
                     iterator != directory.end(),
@@ -618,7 +834,13 @@ namespace DNDS::NCFV
             DNDS_check_throw_info(_edge2node.RowSize(iEdge) == 2,
                                   "NCFV O1 primal edges must have exactly two nodes");
             if (_edge2node(iEdge, 1) < _edge2node(iEdge, 0))
+            {
                 std::swap(_edge2node(iEdge, 0), _edge2node(iEdge, 1));
+                if (_mesh->isPeriodic)
+                    std::swap(
+                        _edge2nodePbi(iEdge, 0),
+                        _edge2nodePbi(iEdge, 1));
+            }
             for (rowsize i = 0; i < _edge2node.RowSize(iEdge); i++)
             {
                 const index localNode = _mesh->NodeIndexGlobal2Local(_edge2node(iEdge, i));
@@ -637,7 +859,7 @@ namespace DNDS::NCFV
                 const index localCell = _mesh->CellIndexGlobal2Local(
                     parentGlobals[static_cast<std::size_t>(i)]);
                 DNDS_check_throw_info(localCell >= 0,
-                                      "NCFV edge parent is absent from the cell halo; increase ghostLayers");
+                                      "NCFV edge parent is absent from the fixed point-complete cell halo");
                 _edge2cell(iEdge, i) = localCell;
             }
         }
@@ -713,7 +935,7 @@ namespace DNDS::NCFV
             }
             DNDS_check_throw_info(
                 expectedNeighbors == actualNeighbors[static_cast<std::size_t>(iNode)],
-                "NCFV edge halo is incomplete for an owned node; increase mesh.ghostLayers");
+                "NCFV edge halo is incomplete for an owned node after point-complete halo construction");
         }
     }
 }

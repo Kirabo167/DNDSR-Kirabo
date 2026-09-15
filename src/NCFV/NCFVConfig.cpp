@@ -2,6 +2,7 @@
 
 #include "DNDS/Errors.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <set>
@@ -67,8 +68,6 @@ namespace DNDS::NCFV
                               "NCFV dimension must be 2 or 3");
         DNDS_check_throw_info(!mesh.meshFile.empty(),
                               "NCFV mesh.meshFile must name a CGNS mesh");
-        DNDS_check_throw_info(mesh.ghostLayers >= 2,
-                              "NCFV requires at least two cell ghost layers");
         DNDS_check_throw_info(mesh.periodicLengths.size() == 3,
                               "NCFV periodicLengths must have three entries");
         const bool periodic = mesh.periodicLengths[0] > 0;
@@ -83,6 +82,32 @@ namespace DNDS::NCFV
             for (const auto &boundary : physics.boundaryZones)
                 DNDS_check_throw_info(boundary.mode == BoundaryMode::Periodic,
                                       "NCFV fully periodic box requires every boundary to be Periodic");
+            DNDS_check_throw_info(
+                mesh.periodicBoundaryPairs.empty() ||
+                    mesh.periodicBoundaryPairs.size() == 6,
+                "NCFV exact periodic topology requires three main/donor boundary pairs");
+            if (mesh.periodicBoundaryPairs.empty())
+                DNDS_check_throw_info(
+                    physics.boundaryZones.size() == 6,
+                    "NCFV infers exact periodic pairs only when exactly six Periodic boundaryZones are listed");
+            else
+            {
+                std::set<std::string> pairNames;
+                for (const std::string &name : mesh.periodicBoundaryPairs)
+                    DNDS_check_throw_info(
+                        !name.empty() && pairNames.insert(name).second,
+                        "NCFV periodicBoundaryPairs names must be nonempty and unique");
+                for (const std::string &name : mesh.periodicBoundaryPairs)
+                {
+                    const auto found = std::find_if(
+                        physics.boundaryZones.begin(), physics.boundaryZones.end(),
+                        [&](const BoundaryZoneSettings &zone)
+                        { return zone.name == name && zone.mode == BoundaryMode::Periodic; });
+                    DNDS_check_throw_info(
+                        found != physics.boundaryZones.end(),
+                        "NCFV periodicBoundaryPairs name is not configured as Periodic: " + name);
+                }
+            }
         }
         else
         {

@@ -37,7 +37,7 @@ namespace DNDS::NCFV
         std::unordered_map<std::string, Geom::t_index> _boundaryNameToID;
         std::unique_ptr<Topology> _topology;
         std::unique_ptr<DualGeometry> _geometry;
-        std::unique_ptr<PeriodicNodes> _periodic;
+        std::unique_ptr<NodeHalo> _nodeHalo;
         std::unique_ptr<Reconstruction> _reconstruction;
         std::unique_ptr<BoundaryRegistry> _boundaries;
         std::unique_ptr<SpatialOperator<dimension>> _spatial;
@@ -92,18 +92,15 @@ namespace DNDS::NCFV
                                   "Initialize solver before enabling detailed flux timing");
             _spatial->EnableDetailedFluxTiming(enabled);
         }
-        /** Select the precomputed or legacy on-demand physical-flux gradients. */
-        void UsePrecomputedPhysicalFluxGradients(bool enabled)
-        {
-            DNDS_check_throw_info(
-                _spatial != nullptr,
-                "Initialize solver before selecting physical-flux gradients");
-            _spatial->UsePrecomputedPhysicalFluxGradients(enabled);
-        }
-
         [[nodiscard]] const ssp<Geom::UnstructuredMesh> &Mesh() const { return _mesh; }
         [[nodiscard]] const Topology &EdgeTopology() const { return *_topology; }
         [[nodiscard]] const DualGeometry &Geometry() const { return *_geometry; }
+        [[nodiscard]] const NodeHalo &NodeCommunication() const
+        {
+            DNDS_check_throw_info(_nodeHalo != nullptr,
+                                  "Initialize solver before accessing node communication");
+            return *_nodeHalo;
+        }
         [[nodiscard]] const Reconstruction &ReconstructionData() const { return *_reconstruction; }
         [[nodiscard]] const NodeStatePair &StateField() const { return _state; }
         [[nodiscard]] const NodeStatePair &ResidualField() const { return _rhs; }
