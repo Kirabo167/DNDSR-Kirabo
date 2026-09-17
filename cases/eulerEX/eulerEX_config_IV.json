@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "CFV",
+        "model": "NS_EX",
+        "fieldNVariables": 5
+    },
     "timeMarchControl": {
         "dtImplicit": 1e-1,
         "nTimeStep": 100000,

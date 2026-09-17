@@ -115,8 +115,7 @@
             "displayName": "Build reactive solvers and tests",
             "configurePreset": "reactive-test",
             "targets": [
-                "eulerEX",
-                "eulerEX3D",
+                "euler",
                 "eulerState",
                 "canteraConstVolTrajectory",
                 "cantera_Test",

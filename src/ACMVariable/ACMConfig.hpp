@@ -15,6 +15,7 @@
 #include "ACMTime.hpp"
 #include "ACMTurbulence.hpp"
 #include "CFV/VRSettings.hpp"
+#include "DNDS/Config/SolverSelection.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 
 #include <array>
@@ -136,6 +137,7 @@ namespace DNDS::ACMVariable
     /// Complete kernel-preview configuration read by the `acm3D` application.
     struct KernelConfiguration
     {
+        SolverSelection solver{"ACMVariable", "CFV", "VariableDensity3D", 5};
         Settings acmSettings;
         TimeMarchSettings timeMarchSettings;
         TurbulenceSettings turbulenceSettings; ///< Independent runtime RANS selection and transport controls.
@@ -156,6 +158,7 @@ namespace DNDS::ACMVariable
 
         DNDS_DECLARE_CONFIG(KernelConfiguration)
         {
+            config.field_section(&T::solver, "solver", "Unified executable dispatch settings");
             config.field_section(&T::acmSettings, "acmSettings", "Variable-density ACM settings");
             config.field_section(
                 &T::timeMarchSettings,

@@ -179,17 +179,18 @@ NCFV 只保留长期稀疏 MPI 路径：
 
 ## 4. 构建与运行
 
-模块目录为 `src/NCFV/`，C++ 命名空间为 `DNDS::NCFV`，库目标为 `ncfv`，
-程序目标为 `NCFV`，可执行文件为 `build/app/NCFV.exe`。
+模块目录为 `src/NCFV/`，C++ 命名空间为 `DNDS::NCFV`，库目标为 `ncfv`。
+NCFV 与 Euler/ACM 共用统一程序目标 `euler`，可执行文件为
+`build/app/euler.exe`；由案例 JSON 的 `solver.discretization="NCFV"` 分派。
 
 ```bash
 cmake -S . -B build
-cmake --build build -t NCFV -j8
+cmake --build build -t euler -j8
 
 cd build
-./app/NCFV.exe ../cases/NCFV/NCFV.json
-./app/NCFV.exe ../cases/NCFV/NCFV_traditional.json
-mpirun --oversubscribe -np 4 ./app/NCFV.exe ../cases/NCFV/NCFV.json
+./app/euler.exe ../cases/NCFV/NCFV.json
+./app/euler.exe ../cases/NCFV/NCFV_traditional.json
+mpirun --oversubscribe -np 4 ./app/euler.exe ../cases/NCFV/NCFV.json
 ```
 
 模式只由下列 JSON 字段切换：
@@ -205,8 +206,8 @@ mpirun --oversubscribe -np 4 ./app/NCFV.exe ../cases/NCFV/NCFV.json
 `NCFV_3d.json`。命令行也支持 JSON pointer 覆盖及配置 schema 输出：
 
 ```bash
-./app/NCFV.exe --emit-schema
-./app/NCFV.exe ../cases/NCFV/NCFV.json \
+./app/euler.exe ../cases/NCFV/NCFV.json --emit-schema
+./app/euler.exe ../cases/NCFV/NCFV.json \
   -k /algorithm/mode -v TraditionalQuadrature
 ```
 
@@ -326,7 +327,7 @@ owner/ghost 通信，边通量仍按 edge owner 唯一计算。每个 rank 不�
 
 ```bash
 cd build
-mpirun --oversubscribe -np 4 ./app/NCFV.exe ../cases/NCFV/NCFV_iv40.json
+mpirun --oversubscribe -np 4 ./app/euler.exe ../cases/NCFV/NCFV_iv40.json
 ```
 
 ## 7. 测试与当前边界

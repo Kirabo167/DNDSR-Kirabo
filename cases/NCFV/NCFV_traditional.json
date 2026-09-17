@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
     "dimension": 2,
     "mesh": {
         "meshFile": "../data/mesh/CylinderA1.cgns",

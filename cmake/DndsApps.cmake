@@ -67,13 +67,6 @@ jacobiLUTest
 oneDimProfileTest
 )
 
-# Constant-density ACM high-order solver applications. Modifier: Runzhi Ma.
-set(DNDS_APPS_ACM
-ACM
-acm2D
-acm3D
-)
-
 # -------------------------------------------------------------------
 # Symlinks for in-place development
 # -------------------------------------------------------------------
@@ -144,28 +137,33 @@ endif()
 ADD_EXE_APP("${DNDS_APPS_Solver}" "app/Solver" "dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Geom}" "app/Geom" "geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_CFV}" "app/CFV" "cfv;geom;dnds;" ON cpp)
-# Build ACM independently from the existing Euler equation module while reusing CFV/Geom. Modifier: Runzhi Ma.
-ADD_EXE_APP("${DNDS_APPS_ACM}" "app/ACM" "acm;cfv;geom;dnds;" ON cpp)
-# Independent variable-density applications. Author: Runzhi Ma.
-ADD_EXE_APP("acmVariable2D;acmVariable3D" "app/ACMVariable" "acmVariable;cfv;geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Euler}" "app/Euler" "cfv;geom;dnds;" ON cpp)
 
-
-
-set(DNDS_APPS_Euler_Models)
-
+set(DNDS_UNIFIED_SOLVER_LIBS acm acmVariable ncfv cfv geom dnds)
 foreach(item IN LISTS DNDS_Euler_Models_List)
     string(REPLACE "=" ";" keyval ${item})
     list(GET keyval 0 key)
-    list(GET keyval 1 value)
-    set(EXE_NAME "euler${value}")
-    list(APPEND DNDS_APPS_Euler_Models "${EXE_NAME}")
-    message(DEBUG "${keyval} --- ${value} --- ${EXE_NAME}")
-    ## Mind That the TOPOLOGICAL ORDER should be obeyed!
-    ADD_EXE_APP("${EXE_NAME}" "app/Euler" "euler_library_${key};euler_library_fast_${key};cfv;geom;dnds;" ON cpp)
-    ## This works because cmake detects dependency and reorders the libraries
-    # ADD_EXE_APP("${EXE_NAME}" "app/Euler" "dnds;geom;cfv;euler_library_fast_${key};euler_library_${key};")
+    list(APPEND DNDS_UNIFIED_SOLVER_LIBS
+        euler_library_${key}
+        euler_library_fast_${key})
 endforeach()
+
+# One run-time-dispatched solver executable replaces all former model-specific
+# Euler, ACM, ACMVariable and NCFV launchers.
+ADD_EXE_APP("euler" "app/Euler" "${DNDS_UNIFIED_SOLVER_LIBS};" OFF cpp)
+target_sources(euler PRIVATE
+    app/Euler/UnifiedSolver_NS.cpp
+    app/Euler/UnifiedSolver_NS_2D.cpp
+    app/Euler/UnifiedSolver_NS_3D.cpp
+    app/Euler/UnifiedSolver_NS_SA.cpp
+    app/Euler/UnifiedSolver_NS_SA_3D.cpp
+    app/Euler/UnifiedSolver_NS_2EQ.cpp
+    app/Euler/UnifiedSolver_NS_2EQ_3D.cpp
+    app/Euler/UnifiedSolver_NS_EX.cpp
+    app/Euler/UnifiedSolver_NS_EX_3D.cpp
+    app/Euler/UnifiedSolver_ACM.cpp
+    app/Euler/UnifiedSolver_ACMVariable.cpp
+    app/Euler/UnifiedSolver_NCFV.cpp)
 
 ADD_EXE_APP("eulerState" "app/Euler" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds;" ON cpp)
 set(DNDS_EULER_EXTRA_APPS eulerState)
@@ -183,4 +181,4 @@ endif()
 # -------------------------------------------------------------------
 
 add_custom_target(all_euler)
-add_dependencies(all_euler ${DNDS_APPS_Euler_Models} ${DNDS_EULER_EXTRA_APPS})
+add_dependencies(all_euler euler)

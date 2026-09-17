@@ -7,9 +7,15 @@
 // Boundary model: WALL is stationary no-slip with zero normal pressure gradient; FAR is the
 //                 general-alpha ACM characteristic far-field condition.
 // Parallel launch from build/ with 32 MPI ranks:
-// OMP_NUM_THREADS=1 mpirun -np 32 ./app/acm2D.exe ../cases/acm2D/acm2D.json
+// OMP_NUM_THREADS=1 mpirun -np 32 ./app/euler.exe ../cases/acm2D/acm2D.json
 // Modifier: Runzhi Ma
 {
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity2D",
+        "fieldNVariables": 4
+    },
     // Constant-density artificial-compressibility flow model. State order is [u,v,w,p].
     "acmSettings": {
         "rho0": 1.0,

@@ -42,11 +42,10 @@ Implemented now:
   positivity-bounded SSPRK3 substeps, and frozen eddy-viscosity coupling to the flow equations;
 - DNDS configuration registration, self-contained single-case JSON loading, CLI overrides, and schema output.
 
-Application organization follows the compact Euler entry-point style:
+Application organization uses the project-wide unified entry point:
 
-- `app/ACM/ACM.cpp`: short default 3-D launcher;
-- `app/ACM/acm2D.cpp` and `app/ACM/acm3D.cpp`: short dimension-specific launchers;
-- `SingleBlockApp.hpp`: shared CLI and configuration workflow;
+- `app/Euler/euler.cpp`: runtime dispatch from the case JSON `solver` object;
+- `SingleBlockApp.hpp`: ACM CLI and configuration workflow selected by that dispatcher;
 - `ACMSolver.*`: mesh/reconstruction/time-loop assembly;
 - `ACMEvaluator.*`: high-order spatial residual and frozen-reconstruction Jacobian;
 - `ACMTurbulence.*`: model-local viscosity, diffusion, source, and boundary kernels;
@@ -56,8 +55,9 @@ Application organization follows the compact Euler entry-point style:
 Case configuration uses one file per case. `cases/acm2D/acm2D.json` and
 `cases/acm3D/acm3D.json` each contain the complete physical, numerical, mesh, reconstruction,
 boundary, and initial-state configuration. The application does not search for or merge an
-adjacent base file. A user-supplied positional JSON path completely selects the case; `-k/-v`
-overrides remain available for short parameter studies.
+adjacent base file. A user-supplied positional JSON path completely selects the case and
+ACM dimension/model; `-k/-v` overrides remain available for short parameter studies. Build
+and run it as `./app/euler.exe ../cases/acm2D/acm2D.json`.
 
 Turbulence is modular and does not enlarge the ACM flow state. The flow solver always stores
 `[u,v,w,p]`; a separate distributed two-entry field stores only the active turbulence variables:

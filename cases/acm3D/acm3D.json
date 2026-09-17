@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity3D",
+        "fieldNVariables": 4
+    },
     "acmSettings": {
         "rho0": 1.0,
         "beta2": 1.0,

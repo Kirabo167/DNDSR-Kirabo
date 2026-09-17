@@ -4,6 +4,8 @@ Author and maintainer: Runzhi Ma (2026-09-04)
 
 This directory is an independent incompressible variable-density artificial-
 compressibility solver. It does not modify `Euler` or constant-density `ACM`.
+It is launched through the unified `build/app/euler.exe`; the case JSON selects
+`solver.type="ACMVariable"` and the 2-D or 3-D model.
 The solved flow state is `U=[rho,rho*u,rho*v,rho*w,p]`; a 2-D mesh uses the
 same five-entry storage and keeps the out-of-plane equation for modular 2-D/3-D
 assembly. Physical-time histories contain only density and momentum. Pressure
@@ -28,4 +30,3 @@ is an algebraic Lagrange multiplier for the discrete divergence constraint.
 
 The implementation derivation, source-document errata, method matrix and
 verification procedure are in `docs/reports/acm_variable_density_implementation.pdf`.
-

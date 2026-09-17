@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
     "dimension": 3,
     "mesh": {
         "meshFile": "../cases/NCFV/iv40_3d_1_dnds.cgns",

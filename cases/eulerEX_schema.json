@@ -2,6 +2,35 @@
     "type": "object",
     "description": "DNDSR eulerEX configuration",
     "properties": {
+        "solver": {
+            "type": "object",
+            "description": "Unified executable dispatch settings",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "default": "Euler",
+                    "enum": ["Euler", "ACM", "ACMVariable"],
+                    "description": "Governing-equation family"
+                },
+                "discretization": {
+                    "type": "string",
+                    "default": "CFV",
+                    "enum": ["CFV", "NCFV"],
+                    "description": "Spatial discretization"
+                },
+                "model": {
+                    "type": "string",
+                    "default": "NS_EX",
+                    "description": "Compiled equation/model specialization"
+                },
+                "fieldNVariables": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "description": "Runtime state size for dynamic Euler models NS_EX and NS_EX_3D"
+                }
+            }
+        },
         "timeMarchControl": {
             "type": "object",
             "description": "Time marching settings",

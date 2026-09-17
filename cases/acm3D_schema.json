@@ -3,6 +3,35 @@
     "type": "object",
     "description": "DNDSR constant-density ACM kernel preview configuration",
     "properties": {
+        "solver": {
+            "type": "object",
+            "description": "Unified executable dispatch settings",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "default": "ACM",
+                    "enum": ["Euler", "ACM", "ACMVariable"],
+                    "description": "Governing-equation family"
+                },
+                "discretization": {
+                    "type": "string",
+                    "default": "CFV",
+                    "enum": ["CFV", "NCFV"],
+                    "description": "Spatial discretization"
+                },
+                "model": {
+                    "type": "string",
+                    "default": "ConstantDensity3D",
+                    "description": "Compiled equation/model specialization"
+                },
+                "fieldNVariables": {
+                    "type": "integer",
+                    "default": 4,
+                    "minimum": 1,
+                    "description": "Runtime state size for dynamic Euler models NS_EX and NS_EX_3D"
+                }
+            }
+        },
         "acmSettings": {
             "type": "object",
             "description": "Constant-density ACM settings",

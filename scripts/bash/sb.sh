@@ -36,4 +36,4 @@ then
 $runCmd
 fi
 
-# sbatch -N10 -J DLR_D_T1 -o DLR_D_T1.txt srunApp.sh ../build/app/eulerSA3D.exe ../cases/eulerSA3D_config_DLRF6.json
+# sbatch -N10 -J DLR_D_T1 -o DLR_D_T1.txt srunApp.sh ../build/app/euler.exe ../cases/eulerSA3D/eulerSA3D_config_DLRF6.json

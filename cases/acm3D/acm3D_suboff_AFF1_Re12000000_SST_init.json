@@ -1,6 +1,12 @@
 // DARPA SUBOFF AFF-1, Re_L = 1.2e7, zero-step ACM k-omega SST initialization.
 // Initialization-safe baseline. Set timeMarchSettings.nSteps explicitly for a solve.
 {
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity3D",
+        "fieldNVariables": 4
+    },
     "acmSettings": {
         "rho0": 1.0,
         "beta2": 4.0,

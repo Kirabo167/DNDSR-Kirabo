@@ -14,6 +14,6 @@ export DNDS_ARRAY_STRATEGY_USE_IN_SITU=0
 export DNDS_USE_STRONG_SYNC_WAIT=0
 export DNDS_USE_ASYNC_ONE_BY_ONE=1
 which mpirun
-ls -la app/eulerSA3D.exe
-mpirun app/eulerSA3D.exe
+ls -la app/euler.exe
+mpirun app/euler.exe ../cases/eulerSA3D/eulerSA3D_config.json
 cd ../running

@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
     "dimension": 3,
     "mesh": {
         "meshFile": "../cases/NCFV/generated_periodic_meshes/periodic_tet_iv20.cgns",

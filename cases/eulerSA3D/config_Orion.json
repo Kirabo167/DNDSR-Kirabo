@@ -12,6 +12,12 @@ UInf = [1, 0.882947592858927, 0.4694715627858908, 0, 0.5434606196371768],
 pInf = 0.01738424785487074
 */
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "CFV",
+        "model": "NS_SA_3D",
+        "fieldNVariables": 6
+    },
     "$schema": "../eulerSA3D_schema.json",
     "timeMarchControl": {
         "dtImplicit": 1e-2,

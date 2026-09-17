@@ -6,9 +6,15 @@
 // Flow: rho=1, U_inf=1, Re_D=3900, mu=rho*U_inf*D/Re_D=1/3900.
 // Initial flow field is identical to the SST case: [u,v,w,p]=[1,0,0,0].
 // Intended 32-rank launch from build/ (not launched as part of configuration work):
-// OMP_NUM_THREADS=1 mpirun -np 32 ./app/acm3D.exe ../cases/acm3D/acm3D_cylinder_Re3900_coarse_laminar.json
+// OMP_NUM_THREADS=1 mpirun -np 32 ./app/euler.exe ../cases/acm3D/acm3D_cylinder_Re3900_coarse_laminar.json
 // Note: the current ACM driver advances pseudo-time, not physical unsteady time.
 {
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity3D",
+        "fieldNVariables": 4
+    },
     "acmSettings": {
         "rho0": 1.0,
         "beta2": 4.0,

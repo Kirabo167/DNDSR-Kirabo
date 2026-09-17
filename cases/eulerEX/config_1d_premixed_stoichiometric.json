@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "CFV",
+        "model": "NS_EX",
+        "fieldNVariables": 14
+    },
     "$schema": "../eulerEX_schema.json",
     "caseNotes": {
         "purpose": "One-dimensional stoichiometric premixed H2/air reactive-flow propagation test for eulerEX.",
@@ -24,7 +30,7 @@
             "Remaining robustness: species-diffusion timestep bounds, positivity-preserving limiting, Cantera-valid line search."
         ],
         "latestRun": {
-            "commandContext": "Run from build/ with DNDS_MECH_PATH and CANTERA_DATA pointing to external/cfd_externals/repos/cantera/data; mpirun -np 4 ./app/eulerEX.exe 14 ../cases/eulerEX/config_1d_premixed_stoichiometric.json.",
+            "commandContext": "Run from build/ with DNDS_MECH_PATH and CANTERA_DATA pointing to external/cfd_externals/repos/cantera/data; mpirun -np 4 ./app/euler.exe ../cases/eulerEX/config_1d_premixed_stoichiometric.json.",
             "status": "Pending: Cantera-profile-initialized run.",
             "dtImplicitCode": 0.01,
             "physicalSteps": 2000,

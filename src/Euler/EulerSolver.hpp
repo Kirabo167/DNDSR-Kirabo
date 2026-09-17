@@ -38,6 +38,7 @@
 // #endif
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
+#include "DNDS/Config/SolverSelection.hpp"
 #include "DNDS/EnvReader.hpp"
 #include "DNDS/Serializer/SerializerFactory.hpp"
 #include "DNDS/CsvLog.hpp"
@@ -903,6 +904,8 @@ namespace DNDS::Euler
                 }
             } others;
 
+            SolverSelection solver{"Euler", "CFV", GetEulerModelName(model),
+                                   getnVarsFixed(model) == DynamicSize ? 5 : getnVarsFixed(model)};
             EulerEvaluatorSettings<model> eulerSettings;                         ///< Physics settings passed to the EulerEvaluator.
             CFV::VRSettings vfvSettings;                                         ///< Variational reconstruction settings.
             nlohmann::ordered_json bcSettings = nlohmann::ordered_json::array(); ///< Boundary condition definitions (JSON array).
@@ -911,6 +914,7 @@ namespace DNDS::Euler
             DNDS_DECLARE_CONFIG(Configuration)
             {
                 // clang-format off
+                config.field_section(&T::solver,                         "solver",                         "Unified executable dispatch settings");
                 config.field_section(&T::timeMarchControl,               "timeMarchControl",               "Time marching settings");
                 config.field_section(&T::implicitReconstructionControl,   "implicitReconstructionControl",   "Implicit reconstruction settings");
                 config.field_section(&T::outputControl,                  "outputControl",                  "Output settings");
@@ -958,6 +962,7 @@ namespace DNDS::Euler
             Configuration(int nVars)
                 : eulerSettings(nVars), vfvSettings(gDim)
             {
+                solver.fieldNVariables = nVars;
                 bcSettings = BoundaryHandler<model>(nVars);
             }
 

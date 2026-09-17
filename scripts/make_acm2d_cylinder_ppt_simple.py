@@ -350,7 +350,7 @@ def build_deck(config: dict, mesh_image: Path) -> None:
     add_text(slide, "32核运行：", 0.90, 6.02, 1.20, 0.28, size=13, color=BLUE_DARK, bold=True)
     add_text(
         slide,
-        "OMP_NUM_THREADS=1 mpirun -np 32 ./app/acm2D.exe ../cases/acm2D/acm2D.json",
+        "OMP_NUM_THREADS=1 mpirun -np 32 ./app/euler.exe ../cases/acm2D/acm2D.json",
         2.05,
         6.00,
         8.45,

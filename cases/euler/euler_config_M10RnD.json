@@ -1,4 +1,10 @@
 {
+    "solver": {
+        "type": "Euler",
+        "discretization": "CFV",
+        "model": "NS",
+        "fieldNVariables": 5
+    },
     "$schema": "../euler_schema.json",
     "timeMarchControl": {
         "dtImplicit": 1e-4,

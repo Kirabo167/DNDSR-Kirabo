@@ -700,7 +700,7 @@ def build_presentation(config: dict) -> None:
     add_text(slide, "实际分区由单元邻接图决定，并非规则块状切分", 3.06, 4.91, 3.1, 0.30, size=10.5, color=MUTED)
     add_card(slide, 6.98, 1.68, 5.63, 1.68, fill=NAVY_3, line=CYAN)
     add_text(slide, "启动命令", 7.27, 1.96, 1.1, 0.28, size=12, color=CYAN_2, bold=True)
-    command = "OMP_NUM_THREADS=1 mpirun -np 32 \\\n  ./app/acm2D.exe ../cases/acm2D/acm2D.json"
+    command = "OMP_NUM_THREADS=1 mpirun -np 32 \\\n  ./app/euler.exe ../cases/acm2D/acm2D.json"
     add_text(slide, command, 7.27, 2.37, 4.92, 0.66, size=10.6, color=WHITE, font=FONT_MONO)
     add_card(slide, 6.98, 3.65, 5.63, 1.81, fill=NAVY_3, line=GRID)
     add_rich_lines(

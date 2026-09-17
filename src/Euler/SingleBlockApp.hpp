@@ -58,7 +58,7 @@ namespace DNDS::Euler
      * 1. Initialize MPI and build default/user configuration file paths.
      * 2. Parse command-line arguments via argparse:
      *    - Positional `config` — path to the user JSON configuration file.
-     *    - Positional `field_n_variables` (extended models with DynamicSize only).
+     *    - `solver.fieldNVariables` in JSON for extended dynamic-size models.
      *    - `-k`/`--overwrite_key` and `-v`/`--overwrite_value` — repeated pairs
      *      for ad-hoc JSON config overrides.
      *    - `--debug` — attach-debugger mode (MPI hold).
@@ -76,20 +76,20 @@ namespace DNDS::Euler
      * @return 0 on success (abnormal paths call std::abort()).
      */
     template <EulerModel model>
-    int RunSingleBlockConsoleApp(int argc, char *argv[])
+    int RunSingleBlockConsoleApp(int argc, char *argv[], int fieldNVariables = 5)
     {
         using namespace std::literals;
         MPIInfo mpi;
         mpi.setWorld();
 
-        std::string defaultConfJson = "../cases/"s + getSingleBlockAppName(model) + "_default_config.json"s;
-        std::string confJson = "../cases/"s + getSingleBlockAppName(model) + "_config.json";
+        std::string defaultConfJson = "../cases/"s + getSingleBlockAppName(model) +
+                                      "/"s + getSingleBlockAppName(model) + "_default_config.json"s;
+        std::string confJson = "../cases/"s + getSingleBlockAppName(model) +
+                               "/"s + getSingleBlockAppName(model) + "_config.json";
         std::vector<std::string> overwriteKeys, overwriteValues;
 
         argparse::ArgumentParser mainParser(getSingleBlockAppName(model), DNDS_VERSION_STRING);
         std::string read_configPath;
-        if (getnVarsFixed(model) == DynamicSize)
-            mainParser.add_argument("field_n_variables").default_value<int>(5).scan<'i', int>();
         mainParser.add_argument("config").default_value("");
         mainParser.add_argument("-k", "--overwrite_key")
             .help("keys to the json entries to overwrite")
@@ -142,7 +142,7 @@ namespace DNDS::Euler
         {
             int nVars = getnVarsFixed(model);
             if (nVars == DynamicSize)
-                nVars = mainParser.get<int>("field_n_variables");
+                nVars = fieldNVariables;
 
             // Build schema: Configuration is fully registered via DNDS_DECLARE_CONFIG,
             // so emitSchema() produces the complete recursive schema.
@@ -163,7 +163,7 @@ namespace DNDS::Euler
         {
             int nVars = getnVarsFixed(model);
             if (nVars == DynamicSize)
-                nVars = mainParser.get<int>("field_n_variables");
+                nVars = fieldNVariables;
             if (mpi.rank == 0)
                 log() << "Current MPI thread level: " << MPI::GetMPIThreadLevel() << std::endl;
             auto strategy = MPI::CommStrategy::Instance().GetArrayStrategy();

@@ -6,6 +6,7 @@
 
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/Config/ConfigEnum.hpp"
+#include "DNDS/Config/SolverSelection.hpp"
 #include "DNDS/Serializer/SerializerFactory.hpp"
 #include "Euler/Gas.hpp"
 #include "Geom/Mesh/Mesh.hpp"
@@ -404,6 +405,7 @@ namespace DNDS::NCFV
 
     struct Configuration
     {
+        SolverSelection solver{"Euler", "NCFV", "IdealGas", 5};
         int dimension = 2;
         MeshSettings mesh;
         AlgorithmSettings algorithm;
@@ -415,6 +417,7 @@ namespace DNDS::NCFV
 
         DNDS_DECLARE_CONFIG(Configuration)
         {
+            config.field_section(&T::solver, "solver", "Unified executable dispatch settings");
             DNDS_FIELD(dimension, "Spatial dimension", DNDS::Config::range(2, 3));
             config.field_section(&T::mesh, "mesh", "Primal mesh input");
             config.field_section(&T::algorithm, "algorithm", "Dual-grid integration implementation");

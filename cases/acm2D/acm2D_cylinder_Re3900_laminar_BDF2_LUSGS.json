@@ -6,13 +6,19 @@
 // Run length: 10000 physical steps with dt=0.01, giving t*=t*U_inf/D=100.
 // Output: initial field plus one field every 50 physical steps (201 fields in total).
 // Intended launch from build/ with 32 MPI ranks:
-// OMP_NUM_THREADS=1 mpirun -np 32 ./app/acm2D.exe \
+// OMP_NUM_THREADS=1 mpirun -np 32 ./app/euler.exe \
 //   ../cases/acm2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json
 // Important: real Re=3900 cylinder flow is three-dimensional and transitional. This two-dimensional
 // laminar calculation is intended for algorithm verification and qualitative vortex visualization,
 // not quantitative agreement with three-dimensional experimental statistics.
 // Modifier: Runzhi Ma
 {
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity2D",
+        "fieldNVariables": 4
+    },
     // Constant-density artificial-compressibility state [u,v,w,p].
     "acmSettings": {
         "rho0": 1.0,

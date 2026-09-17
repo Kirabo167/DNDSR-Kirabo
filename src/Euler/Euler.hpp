@@ -884,6 +884,33 @@ namespace DNDS::Euler
         NS_EX_3D = 102, ///< Extended NS, 3D geometry, dynamic nVars (Eigen::Dynamic).
     };
 
+    /** @brief Stable JSON name for a compiled Euler model specialization. */
+    constexpr static inline const char *GetEulerModelName(const EulerModel model)
+    {
+        switch (model)
+        {
+        case NS:
+            return "NS";
+        case NS_SA:
+            return "NS_SA";
+        case NS_2D:
+            return "NS_2D";
+        case NS_3D:
+            return "NS_3D";
+        case NS_SA_3D:
+            return "NS_SA_3D";
+        case NS_2EQ:
+            return "NS_2EQ";
+        case NS_2EQ_3D:
+            return "NS_2EQ_3D";
+        case NS_EX:
+            return "NS_EX";
+        case NS_EX_3D:
+            return "NS_EX_3D";
+        }
+        return "Unknown";
+    }
+
     /**
      * @brief Enumerates the available RANS turbulence closure models.
      *

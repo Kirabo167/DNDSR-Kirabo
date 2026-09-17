@@ -2,8 +2,14 @@
 // Mesh [0,1]^2, 64 cells; regenerate with scripts/generate_acm_variable_mesh.cpp.
 // rho=1+0.2*cos(2*pi*x), u=0, p=0; exact stationary inviscid solution.
 // State arrays are [rho,mx,my,mz,p]. One complete JSON per case, no inherited JSON.
-// From build/: OMP_NUM_THREADS=1 mpirun -np 4 ./app/acmVariable2D.exe ../cases/acmVariable2D/acmVariable2D.json
+// From build/: OMP_NUM_THREADS=1 mpirun -np 4 ./app/euler.exe ../cases/acmVariable2D/acmVariable2D.json
 {
+    "solver": {
+        "type": "ACMVariable",
+        "discretization": "CFV",
+        "model": "VariableDensity2D",
+        "fieldNVariables": 5
+    },
     "acmSettings": {
         "rho0": 1,
         "beta2": 2,
