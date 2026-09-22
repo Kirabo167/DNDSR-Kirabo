@@ -192,12 +192,6 @@ namespace DNDS::NCFV
         {
             const Vector3 coordinate = _mesh->coords[iNode];
             const RawMoments &moments = geometry.NodeVolume(iNode).moments;
-            const Vector3 centredFirst =
-                moments.first - moments.measure * coordinate;
-            const Matrix3 centredSecond =
-                moments.second - coordinate * moments.first.transpose() -
-                moments.first * coordinate.transpose() +
-                moments.measure * coordinate * coordinate.transpose();
             const Vector3 referenceLengths =
                 geometry.NodeVolume(iNode).referenceLengths;
 
@@ -205,15 +199,15 @@ namespace DNDS::NCFV
             pair(iNode, CoordinateOffset + 1) = coordinate.y();
             pair(iNode, CoordinateOffset + 2) = coordinate.z();
             pair(iNode, MeasureOffset) = moments.measure;
-            pair(iNode, FirstOffset + 0) = centredFirst.x();
-            pair(iNode, FirstOffset + 1) = centredFirst.y();
-            pair(iNode, FirstOffset + 2) = centredFirst.z();
-            pair(iNode, SecondOffset + 0) = centredSecond(0, 0);
-            pair(iNode, SecondOffset + 1) = centredSecond(1, 1);
-            pair(iNode, SecondOffset + 2) = centredSecond(2, 2);
-            pair(iNode, SecondOffset + 3) = centredSecond(0, 1);
-            pair(iNode, SecondOffset + 4) = centredSecond(1, 2);
-            pair(iNode, SecondOffset + 5) = centredSecond(2, 0);
+            pair(iNode, FirstOffset + 0) = moments.first.x();
+            pair(iNode, FirstOffset + 1) = moments.first.y();
+            pair(iNode, FirstOffset + 2) = moments.first.z();
+            pair(iNode, SecondOffset + 0) = moments.second(0, 0);
+            pair(iNode, SecondOffset + 1) = moments.second(1, 1);
+            pair(iNode, SecondOffset + 2) = moments.second(2, 2);
+            pair(iNode, SecondOffset + 3) = moments.second(0, 1);
+            pair(iNode, SecondOffset + 4) = moments.second(1, 2);
+            pair(iNode, SecondOffset + 5) = moments.second(2, 0);
             for (int d = 0; d < 3; d++)
                 pair(iNode, ReferenceLengthOffset + d) = referenceLengths(d);
         }

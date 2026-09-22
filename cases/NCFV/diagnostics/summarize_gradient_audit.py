@@ -181,7 +181,7 @@ __CHECK_TABLE__
 - `src/NCFV/NCFVReconstruction.cpp:242`：加权完整SVD；
 - `src/NCFV/NCFVReconstruction.cpp:292`：求逆后截取前三行；
 - `src/NCFV/NCFVReconstruction.cpp:351`：当前均值差乘矩阵，再除长度尺度；
-- `src/NCFV/NCFVPeriodic.cpp:150`：最近周期像及中心矩平移。
+- `src/NCFV/NCFVNodeHalo.cpp:317`、`:348`：最小周期位移及中心矩平移。
 
 ## 3. 为什么正确的二次重构在粗网格上只有1.31、1.78阶？
 

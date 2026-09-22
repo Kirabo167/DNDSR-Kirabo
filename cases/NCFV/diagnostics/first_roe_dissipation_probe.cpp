@@ -50,7 +50,7 @@ namespace
         const Vector3 grid = Vector3::Zero();
         real lm = 0, lc = 0, lp = 0;
         DNDS::Euler::Gas::InviscidFlux_IdealGas_Dispatcher<3>(
-            scheme, l, r, l, r, grid, n, gamma, f, 0.0, 1.0, 1.0,
+            scheme, l, r, l, r, grid, n, gamma, gamma, f, 0.0, 1.0, 1.0,
             []() {}, lm, lc, lp);
         return f;
     }
@@ -119,12 +119,17 @@ int main(int argc, char **argv)
             const auto &geometry = solver.Geometry();
             const auto &topology = solver.EdgeTopology();
             const auto &reconstruction = solver.ReconstructionData();
-            PeriodicNodes periodic(mpi, mesh, geometry, cfg.mesh);
-            periodic.Build(topology, cfg.mesh.periodicTolerance);
+            const NodeHalo &nodeHalo = solver.NodeCommunication();
             NodeStatePair means, rhs, parts;
             auto allocate = [&](NodeStatePair &field, const std::string &name, int size)
             {
-                DNDS::CFV::BuildUDofOnMesh(field, name, mpi, mesh, size, true, true, DNDS::Geom::MeshLoc::Node);
+                field.InitPair(name, mpi);
+                field.father->Resize(mesh->NumNode(), size, 1);
+                field.son->Resize(nodeHalo.NumNodeGhost(), size, 1);
+                field.BorrowSetup(nodeHalo.Layout());
+                field.trans.initPersistentPull();
+                for (Index i = 0; i < field.Size(); i++)
+                    field[i].setZero();
             };
             allocate(means, "firstRoe.means", 5);
             allocate(rhs, "firstRoe.rhs", 5);
@@ -134,17 +139,18 @@ int main(int argc, char **argv)
                 means[i] = solver.StateField()[i];
             SpatialOperator<3> spatial(mpi, mesh, topology, geometry, reconstruction,
                                        solver.Boundaries(), cfg.algorithm.mode, cfg.reconstruction,
-                                       cfg.physics, cfg.time, &periodic);
+                                       cfg.physics, cfg.time, nodeHalo);
             spatial.Initialize();
             // One RHS call performs exactly one coefficient build and one point recovery.
             // It evaluates the static spatial operator but does not update the state or time.
             spatial.EvaluateRHS(means, rhs);
             const auto &points = spatial.PointValues();
             const auto &gradients = spatial.Gradients();
-            std::vector<State> exact(mesh->NumNodeProc());
-            std::vector<Gradient> exactGradient(mesh->NumNodeProc());
-            for (Index i = 0; i < mesh->NumNodeProc(); i++)
-                std::tie(exact[i], exactGradient[i]) = IsentropicVortex<3>(cfg, mesh->coords[i], 0);
+            std::vector<State> exact(nodeHalo.NumNodeProc());
+            std::vector<Gradient> exactGradient(nodeHalo.NumNodeProc());
+            for (Index i = 0; i < nodeHalo.NumNodeProc(); i++)
+                std::tie(exact[i], exactGradient[i]) =
+                    IsentropicVortex<3>(cfg, nodeHalo.Coordinate(i), 0);
 
             NodeStatePair edges;
             edges.InitPair("firstRoe.edges", mpi);
@@ -168,13 +174,24 @@ int main(int argc, char **argv)
                 const real area = surface.measure;
                 const Vector3 normal = surface.vectorMeasure.normalized();
                 gauss += surface.quadrature.size();
-                auto surfaceMean = [&](Index anchor, const auto &weights, int mode) -> State
+                auto surfaceMean = [&](int side, int mode) -> State
                 {
                     // Counterfactuals share the very same geometry/weights; no new reconstruction.
                     // 0 actual, 1 exact points only, 2 exact gradients only, 3 exact both.
-                    State sum = area * (mode == 1 || mode == 3 ? exact[anchor] : State(points[anchor]));
-                    for (const auto &w : weights)
-                        sum += (mode >= 2 ? exactGradient[w.node] : Gradient(gradients[w.node])).transpose() * w.value;
+                    const std::size_t sideIndex = static_cast<std::size_t>(side);
+                    const Index anchor = surface.nodes[sideIndex];
+                    State sum = area *
+                                (mode == 1 || mode == 3
+                                     ? exact[anchor]
+                                     : State(points[anchor]));
+                    for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                    {
+                        sum += (mode >= 2
+                                    ? exactGradient[entry.node]
+                                    : Gradient(gradients[entry.node]))
+                                   .transpose() *
+                               entry.stateGradientWeights[sideIndex];
+                    }
                     const State u = sum / area;
                     // Fail rather than silently omitting production's positivity fallback.
                     DNDS_check_throw_info(u.allFinite() && u(0) > 1e-12 && Pressure(u, cfg.physics.gamma) > 1e-12,
@@ -183,18 +200,27 @@ int main(int argc, char **argv)
                     minPressure = std::min(minPressure, Pressure(u, cfg.physics.gamma));
                     return u;
                 };
-                auto integrated = [&](Index anchor, const auto &weights) -> State
+                auto integrated = [&](int side) -> State
                 {
-                    State sum = PhysicalFlux(points[anchor], surface.vectorMeasure, cfg.physics.gamma);
-                    for (const auto &w : weights)
+                    const std::size_t sideIndex = static_cast<std::size_t>(side);
+                    const Index anchor = surface.nodes[sideIndex];
+                    State sum = PhysicalFlux(
+                        points[anchor], surface.vectorMeasure,
+                        cfg.physics.gamma);
+                    for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                    {
                         for (int d = 0; d < 3; d++)
                             for (int f = 0; f < 3; f++)
-                                sum += w.value(d, f) * FluxDerivative(
-                                                           points[w.node], gradients[w.node].row(d).transpose(), f, cfg.physics.gamma);
+                                sum += entry.fluxGradientWeights[sideIndex](d, f) *
+                                       FluxDerivative(
+                                           points[entry.node],
+                                           gradients[entry.node].row(d).transpose(),
+                                           f, cfg.physics.gamma);
+                    }
                     return sum;
                 };
-                const State left = surfaceMean(surface.nodes[0], surface.leftStateWeights, 0);
-                const State right = surfaceMean(surface.nodes[1], surface.rightStateWeights, 0);
+                const State left = surfaceMean(0, 0);
+                const State right = surfaceMean(1, 0);
                 const State jump = right - left;
                 const State center = 0.5 * (PhysicalFlux(left, normal, cfg.physics.gamma) +
                                             PhysicalFlux(right, normal, cfg.physics.gamma));
@@ -221,8 +247,7 @@ int main(int argc, char **argv)
                 edges[e].segment<5>(0) = area * dM2;
                 edges[e].segment<5>(5) = area * dRoe;
                 edges[e].segment<5>(10) = 0.5 *
-                                          (integrated(surface.nodes[0], surface.leftFluxWeights) +
-                                           integrated(surface.nodes[1], surface.rightFluxWeights));
+                                          (integrated(0) + integrated(1));
                 for (int v = 0; v < 5; v++)
                 {
                     faceNorms.Add("jump." + names[v], jump(v), area);
@@ -233,8 +258,8 @@ int main(int argc, char **argv)
                 }
                 for (int mode = 1; mode < 4; mode++)
                 {
-                    const State l = surfaceMean(surface.nodes[0], surface.leftStateWeights, mode);
-                    const State r = surfaceMean(surface.nodes[1], surface.rightStateWeights, mode);
+                    const State l = surfaceMean(0, mode);
+                    const State r = surfaceMean(1, mode);
                     const real a = std::max(signal(l), signal(r));
                     for (int v = 0; v < 5; v++)
                     {
@@ -243,8 +268,8 @@ int main(int argc, char **argv)
                         faceNorms.Add(prefix + "M2.D." + names[v], 0.5 * a * (r(v) - l(v)), area);
                     }
                 }
-                faceFile << mesh->node2nodeOrig(surface.nodes[0], 0) << ','
-                         << mesh->node2nodeOrig(surface.nodes[1], 0) << ',' << area << ',' << alpha;
+                faceFile << nodeHalo.LocalToGlobal(surface.nodes[0]) << ','
+                         << nodeHalo.LocalToGlobal(surface.nodes[1]) << ',' << area << ',' << alpha;
                 for (int v : {0, 4})
                     faceFile << ',' << jump(v) << ',' << dM2(v) << ',' << dRoe(v);
                 faceFile << '\n';
@@ -269,7 +294,6 @@ int main(int argc, char **argv)
                 // D enters the RHS with +div(D); central flux with -div(C).
                 parts[i].segment<5>(10) *= -1;
             }
-            periodic.Average(parts);
             std::ofstream nodeFile(output / fmt::format("nodes.rank{:04d}.csv", mpi.rank));
             DNDS_check_throw_info(nodeFile.good(), "Cannot write node diagnostics");
             nodeFile << "original_node,x,y,z,partial_volume";
@@ -284,7 +308,7 @@ int main(int argc, char **argv)
             {
                 const real volume = geometry.NodeVolume(i).moments.measure;
                 volumeSum += volume;
-                periodicCount += volume / periodic.Volume(i);
+                periodicCount += volume / nodeHalo.Volume(i);
                 const State m2 = parts[i].segment<5>(0), roe = parts[i].segment<5>(5);
                 const State center = parts[i].segment<5>(10);
                 const State mismatch = m2 + center - State(rhs[i]);

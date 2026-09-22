@@ -24,6 +24,10 @@ namespace DNDS::NCFV
         real lengthScale = 0;                       // Volume-based scale for distance weights only.
         Vector3 referenceLengths = Vector3::Ones(); // Thesis (3-34), basis normalization.
         real conditionNumber = veryLargeReal;
+        /** Dimensionless linear-mode response to normalized cubic point data. */
+        real cubicErrorIndicator = veryLargeReal;
+        /** Number of first-ring graph neighbours retained in stencil. */
+        int directNeighborCount = 0;
         std::vector<index> stencil;
         /** Stable global IDs retained while the final exact halo is pruned. */
         std::vector<index> stencilGlobals;

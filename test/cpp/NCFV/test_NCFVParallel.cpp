@@ -38,6 +38,15 @@ namespace
             return linear + hessian * coordinate;
         }
 
+        [[nodiscard]] DNDS::real IntegralRelative(
+            const RawMoments &moments,
+            const Vector3 &anchor) const
+        {
+            return moments.measure * Value(anchor) +
+                   Gradient(anchor).dot(moments.first) +
+                   0.5 * (hessian.cwiseProduct(moments.second)).sum();
+        }
+
         [[nodiscard]] DNDS::real Integral(const RawMoments &moments) const
         {
             return constant * moments.measure + linear.dot(moments.first) +
@@ -58,6 +67,7 @@ namespace
             (ProjectRoot() / "data/mesh/ACMVariable_verify3D.cgns").string();
         configuration.algorithm.mode = mode;
         configuration.algorithm.quadratureOrder = 4;
+        configuration.algorithm.surfaceQuadratureOrder = 3;
         configuration.algorithm.retainMicroGeometry = true;
         configuration.physics.initialPrimitive = {1.0, 0.1, 0.0, 0.0, 1.0};
         configuration.physics.farFieldPrimitive = {1.0, 0.1, 0.0, 0.0, 1.0};
@@ -157,6 +167,105 @@ namespace
         MPI_Allreduce(&localMaximumError, &globalMaximumError, 1,
                       DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
         CHECK(globalMaximumError < 2e-14);
+    }
+
+    void VerifyTraditionalSurfaceQuadrature(const Solver<3> &solver)
+    {
+        constexpr int surfaceOrder = 3;
+        const Geom::Elem::Quadrature referenceRule(
+            Geom::Elem::Element{Geom::Elem::Tri3}, surfaceOrder - 1);
+        const int pointsPerTriangle = referenceRule.GetNumPoints();
+        CHECK(pointsPerTriangle == 3);
+
+        QuadraticField field;
+        field.constant = 0.73;
+        field.linear = Vector3{0.31, -0.47, 0.29};
+        field.hessian << 0.8, -0.2, 0.13,
+            -0.2, -0.5, 0.17,
+            0.13, 0.17, 0.4;
+
+        DNDS::real localMaximumError = 0;
+        DNDS::index localInvalid = 0;
+        DNDS::index localTriangleCount = 0;
+
+        const auto verifyTriangle = [&](const std::vector<SurfaceQuadraturePoint> &quadrature,
+                                        std::size_t offset,
+                                        const std::vector<Vector3> &coordinates,
+                                        DNDS::real measure,
+                                        const Vector3 &vectorMeasure)
+        {
+            const RawMoments moments =
+                DualGeometry::ExactSimplexMoments(coordinates, measure);
+            const DNDS::real exactIntegral = field.Integral(moments);
+            const Vector3 unitNormal = vectorMeasure / measure;
+            DNDS::real numericalIntegral = 0;
+            for (int iG = 0; iG < pointsPerTriangle; iG++)
+            {
+                const auto &point = quadrature[offset + static_cast<std::size_t>(iG)];
+                localInvalid += !point.coordinate.allFinite() ||
+                                !point.vectorWeight.allFinite() ||
+                                !std::isfinite(point.weight) || point.weight <= 0;
+                numericalIntegral += point.weight * field.Value(point.coordinate);
+                localMaximumError = std::max(
+                    localMaximumError,
+                    (point.vectorWeight - point.weight * unitNormal).norm() /
+                        std::max<DNDS::real>(point.weight, verySmallReal));
+            }
+            localMaximumError = std::max(
+                localMaximumError,
+                std::abs(numericalIntegral - exactIntegral) /
+                    std::max<DNDS::real>(1.0, std::abs(exactIntegral)));
+            localTriangleCount++;
+        };
+
+        for (const auto &surface : solver.Geometry().EdgeSurfaces())
+        {
+            const std::size_t expected =
+                surface.microSurfaces.size() * static_cast<std::size_t>(pointsPerTriangle);
+            localInvalid += surface.quadrature.size() != expected;
+            if (surface.quadrature.size() != expected)
+                continue;
+            for (std::size_t iMicro = 0; iMicro < surface.microSurfaces.size(); iMicro++)
+            {
+                const auto &micro = surface.microSurfaces[iMicro];
+                std::vector<Vector3> coordinates;
+                coordinates.reserve(static_cast<std::size_t>(micro.nPoints));
+                for (int point = 0; point < micro.nPoints; point++)
+                    coordinates.push_back(micro.points[static_cast<std::size_t>(point)]);
+                verifyTriangle(surface.quadrature,
+                               iMicro * static_cast<std::size_t>(pointsPerTriangle),
+                               coordinates, micro.measure, micro.vectorMeasure);
+            }
+        }
+
+        for (const auto &volume : solver.Geometry().NodeVolumes())
+            for (const auto &piece : volume.boundaryPieces)
+            {
+                localInvalid += piece.nPoints != 3 ||
+                                piece.quadrature.size() !=
+                                    static_cast<std::size_t>(pointsPerTriangle);
+                if (piece.nPoints != 3 ||
+                    piece.quadrature.size() != static_cast<std::size_t>(pointsPerTriangle))
+                    continue;
+                std::vector<Vector3> coordinates;
+                coordinates.reserve(3);
+                for (int point = 0; point < piece.nPoints; point++)
+                    coordinates.push_back(
+                        piece.points[static_cast<std::size_t>(point)].coordinate);
+                verifyTriangle(piece.quadrature, 0, coordinates,
+                               piece.measure, piece.vectorMeasure);
+            }
+
+        DNDS::real globalMaximumError = 0;
+        DNDS::index localCounts[2]{localInvalid, localTriangleCount};
+        DNDS::index globalCounts[2]{};
+        MPI_Allreduce(&localMaximumError, &globalMaximumError, 1,
+                      DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        MPI_Allreduce(localCounts, globalCounts, 2,
+                      DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalCounts[0] == 0);
+        CHECK(globalCounts[1] > 0);
+        CHECK(globalMaximumError < 3e-13);
     }
 
     void VerifyEfficientGradientWeights(const Solver<3> &solver)
@@ -306,7 +415,8 @@ namespace
         for (DNDS::index iNode = 0; iNode < mesh->NumNode(); iNode++)
         {
             const auto &volume = geometry.NodeVolume(iNode);
-            const DNDS::real exactIntegral = state.Integral(volume.moments);
+            const DNDS::real exactIntegral = state.IntegralRelative(
+                volume.moments, mesh->coords[iNode]);
             DNDS::real recovered = exactIntegral / volume.moments.measure;
             for (const auto &entry : volume.pointRecoveryStencil)
                 recovered -= entry.gradientWeight.dot(
@@ -398,6 +508,32 @@ namespace
         CHECK(globalErrors[0] < 3e-13);
         CHECK(globalErrors[1] < 3e-13);
         CHECK(globalErrors[2] < 3e-13);
+    }
+
+    void VerifyCompactQuadraticStencils(
+        const Solver<3> &solver,
+        const ReconstructionSettings &settings)
+    {
+        const int expected = static_cast<int>(std::ceil(
+            settings.stencilSizeFactor *
+            solver.ReconstructionData().BasisSize()));
+        DNDS::index localInvalid = 0;
+        for (DNDS::index iNode = 0;
+             iNode < solver.Mesh()->NumNode(); iNode++)
+        {
+            const auto &op = solver.ReconstructionData().Operator(iNode);
+            localInvalid +=
+                static_cast<int>(op.stencil.size()) != expected ||
+                op.numericalRank != solver.ReconstructionData().BasisSize() ||
+                !std::isfinite(op.conditionNumber) ||
+                op.conditionNumber > settings.maximumConditionNumber ||
+                !std::isfinite(op.cubicErrorIndicator) ||
+                op.directNeighborCount <= 0;
+        }
+        DNDS::index globalInvalid = 0;
+        MPI_Allreduce(&localInvalid, &globalInvalid, 1,
+                      DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalInvalid == 0);
     }
 
     void VerifyEfficientLimiterUsesMacroSurfaceMeans(const Solver<3> &solver)
@@ -601,6 +737,7 @@ namespace
             CHECK(globalCounts[0] > 0);
             CHECK(globalCounts[1] > 0);
             CHECK(globalCounts[2] > 0);
+            VerifyTraditionalSurfaceQuadrature(solver);
         }
 
         const DNDS::real residual = solver.EvaluateResidual();
@@ -641,6 +778,9 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
         Configuration configuration = MakeExactPeriodicConfiguration(mode);
         Solver<3> solver(gMPI, configuration);
         solver.Initialize();
+
+        VerifyCompactQuadraticStencils(
+            solver, configuration.reconstruction);
 
         CHECK(solver.NodeCommunication().IsFinalized());
         CHECK(solver.Mesh()->isPeriodic);
@@ -720,9 +860,19 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
         return (linear + hessian * x.cwiseQuotient(stretch)).cwiseQuotient(stretch);
     };
 
-    for (IntegrationMode mode : {IntegrationMode::EfficientDifferential, IntegrationMode::TraditionalQuadrature})
+    for (const auto &[mode, method] :
+         std::array{
+             std::pair{IntegrationMode::EfficientDifferential,
+                       ReconstructionMethod::SVDLeastSquares},
+             std::pair{IntegrationMode::EfficientDifferential,
+                       ReconstructionMethod::LeastSquares},
+             std::pair{IntegrationMode::TraditionalQuadrature,
+                       ReconstructionMethod::SVDLeastSquares},
+             std::pair{IntegrationMode::TraditionalQuadrature,
+                       ReconstructionMethod::LeastSquares}})
     {
         configuration.algorithm.mode = mode;
+        configuration.reconstruction.method = method;
         configuration.algorithm.retainMicroGeometry = true;
         DualGeometry retained(gMPI, mesh, topology, configuration.algorithm);
         retained.Build();

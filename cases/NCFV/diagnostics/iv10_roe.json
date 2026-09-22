@@ -8,7 +8,6 @@
   "dimension": 3,
   "mesh": {
     "meshFile": "../cases/NCFV/iv10_3d_1_dnds.cgns",
-    "ghostLayers": 2,
     "periodicTolerance": 1e-8,
     "periodicLengths": [
       10,
@@ -89,7 +88,8 @@
     "useCFLTimeStep": true,
     "useLocalTimeStep": false,
     "cfl": 0.5,
-    "maximumTimeStep": 0.01,
+    "minimumTimeStep": 1e-30,
+    "maximumTimeStep": 1e+30,
     "reportInterval": 20
   },
   "io": {

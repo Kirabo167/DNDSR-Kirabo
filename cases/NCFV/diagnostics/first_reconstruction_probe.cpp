@@ -72,16 +72,20 @@ int main(int argc, char **argv)
             const auto mesh = solver.Mesh();
             const auto &geometry = solver.Geometry();
             const auto &reconstruction = solver.ReconstructionData();
+            const NodeHalo &nodeHalo = solver.NodeCommunication();
             const auto &means = solver.StateField(); // Already synchronized by Solver::Initialize.
             NodeMatrixPair gradients, coefficients;
             gradients.InitPair("NCFV.firstReconstruction.gradients", mpi);
             gradients.father->Resize(mesh->NumNode(), 3, 5);
-            gradients.son->Resize(mesh->NumNodeGhost(), 3, 5);
-            gradients.BorrowSetup(mesh->coords);
+            gradients.son->Resize(nodeHalo.NumNodeGhost(), 3, 5);
+            gradients.BorrowSetup(nodeHalo.Layout());
             gradients.trans.initPersistentPull();
             NodeStatePair points;
-            DNDS::CFV::BuildUDofOnMesh(points, "NCFV.firstReconstruction.points", mpi,
-                                      mesh, 5, true, true, DNDS::Geom::MeshLoc::Node);
+            points.InitPair("NCFV.firstReconstruction.points", mpi);
+            points.father->Resize(mesh->NumNode(), 5, 1);
+            points.son->Resize(nodeHalo.NumNodeGhost(), 5, 1);
+            points.BorrowSetup(nodeHalo.Layout());
+            points.trans.initPersistentPull();
 
             // Exactly the unlimited efficient SpatialOperator::Reconstruct sequence.
             // Call each public reconstruction kernel once, on the real initialized solver state.

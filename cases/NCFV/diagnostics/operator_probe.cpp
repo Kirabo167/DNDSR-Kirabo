@@ -48,8 +48,7 @@ int main(int argc, char **argv)
             const auto mesh = solver.Mesh();
             const auto &geom = solver.Geometry();
             const auto &topo = solver.EdgeTopology();
-            PeriodicNodes periodic(mpi, mesh, geom, cfg.mesh);
-            periodic.Build(topo, cfg.mesh.periodicTolerance);
+            const NodeHalo &nodeHalo = solver.NodeCommunication();
             // Diagnostic counterfactual ONLY: replace the in-memory operators of
             // this private probe instance; existing libraries/files are unchanged.
             // Keep all face neighbours, then add nearest remaining nodes until
@@ -59,10 +58,21 @@ int main(int argc, char **argv)
             for (Index i = 0; i < mesh->NumNode(); i++)
             {
                 auto &op = const_cast<ReconstructionOperator &>(solver.ReconstructionData().Operator(i));
-                const Index rep = periodic.Representative(i);
+                const Index rep = i;
                 if (compactTarget > 0)
                 {
-                    const auto &direct = periodic.Graph()[rep];
+                    std::vector<Index> direct;
+                    for (const auto &incidence : topo.Node2Edge(i))
+                    {
+                        const auto &surface = geom.EdgeSurface(incidence.edge);
+                        DNDS_check_throw_info(
+                            surface.nodes[0] == i || surface.nodes[1] == i,
+                            "Owned-node edge is not incident after exact-halo remapping");
+                        direct.push_back(
+                            surface.nodes[surface.nodes[0] == i ? 1 : 0]);
+                    }
+                    std::sort(direct.begin(), direct.end());
+                    direct.erase(std::unique(direct.begin(), direct.end()), direct.end());
                     auto candidates = op.stencil;
                     const auto isDirect = [&](Index j)
                     {
@@ -71,8 +81,8 @@ int main(int argc, char **argv)
                     std::sort(candidates.begin(), candidates.end(), [&](Index a, Index b)
                               {
                         if (isDirect(a) != isDirect(b)) return isDirect(a);
-                        const real da = periodic.Displacement(rep, a).squaredNorm();
-                        const real db = periodic.Displacement(rep, b).squaredNorm();
+                        const real da = nodeHalo.Displacement(rep, a).squaredNorm();
+                        const real db = nodeHalo.Displacement(rep, b).squaredNorm();
                         return da != db ? da < db : a < b; });
                     bool accepted = false;
                     for (int count = std::max(compactTarget, static_cast<int>(direct.size()));
@@ -82,9 +92,9 @@ int main(int argc, char **argv)
                         Eigen::VectorXd weights(count);
                         for (int j = 0; j < count; j++)
                         {
-                            const Vector3 delta = periodic.Displacement(rep, candidates[j]);
+                            const Vector3 delta = nodeHalo.Displacement(rep, candidates[j]);
                             matrix.row(j) = (Reconstruction::MeanBasis(
-                                                 periodic.Moments(candidates[j], delta), Vector3::Zero(),
+                                                 nodeHalo.MomentsRelative(rep, candidates[j]), Vector3::Zero(),
                                                  op.referenceLengths, 3) -
                                              op.targetBasisMean)
                                                 .transpose();
@@ -118,11 +128,17 @@ int main(int argc, char **argv)
                 solver.Run();
             SpatialOperator<3> spatial(mpi, mesh, topo, geom, solver.ReconstructionData(),
                                        solver.Boundaries(), cfg.algorithm.mode,
-                                       cfg.reconstruction, cfg.physics, cfg.time, &periodic);
+                                       cfg.reconstruction, cfg.physics, cfg.time, nodeHalo);
             spatial.Initialize();
             auto nodeField = [&](NodeStatePair &a, const std::string &name, int rows)
             {
-                DNDS::CFV::BuildUDofOnMesh(a, name, mpi, mesh, rows, true, true, DNDS::Geom::MeshLoc::Node);
+                a.InitPair(name, mpi);
+                a.father->Resize(mesh->NumNode(), rows, 1);
+                a.son->Resize(nodeHalo.NumNodeGhost(), rows, 1);
+                a.BorrowSetup(nodeHalo.Layout());
+                a.trans.initPersistentPull();
+                for (Index i = 0; i < a.Size(); i++)
+                    a[i].setZero();
             };
             NodeStatePair means, exactMeans, exactRhs, rhs, referenceRhs, contributions;
             nodeField(means, "probe.means", 5);
@@ -131,17 +147,19 @@ int main(int argc, char **argv)
             nodeField(rhs, "probe.rhs", 5);
             nodeField(referenceRhs, "probe.referenceRhs", 5);
             nodeField(contributions, "probe.contributions", 8);
-            std::vector<State> exactPoints(mesh->NumNodeProc());
-            std::vector<Gradient> exactGradients(mesh->NumNodeProc());
-            for (Index i = 0; i < mesh->NumNodeProc(); i++)
-                std::tie(exactPoints[i], exactGradients[i]) = IsentropicVortex<3>(cfg, mesh->coords[i], time);
+            std::vector<State> exactPoints(nodeHalo.NumNodeProc());
+            std::vector<Gradient> exactGradients(nodeHalo.NumNodeProc());
+            for (Index i = 0; i < nodeHalo.NumNodeProc(); i++)
+                std::tie(exactPoints[i], exactGradients[i]) =
+                    IsentropicVortex<3>(cfg, nodeHalo.Coordinate(i), time);
             DNDS::Geom::Elem::Quadrature quadrature({DNDS::Geom::Elem::Tet4}, referenceOrder);
             for (Index i = 0; i < mesh->NumNode(); i++)
             {
                 const auto &volume = geom.NodeVolume(i);
                 means[i] = exactPoints[i];
-                for (const auto &w : volume.pointRecoveryWeights)
-                    means[i] += exactGradients[w.node].transpose() * w.value;
+                for (const auto &entry : volume.pointRecoveryStencil)
+                    means[i] += exactGradients[entry.node].transpose() *
+                                entry.gradientWeight;
                 exactMeans[i].setZero();
                 exactRhs[i].setZero();
                 for (const auto &micro : volume.microVolumes)
@@ -158,9 +176,6 @@ int main(int argc, char **argv)
                         exactRhs[i] -= weight * (g.row(0) + g.row(1)).transpose();
                     }
             }
-            periodic.Average(means);
-            periodic.Average(exactMeans);
-            periodic.Average(exactRhs);
             spatial.EvaluateRHS(exactMeans, referenceRhs);
             real referencePointLocal = 0;
             for (Index i = 0; i < mesh->NumNode(); i++)
@@ -206,30 +221,39 @@ int main(int argc, char **argv)
                     {
                         return mode >= 2 ? exactGradients[i] : Gradient(spatial.Gradients()[i]);
                     };
-                    auto surfaceMean = [&](Index anchor, const auto &weights) -> State
+                    auto surfaceMean = [&](int side) -> State
                     {
-                        State value = pointAt(anchor);
-                        for (const auto &w : weights)
-                            value += gradientAt(w.node).transpose() * w.value / face.measure;
-                        return value;
-                    };
-                    auto integratedMass = [&](Index anchor, const auto &weights)
-                    {
-                        real value = physicalMass(pointAt(anchor), face.vectorMeasure);
-                        for (const auto &w : weights)
+                        const std::size_t sideIndex = static_cast<std::size_t>(side);
+                        const Index anchor = face.nodes[sideIndex];
+                        State integral = face.measure *
+                                         pointAt(anchor);
+                        for (const EfficientSurfaceNode &entry : face.efficientStencil)
                         {
-                            const Gradient g = gradientAt(w.node);
+                            integral += gradientAt(entry.node).transpose() *
+                                        entry.stateGradientWeights[sideIndex];
+                        }
+                        return integral / face.measure;
+                    };
+                    auto integratedMass = [&](int side)
+                    {
+                        const std::size_t sideIndex = static_cast<std::size_t>(side);
+                        const Index anchor = face.nodes[sideIndex];
+                        real value = physicalMass(
+                            pointAt(anchor), face.vectorMeasure);
+                        for (const EfficientSurfaceNode &entry : face.efficientStencil)
+                        {
+                            const Gradient g = gradientAt(entry.node);
                             for (int d = 0; d < 3; d++)
                                 for (int f = 0; f < 3; f++)
-                                    value += w.value(d, f) * g(d, 1 + f);
+                                    value += entry.fluxGradientWeights[sideIndex](d, f) *
+                                             g(d, 1 + f);
                         }
                         return value;
                     };
-                    const State left = surfaceMean(face.nodes[0], face.leftStateWeights);
-                    const State right = surfaceMean(face.nodes[1], face.rightStateWeights);
+                    const State left = surfaceMean(0);
+                    const State right = surfaceMean(1);
                     edgeParts[e](2 * mode) = 0.5 *
-                                             (integratedMass(face.nodes[0], face.leftFluxWeights) +
-                                              integratedMass(face.nodes[1], face.rightFluxWeights));
+                                             (integratedMass(0) + integratedMass(1));
                     edgeParts[e](2 * mode + 1) = face.measure *
                                                  (numericalMass(left, right, normal) -
                                                   0.5 * (physicalMass(left, normal) + physicalMass(right, normal)));
@@ -244,7 +268,6 @@ int main(int argc, char **argv)
                     contributions[i] -= incidence.outwardSign * edgeParts[incidence.edge] /
                                         geom.NodeVolume(i).moments.measure;
             }
-            periodic.Average(contributions);
             std::vector<std::string> names{
                 "mean_projection_L2", "point_recovery_L2", "gradient_rho_L2",
                 "gradient_momentum_L2", "rhs_density_L2", "rhs_exact_means_L2",

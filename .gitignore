@@ -21,6 +21,8 @@ external/*
 *.gz
 docs/html
 docs/latex
+docs/presentations
+docs/reports
 data
 !data/
 data/*

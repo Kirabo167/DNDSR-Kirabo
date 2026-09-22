@@ -8,14 +8,14 @@
     "dimension": 3,
     "mesh": {
         "meshFile": "../cases/NCFV/generated_periodic_meshes/periodic_tet_iv20.cgns",
-        "ghostLayers": 2,
         "periodicTolerance": 1e-8,
-        "periodicLengths": [10, 10, 4]
+        "periodicLengths": [10, 10, 4],
+        "periodicBoundaryPairs": ["bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"]
     },
     "algorithm": {"mode": "EfficientDifferential", "quadratureOrder": 4, "retainMicroGeometry": false},
     "reconstruction": {"enableLimiter": false, "stencilSizeFactor": 1.7, "maximumStencilRings": 4},
     "physics": {
-        "gamma": 1.4, "riemannSolver": "Roe_M2", "initialPrimitive": [1, 1, 1, 0, 1],
+        "gamma": 1.4, "riemannSolver": "Roe", "initialPrimitive": [1, 1, 1, 0, 1],
         "farFieldPrimitive": [1, 1, 1, 0, 1], "requireBoundaryZoneCoverage": true,
         "boundaryZones": [
             {"name": "bc-2", "mode": "Periodic"}, {"name": "bc-2-1", "mode": "Periodic"},

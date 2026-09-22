@@ -8,7 +8,6 @@
     "dimension": 2,
     "mesh": {
         "meshFile": "../data/mesh/CylinderA1.cgns",
-        "ghostLayers": 2,
         "reorderCells": 0,
         "periodicTolerance": 1e-09,
         "partitionOptions": {
@@ -27,6 +26,7 @@
         "closureTolerance": 2e-10
     },
     "reconstruction": {
+        "method": "SVDLeastSquares",
         "stencilSizeFactor": 1.7,
         "maximumStencilRings": 4,
         "distanceWeightPower": 1.0,
@@ -37,7 +37,7 @@
     },
     "physics": {
         "gamma": 1.4,
-        "riemannSolver": "Roe_M2",
+        "riemannSolver": "Roe",
         "boundaryMode": "FarField",
         "initialPrimitive": [1.0, 0.1, 0.0, 1.0],
         "farFieldPrimitive": [1.0, 0.1, 0.0, 1.0]

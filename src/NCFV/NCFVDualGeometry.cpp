@@ -488,7 +488,13 @@ namespace DNDS::NCFV
 
         if (_settings.mode == IntegrationMode::EfficientDifferential)
         {
-            AccumulateMoments(controlVolume.moments, ExactSimplexMoments(coordinates, measure));
+            std::vector<Vector3> localCoordinates;
+            localCoordinates.reserve(coordinates.size());
+            for (const Vector3 &coordinate : coordinates)
+                localCoordinates.push_back(coordinate - anchorCoordinate);
+            AccumulateMoments(
+                controlVolume.moments,
+                ExactSimplexMoments(localCoordinates, measure));
             const double weightStart = _settings.profileIntegrationInitialization
                                            ? MPI_Wtime()
                                            : 0.0;
@@ -533,10 +539,11 @@ namespace DNDS::NCFV
                      iPoint < controlVolume.volumeQuadrature.size(); iPoint++)
                 {
                     const auto &point = controlVolume.volumeQuadrature[iPoint];
+                    const Vector3 offset = point.coordinate - anchorCoordinate;
                     controlVolume.moments.measure += point.weight;
-                    controlVolume.moments.first += point.weight * point.coordinate;
+                    controlVolume.moments.first += point.weight * offset;
                     controlVolume.moments.second +=
-                        point.weight * point.coordinate * point.coordinate.transpose();
+                        point.weight * offset * offset.transpose();
                 }
             }
             else
@@ -546,10 +553,11 @@ namespace DNDS::NCFV
                 {
                     appendQuadraturePoint(quadrature, iG);
                     const auto &point = controlVolume.volumeQuadrature.back();
+                    const Vector3 offset = point.coordinate - anchorCoordinate;
                     controlVolume.moments.measure += point.weight;
-                    controlVolume.moments.first += point.weight * point.coordinate;
+                    controlVolume.moments.first += point.weight * offset;
                     controlVolume.moments.second +=
-                        point.weight * point.coordinate * point.coordinate.transpose();
+                        point.weight * offset * offset.transpose();
                 }
             }
         }
@@ -611,7 +619,8 @@ namespace DNDS::NCFV
             if (_mesh->getDim() == 2)
             {
                 Geom::Elem::Quadrature quadrature(
-                    Geom::Elem::Element{Geom::Elem::Line2}, _settings.quadratureOrder);
+                    Geom::Elem::Element{Geom::Elem::Line2},
+                    _settings.SurfaceQuadraturePolynomialDegree());
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
                     const auto [parametric, referenceWeight] = quadrature.GetQuadraturePointInfo(iG);
@@ -626,7 +635,8 @@ namespace DNDS::NCFV
             else
             {
                 Geom::Elem::Quadrature quadrature(
-                    Geom::Elem::Element{Geom::Elem::Tri3}, _settings.quadratureOrder);
+                    Geom::Elem::Element{Geom::Elem::Tri3},
+                    _settings.SurfaceQuadraturePolynomialDegree());
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
                     const auto [parametric, referenceWeight] = quadrature.GetQuadraturePointInfo(iG);
@@ -706,7 +716,8 @@ namespace DNDS::NCFV
             if (_mesh->getDim() == 2)
             {
                 Geom::Elem::Quadrature quadrature(
-                    Geom::Elem::Element{Geom::Elem::Line2}, _settings.quadratureOrder);
+                    Geom::Elem::Element{Geom::Elem::Line2},
+                    _settings.SurfaceQuadraturePolynomialDegree());
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
                     const auto [parametric, referenceWeight] = quadrature.GetQuadraturePointInfo(iG);
@@ -721,7 +732,8 @@ namespace DNDS::NCFV
             else
             {
                 Geom::Elem::Quadrature quadrature(
-                    Geom::Elem::Element{Geom::Elem::Tri3}, _settings.quadratureOrder);
+                    Geom::Elem::Element{Geom::Elem::Tri3},
+                    _settings.SurfaceQuadraturePolynomialDegree());
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
                     const auto [parametric, referenceWeight] = quadrature.GetQuadraturePointInfo(iG);
@@ -1220,6 +1232,8 @@ namespace DNDS::NCFV
                   << (_settings.mode == IntegrationMode::EfficientDifferential
                           ? "EfficientDifferential"
                           : "TraditionalQuadrature")
+                  << ", volume quadrature order=" << _settings.quadratureOrder
+                  << ", surface quadrature order=" << _settings.surfaceQuadratureOrder
                   << ", retained micro-volumes=" << globalMicroVolumes
                   << ", stored volume quadrature=" << globalVolumeQuadrature
                   << ", stored internal-surface quadrature=" << globalSurfaceQuadrature

@@ -119,11 +119,17 @@ namespace DNDS::NCFV
         }
         DNDS_check_throw_info(algorithm.quadratureOrder >= 2 &&
                                   algorithm.quadratureOrder <= Geom::Elem::INT_ORDER_MAX,
-                              "NCFV quadrature order is outside DNDSR's supported range");
+                              "NCFV volume quadrature order is outside DNDSR's supported range");
+        DNDS_check_throw_info(algorithm.surfaceQuadratureOrder >= 3 &&
+                                  algorithm.surfaceQuadratureOrder <= Geom::Elem::INT_ORDER_MAX + 1,
+                              "NCFV surface quadrature order must be at least three and within DNDSR's supported range");
         DNDS_check_throw_info(reconstruction.stencilSizeFactor >= 1.0,
                               "NCFV stencil size factor must be at least one");
+        DNDS_check_throw_info(
+            reconstruction.method != ReconstructionMethod::Unknown,
+            "NCFV reconstruction.method must be LeastSquares or SVDLeastSquares");
         DNDS_check_throw_info(reconstruction.svdTolerance > 0,
-                              "NCFV SVD tolerance must be positive");
+                              "NCFV least-squares rank tolerance must be positive");
         DNDS_check_throw_info(physics.gamma > 1,
                               "NCFV ideal-gas gamma must exceed one");
         checkPrimitive(physics.initialPrimitive, "NCFV physics.initialPrimitive");
@@ -131,6 +137,10 @@ namespace DNDS::NCFV
         DNDS_check_throw_info(physics.riemannSolver != Euler::Gas::UnknownRS &&
                                   physics.riemannSolver != Euler::Gas::Roe_M9,
                               "NCFV selected an unavailable Riemann solver");
+        DNDS_check_throw_info(
+            physics.riemannSolver != Euler::Gas::Roe_M2,
+            "NCFV Roe_M2 is the deprecated scalar Rusanov path; use Roe for "
+            "characteristic Roe flux with Harten--Yee entropy fixing");
 
         const auto &viscous = physics.viscous;
         DNDS_check_throw_info(viscous.gasConstant > 0,

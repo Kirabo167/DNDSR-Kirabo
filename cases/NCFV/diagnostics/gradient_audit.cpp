@@ -107,11 +107,23 @@ int main(int argc, char **argv)
             const auto mesh = solver.Mesh();
             const auto &geom = solver.Geometry();
             const auto &reconstruction = solver.ReconstructionData();
-            PeriodicNodes periodic(mpi, mesh, geom, cfg.mesh);
-            periodic.Build(solver.EdgeTopology(), cfg.mesh.periodicTolerance);
+            const auto &topology = solver.EdgeTopology();
+            const NodeHalo &nodeHalo = solver.NodeCommunication();
             NodeStatePair fields, moments;
-            DNDS::CFV::BuildUDofOnMesh(fields, "audit.fields", mpi, mesh, 7, true, true, DNDS::Geom::MeshLoc::Node);
-            DNDS::CFV::BuildUDofOnMesh(moments, "audit.centeredMoments", mpi, mesh, 13, true, true, DNDS::Geom::MeshLoc::Node);
+            const auto allocate = [&](NodeStatePair &field,
+                                      const std::string &name,
+                                      int rows)
+            {
+                field.InitPair(name, mpi);
+                field.father->Resize(mesh->NumNode(), rows, 1);
+                field.son->Resize(nodeHalo.NumNodeGhost(), rows, 1);
+                field.BorrowSetup(nodeHalo.Layout());
+                field.trans.initPersistentPull();
+                for (Index i = 0; i < field.Size(); i++)
+                    field[i].setZero();
+            };
+            allocate(fields, "audit.fields", 7);
+            allocate(moments, "audit.centeredMoments", 13);
             for (Index i = 0; i < mesh->NumNode(); i++)
             {
                 fields[i].setZero();
@@ -120,8 +132,9 @@ int main(int argc, char **argv)
                 for (int f = 1; f <= 2; f++)
                 {
                     fields[i](4 + f) = Wave(mesh->coords[i], f).first;
-                    for (const auto &w : geom.NodeVolume(i).pointRecoveryWeights)
-                        fields[i](4 + f) += Wave(mesh->coords[w.node], f).second.dot(w.value);
+                    for (const auto &entry : geom.NodeVolume(i).pointRecoveryStencil)
+                        fields[i](4 + f) += Wave(nodeHalo.Coordinate(entry.node), f).second.dot(
+                            entry.gradientWeight);
                 }
             }
             for (int order : {5, 6})
@@ -149,17 +162,15 @@ int main(int argc, char **argv)
                         }
                 }
             }
-            periodic.Average(fields);
-            periodic.Average(moments);
             fields.trans.startPersistentPull();
+            moments.trans.startPersistentPull();
             fields.trans.waitPersistentPull();
-            const auto global = periodic.Gather(fields);
-            const auto globalMoments = periodic.Gather(moments);
+            moments.trans.waitPersistentPull();
             NodeMatrixPair gradients, unused;
             gradients.InitPair("audit.gradients", mpi);
             gradients.father->Resize(mesh->NumNode(), 3, 7);
-            gradients.son->Resize(mesh->NumNodeGhost(), 3, 7);
-            gradients.BorrowSetup(mesh->coords);
+            gradients.son->Resize(nodeHalo.NumNodeGhost(), 3, 7);
+            gradients.BorrowSetup(nodeHalo.Layout());
             gradients.trans.initPersistentPull();
             reconstruction.ComputeCoefficients(fields, gradients, unused);
 
@@ -182,11 +193,11 @@ int main(int argc, char **argv)
             {
                 const real volume = geom.NodeVolume(i).moments.measure;
                 const auto &op = reconstruction.Operator(i);
-                const Index rep = periodic.Representative(i);
+                const Index rep = i;
                 const real h = op.lengthScale;
                 const Vector3 lengths = op.referenceLengths;
                 const Matrix3 inverseLengths = lengths.cwiseInverse().asDiagonal();
-                const Vec13 center = globalMoments.col(rep);
+                const Vec13 center = moments[rep];
                 const Vec9 base = ShiftedBasis(center, Vector3::Zero(), lengths);
                 const Vector3 exact = IsentropicVortex<3>(cfg, mesh->coords[i], 0).second.col(0);
                 const Eigen::Vector4d cubic = DensityCubic(cfg, mesh->coords[i]);
@@ -197,13 +208,13 @@ int main(int argc, char **argv)
                 for (std::size_t row = 0; row < op.stencil.size(); row++)
                 {
                     const Index j = op.stencil[row];
-                    const Vector3 shift = periodic.Displacement(rep, j);
-                    matrix.row(row) = (ShiftedBasis(globalMoments.col(j), shift, lengths) - base).transpose();
+                    const Vector3 shift = nodeHalo.Displacement(rep, j);
+                    matrix.row(row) = (ShiftedBasis(Vec13(moments[j]), shift, lengths) - base).transpose();
                     distance(row) = std::max(shift.norm() / h, cfg.reconstruction.distanceWeightFloor);
                     weights(row) = std::pow(distance(row), -cfg.reconstruction.distanceWeightPower);
-                    differences(row, 0) = global(0, j) - fields[i](0);
-                    differences(row, 1) = global(1, j) - fields[i](1);
-                    cubicRhs(row) = cubic.dot(ShiftedCubic(globalMoments.col(j), shift) - ShiftedCubic(center, Vector3::Zero()));
+                    differences(row, 0) = fields[j](0) - fields[i](0);
+                    differences(row, 1) = fields[j](1) - fields[i](1);
+                    cubicRhs(row) = cubic.dot(ShiftedCubic(Vec13(moments[j]), shift) - ShiftedCubic(center, Vector3::Zero()));
                     radiusXY = std::max(radiusXY, shift.head<2>().norm());
                     radius3D = std::max(radius3D, shift.norm());
                     tieZ = tieZ || std::abs(std::abs(shift(2)) - cfg.mesh.periodicLengths[2] / 2) < 1e-9;
@@ -229,13 +240,24 @@ int main(int argc, char **argv)
 
                 std::vector<int> candidates(op.stencil.size());
                 std::iota(candidates.begin(), candidates.end(), 0);
-                const auto &direct = periodic.Graph()[rep];
+                std::vector<Index> direct;
+                for (const auto &incidence : topology.Node2Edge(i))
+                {
+                    const auto &surface = geom.EdgeSurface(incidence.edge);
+                    DNDS_check_throw_info(
+                        surface.nodes[0] == i || surface.nodes[1] == i,
+                        "Owned-node edge is not incident after exact-halo remapping");
+                    direct.push_back(
+                        surface.nodes[surface.nodes[0] == i ? 1 : 0]);
+                }
+                std::sort(direct.begin(), direct.end());
+                direct.erase(std::unique(direct.begin(), direct.end()), direct.end());
                 auto isDirect = [&](int row)
                 { return std::find(direct.begin(), direct.end(), op.stencil[row]) != direct.end(); };
                 // A geometric tie-break is independent of MPI partition/global numbering.
                 auto geometricKey = [&](int row)
                 {
-                    const Vector3 delta = periodic.Displacement(rep, op.stencil[row]);
+                    const Vector3 delta = nodeHalo.Displacement(rep, op.stencil[row]);
                     return std::array<long long, 4>{std::llround(delta.squaredNorm() / 1e-12),
                                                     std::llround(delta(0) / 1e-10), std::llround(delta(1) / 1e-10), std::llround(delta(2) / 1e-10)};
                 };

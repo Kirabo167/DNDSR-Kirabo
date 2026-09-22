@@ -163,6 +163,16 @@ namespace
     }
 }
 
+TEST_CASE("NCFV rejects the scalar Roe_M2 Rusanov path")
+{
+    Configuration configuration = MakeConfiguration();
+    configuration.physics.riemannSolver = Euler::Gas::Roe_M2;
+    CHECK_THROWS_WITH_AS(
+        configuration.Validate(),
+        doctest::Contains("scalar Rusanov path"),
+        std::exception);
+}
+
 TEST_CASE("NCFV node field, VTK and HDF5 restart form an MPI I/O cycle")
 {
     const std::filesystem::path directory = TestDirectory();

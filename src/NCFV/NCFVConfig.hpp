@@ -33,6 +33,24 @@ namespace DNDS::NCFV
             {IntegrationMode::TraditionalQuadrature, "TraditionalQuadrature"},
         })
 
+    /** @brief Linear algebra used by the weighted quadratic reconstruction. */
+    enum class ReconstructionMethod
+    {
+        Unknown,
+        LeastSquares,
+        SVDLeastSquares,
+    };
+
+    DNDS_DEFINE_ENUM_JSON(
+        ReconstructionMethod,
+        {
+            {ReconstructionMethod::Unknown, nullptr},
+            {ReconstructionMethod::LeastSquares, "LeastSquares"},
+            {ReconstructionMethod::SVDLeastSquares, "SVDLeastSquares"},
+            {ReconstructionMethod::LeastSquares, "最小二乘重构"},
+            {ReconstructionMethod::SVDLeastSquares, "SVD最小二乘重构"},
+        })
+
     /** @brief Boundary models supported by the standalone Navier--Stokes solver. */
     enum class BoundaryMode
     {
@@ -114,6 +132,7 @@ namespace DNDS::NCFV
     {
         IntegrationMode mode = IntegrationMode::EfficientDifferential;
         int quadratureOrder = 4;
+        int surfaceQuadratureOrder = 3;
         bool retainMicroGeometry = true;
         bool checkGeometryClosure = true;
         real closureTolerance = 2e-10;
@@ -121,12 +140,21 @@ namespace DNDS::NCFV
         // It is intentionally absent from the serialized configuration schema.
         bool profileIntegrationInitialization = false;
 
+        /** DNDSR quadrature APIs take the highest polynomial degree that must be exact. */
+        [[nodiscard]] int SurfaceQuadraturePolynomialDegree() const
+        {
+            return surfaceQuadratureOrder - 1;
+        }
+
         DNDS_DECLARE_CONFIG(AlgorithmSettings)
         {
             DNDS_FIELD(mode, "NCFV integration implementation",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(IntegrationMode)));
-            DNDS_FIELD(quadratureOrder, "Traditional Gauss/Hammer integration order",
+            DNDS_FIELD(quadratureOrder, "Traditional volume Gauss/Hammer integration order",
                        DNDS::Config::range(2, Geom::Elem::INT_ORDER_MAX));
+            DNDS_FIELD(surfaceQuadratureOrder,
+                       "Traditional interface/boundary integration order; order 3 is exact for quadratic traces",
+                       DNDS::Config::range(3, Geom::Elem::INT_ORDER_MAX + 1));
             DNDS_FIELD(retainMicroGeometry, "Retain construction-simplex geometry for diagnostics");
             DNDS_FIELD(checkGeometryClosure, "Reject a dual grid that fails vector-area closure");
             DNDS_FIELD(closureTolerance, "Relative dual-area closure tolerance", DNDS::Config::range(0.0));
@@ -135,6 +163,7 @@ namespace DNDS::NCFV
 
     struct ReconstructionSettings
     {
+        ReconstructionMethod method = ReconstructionMethod::SVDLeastSquares;
         real stencilSizeFactor = 1.7;
         int maximumStencilRings = 4;
         real distanceWeightPower = 1.0;
@@ -145,12 +174,19 @@ namespace DNDS::NCFV
 
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
         {
+            DNDS_FIELD(
+                method,
+                "Weighted reconstruction method: LeastSquares (最小二乘重构) uses normal equations; SVDLeastSquares (SVD最小二乘重构) uses Jacobi SVD",
+                DNDS::Config::enum_values(
+                    DNDS_ENUM_ALLOWED_VALUES(ReconstructionMethod)));
             DNDS_FIELD(stencilSizeFactor, "Stencil size divided by quadratic basis size",
                        DNDS::Config::range(1.0, 8.0));
             DNDS_FIELD(maximumStencilRings, "Maximum breadth-first node rings", DNDS::Config::range(1, 8));
             DNDS_FIELD(distanceWeightPower, "Inverse-distance least-squares exponent", DNDS::Config::range(0.0, 8.0));
             DNDS_FIELD(distanceWeightFloor, "Minimum normalized stencil distance", DNDS::Config::range(1e-8, 1.0));
-            DNDS_FIELD(svdTolerance, "Relative singular-value cutoff", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(svdTolerance,
+                       "Relative rank cutoff on singular values, also applied through squared normal-matrix eigenvalues",
+                       DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(maximumConditionNumber, "Maximum accepted reconstruction condition estimate",
                        DNDS::Config::range(1.0));
             DNDS_FIELD(enableLimiter, "Enable one-coefficient Barth--Jespersen limiting");
@@ -216,7 +252,7 @@ namespace DNDS::NCFV
     struct PhysicsSettings
     {
         real gamma = 1.4;
-        Euler::Gas::RiemannSolverType riemannSolver = Euler::Gas::Roe_M2;
+        Euler::Gas::RiemannSolverType riemannSolver = Euler::Gas::Roe;
         BoundaryMode boundaryMode = BoundaryMode::FarField;
         std::vector<real> initialPrimitive{1.0, 0.1, 0.0, 1.0};
         std::vector<real> farFieldPrimitive{1.0, 0.1, 0.0, 1.0};
@@ -227,8 +263,13 @@ namespace DNDS::NCFV
         DNDS_DECLARE_CONFIG(PhysicsSettings)
         {
             DNDS_FIELD(gamma, "Ideal-gas heat-capacity ratio", DNDS::Config::range(1.0));
-            DNDS_FIELD(riemannSolver, "DNDSR inviscid Riemann solver",
-                       DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(Euler::Gas::RiemannSolverType)));
+            DNDS_FIELD(
+                riemannSolver,
+                "NCFV inviscid Riemann solver; Roe uses Harten--Yee H2 entropy fixing",
+                DNDS::Config::enum_values(
+                    {"Roe", "HLLC", "HLLEP", "HLLEP_V1", "Roe_M1",
+                     "Roe_M3", "Roe_M4", "Roe_M5", "Roe_M6", "Roe_M7",
+                     "Roe_M8"}));
             DNDS_FIELD(boundaryMode, "Boundary model applied to all external zones",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(BoundaryMode)));
             DNDS_FIELD(initialPrimitive, "Uniform primitive state [rho,u,(v,w),p]");

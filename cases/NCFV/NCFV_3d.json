@@ -8,7 +8,6 @@
     "dimension": 3,
     "mesh": {
         "meshFile": "../data/mesh/ACMVariable_verify3D.cgns",
-        "ghostLayers": 2,
         "reorderCells": 0,
         "periodicTolerance": 1e-09,
         "partitionOptions": {
@@ -37,7 +36,7 @@
     },
     "physics": {
         "gamma": 1.4,
-        "riemannSolver": "Roe_M2",
+        "riemannSolver": "Roe",
         "boundaryMode": "FarField",
         "initialPrimitive": [1.0, 0.1, 0.0, 0.0, 1.0],
         "farFieldPrimitive": [1.0, 0.1, 0.0, 0.0, 1.0]

@@ -6,7 +6,7 @@
         "fieldNVariables": 5
     },
     "dimension": 2,
-    "mesh": {"meshFile": "../data/mesh/CylinderA1.cgns", "ghostLayers": 2},
+    "mesh": {"meshFile": "../data/mesh/CylinderA1.cgns"},
     "algorithm": {"mode": "EfficientDifferential", "retainMicroGeometry": false},
     "physics": {
         "initialPrimitive": [1.0, 0.1, 0.0, 1.0],

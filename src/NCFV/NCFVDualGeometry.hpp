@@ -94,8 +94,11 @@ namespace DNDS::NCFV
 
     struct SurfaceQuadraturePoint
     {
+        /** Physical quadrature-point coordinate, constructed and stored at initialization. */
         Vector3 coordinate = Vector3::Zero();
+        /** Oriented physical surface weight n_g w_g, stored for flux integration. */
         Vector3 vectorWeight = Vector3::Zero();
+        /** Positive physical surface weight w_g, stored for scalar/viscous integration. */
         real weight = 0;
     };
 
@@ -157,6 +160,12 @@ namespace DNDS::NCFV
     struct NodeControlVolume
     {
         index node = UnInitIndex;
+        /**
+         * Moments about the primal node x_j:
+         *   { |V_j|, integral(x-x_j)dV, integral((x-x_j)(x-x_j)^T)dV }.
+         * Keeping these moments local avoids cancellation from forming an
+         * absolute second moment and translating it afterwards.
+         */
         RawMoments moments;
         // Extrema relative to the primal node, accumulated before optional
         // micro-geometry is discarded. The node belongs to every micro-volume.
@@ -186,6 +195,7 @@ namespace DNDS::NCFV
         std::vector<SurfaceQuadraturePoint> quadrature;
     };
 
+    /** Packed node-local moments: volume, c1_j, and the six symmetric C2_j entries. */
     using NodeMomentPair = ArrayPair<ArrayEigenVector<10>>;
     using NodeReferenceLengthPair = ArrayPair<ArrayEigenVector<3>>;
     using EdgeMetricPair = ArrayPair<ArrayEigenVector<4>>;

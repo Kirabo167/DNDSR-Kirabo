@@ -8,6 +8,7 @@
 
 #include "NCFV/NCFVReconstruction.hpp"
 #include "NCFV/NCFVAnalytic.hpp"
+#include "Geom/Quadrature.hpp"
 
 #include <cmath>
 #include <initializer_list>
@@ -163,11 +164,29 @@ TEST_CASE("NCFV integration mode JSON names are stable")
     using DNDS::NCFV::BoundaryMode;
     using DNDS::NCFV::InitialFieldVariables;
     using DNDS::NCFV::IntegrationMode;
+    using DNDS::NCFV::ReconstructionMethod;
     using DNDS::NCFV::ViscosityModel;
     const nlohmann::json efficient = "EfficientDifferential";
     const nlohmann::json traditional = "TraditionalQuadrature";
     CHECK(efficient.get<IntegrationMode>() == IntegrationMode::EfficientDifferential);
     CHECK(traditional.get<IntegrationMode>() == IntegrationMode::TraditionalQuadrature);
+    CHECK(nlohmann::json("LeastSquares").get<ReconstructionMethod>() ==
+          ReconstructionMethod::LeastSquares);
+    CHECK(nlohmann::json("SVDLeastSquares").get<ReconstructionMethod>() ==
+          ReconstructionMethod::SVDLeastSquares);
+    CHECK(nlohmann::json("最小二乘重构").get<ReconstructionMethod>() ==
+          ReconstructionMethod::LeastSquares);
+    CHECK(nlohmann::json("SVD最小二乘重构").get<ReconstructionMethod>() ==
+          ReconstructionMethod::SVDLeastSquares);
+    CHECK(nlohmann::json("invalid").get<ReconstructionMethod>() ==
+          ReconstructionMethod::Unknown);
+    DNDS::NCFV::ReconstructionSettings reconstruction;
+    CHECK(reconstruction.method == ReconstructionMethod::SVDLeastSquares);
+    nlohmann::ordered_json reconstructionJson = reconstruction;
+    CHECK(reconstructionJson.at("method") == "SVDLeastSquares");
+    reconstructionJson["method"] = "LeastSquares";
+    CHECK(reconstructionJson.get<DNDS::NCFV::ReconstructionSettings>().method ==
+          ReconstructionMethod::LeastSquares);
     CHECK(nlohmann::json("NoSlipAdiabaticWall").get<BoundaryMode>() ==
           BoundaryMode::NoSlipAdiabaticWall);
     CHECK(nlohmann::json("PressureOutlet").get<BoundaryMode>() ==
@@ -176,6 +195,40 @@ TEST_CASE("NCFV integration mode JSON names are stable")
           ViscosityModel::Sutherland);
     CHECK(nlohmann::json("Conservative").get<InitialFieldVariables>() ==
           InitialFieldVariables::Conservative);
+}
+
+TEST_CASE("NCFV third-order surface quadrature integrates quadratic traces exactly")
+{
+    const DNDS::NCFV::AlgorithmSettings settings;
+    CHECK(settings.surfaceQuadratureOrder == 3);
+    CHECK(settings.SurfaceQuadraturePolynomialDegree() == 2);
+
+    const DNDS::Geom::Elem::Quadrature lineRule(
+        DNDS::Geom::Elem::Element{DNDS::Geom::Elem::Line2},
+        settings.SurfaceQuadraturePolynomialDegree());
+    CHECK(lineRule.GetNumPoints() == 2);
+    real lineQuadraticIntegral = 0;
+    for (int iG = 0; iG < lineRule.GetNumPoints(); iG++)
+    {
+        const auto [point, weight] = lineRule.GetQuadraturePointInfo(iG);
+        lineQuadraticIntegral += weight * point[0] * point[0];
+    }
+    CHECK(lineQuadraticIntegral == doctest::Approx(2.0 / 3.0).epsilon(2e-14));
+
+    const DNDS::Geom::Elem::Quadrature triangleRule(
+        DNDS::Geom::Elem::Element{DNDS::Geom::Elem::Tri3},
+        settings.SurfaceQuadraturePolynomialDegree());
+    CHECK(triangleRule.GetNumPoints() == 3);
+    real triangleX2Integral = 0;
+    real triangleXYIntegral = 0;
+    for (int iG = 0; iG < triangleRule.GetNumPoints(); iG++)
+    {
+        const auto [point, weight] = triangleRule.GetQuadraturePointInfo(iG);
+        triangleX2Integral += weight * point[0] * point[0];
+        triangleXYIntegral += weight * point[0] * point[1];
+    }
+    CHECK(triangleX2Integral == doctest::Approx(1.0 / 12.0).epsilon(2e-14));
+    CHECK(triangleXYIntegral == doctest::Approx(1.0 / 24.0).epsilon(2e-14));
 }
 
 TEST_CASE("NCFV quadratic basis gradient is the exact physical derivative")

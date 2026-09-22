@@ -454,6 +454,25 @@ TEST_CASE("Roe variants M1-M9 consistency")
     }
 }
 
+TEST_CASE("Standard Roe applies Harten-Yee entropy fixing at a transonic acoustic wave")
+{
+    real lambdaMinus = 0.0;
+    real lambdaContact = 1.0;
+    real lambdaPlus = 2.0;
+    Roe_EntropyFixer<0>(
+        1.0, 1.0, 1.0,
+        0.9, 1.1, 1.0,
+        0.9, 1.1, 1.0,
+        0.0, 1.0, 1.0,
+        lambdaMinus, lambdaContact, lambdaPlus);
+
+    // The raw Roe eigenvalue u-a is zero.  Harten-Yee H2 replaces it by
+    // half of the 0.005 transonic threshold instead of leaving a sonic zero.
+    CHECK(lambdaMinus == doctest::Approx(0.0025).epsilon(1e-13));
+    CHECK(lambdaContact == doctest::Approx(1.0).epsilon(1e-13));
+    CHECK(lambdaPlus == doctest::Approx(2.0).epsilon(1e-13));
+}
+
 // ===================================================================
 // SYMMETRY: F(UL, UR, n) = -F(UR, UL, -n)
 // ===================================================================

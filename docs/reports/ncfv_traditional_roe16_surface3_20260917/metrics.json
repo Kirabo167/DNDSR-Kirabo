@@ -1,0 +1,3666 @@
+{
+  "schema": "traditional-roe16-accuracy-v1",
+  "data_directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917",
+  "complete": true,
+  "missing_transient_runs": [],
+  "validated_settings": {
+    "riemann_solver": "Roe",
+    "algorithm_mode": "TraditionalQuadrature",
+    "volume_quadrature_order": 4,
+    "baseline_surface_quadrature_order": 3,
+    "required_surface_sensitivity_order": 5,
+    "optional_surface_sensitivity_order": 7,
+    "surface_points_per_micro_triangle": {
+      "3": 3,
+      "5": 6,
+      "7": 12
+    },
+    "stencil_size": 16,
+    "coefficient_rows": 9,
+    "transient_cfl": 0.5,
+    "transient_final_time": 2.0
+  },
+  "static_runs": [
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv10_np1",
+      "mpi_ranks": 1,
+      "nodes": 512,
+      "cells": 1024,
+      "edges": 2048,
+      "periodic_unknowns": 512,
+      "h": 0.921007874660094,
+      "volume": 399.99999999999653,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 516096,
+      "surface_quadrature_points": 55296,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 3,
+      "surface_rho_min": 0.4911526182136635,
+      "surface_pressure_min": 0.36439014065425657,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.023300035723920014,
+          "rhou": 0.046423140388440004,
+          "rhov": 0.04772258580789236,
+          "rhow": 0.0,
+          "rhoE": 0.11966320859533866
+        },
+        "jump_face": {
+          "rho": 0.02245834996452024,
+          "rhou": 0.04514923529639354,
+          "rhov": 0.04664818558844657,
+          "rhow": 0.0,
+          "rhoE": 0.11562059313056589
+        },
+        "roe_quadrature": {
+          "rho": 0.019355600718608857,
+          "rhou": 0.03801170269706059,
+          "rhov": 0.038801811613239104,
+          "rhow": 4.8281475582274373e-17,
+          "rhoE": 0.11415894682366239
+        },
+        "roe_face": {
+          "rho": 0.01838210469055501,
+          "rhou": 0.03636357306040352,
+          "rhov": 0.037150934472412404,
+          "rhow": 7.991732324608288e-18,
+          "rhoE": 0.10845395930178235
+        },
+        "central_rhs": {
+          "rho": 0.025015912764605658,
+          "rhou": 0.05385941700874464,
+          "rhov": 0.05734330723125653,
+          "rhow": 0.004202950686590986,
+          "rhoE": 0.16631174954565933
+        },
+        "roe_rhs": {
+          "rho": 0.04819486067557633,
+          "rhou": 0.09345479059529331,
+          "rhov": 0.09551740760884458,
+          "rhow": 1.8457053048645092e-17,
+          "rhoE": 0.2884725365128638
+        },
+        "total_rhs": {
+          "rho": 0.05629562619743699,
+          "rhou": 0.11003853155331741,
+          "rhov": 0.1141724545163065,
+          "rhow": 0.004202950686590986,
+          "rhoE": 0.3425620952474352
+        }
+      },
+      "input_sha256": "7dd389f31c0ed7790b95c9fd644fb4902fe9082a85d1b1401057b96760c42728",
+      "mesh": "iv10",
+      "nominal_resolution": 10,
+      "surface_order": 3,
+      "orders": {
+        "jump_quadrature": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        },
+        "jump_face": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        },
+        "roe_quadrature": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        },
+        "roe_face": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        },
+        "central_rhs": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        },
+        "roe_rhs": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        },
+        "total_rhs": {
+          "rho": null,
+          "rhou": null,
+          "rhov": null,
+          "rhow": null,
+          "rhoE": null
+        }
+      }
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv20_np4",
+      "mpi_ranks": 4,
+      "nodes": 3896,
+      "cells": 7792,
+      "edges": 15584,
+      "periodic_unknowns": 3896,
+      "h": 0.46825276195257587,
+      "volume": 399.9999999999949,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 3927168,
+      "surface_quadrature_points": 420768,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 3,
+      "surface_rho_min": 0.5133248179182279,
+      "surface_pressure_min": 0.401773807429923,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.006360466433420528,
+          "rhou": 0.01272506107420209,
+          "rhov": 0.01293607280876975,
+          "rhow": 0.0,
+          "rhoE": 0.036185141597274116
+        },
+        "jump_face": {
+          "rho": 0.0061699100094588,
+          "rhou": 0.012271522504739996,
+          "rhov": 0.01248766402120184,
+          "rhow": 0.0,
+          "rhoE": 0.03500018720075512
+        },
+        "roe_quadrature": {
+          "rho": 0.0052031740844630595,
+          "rhou": 0.010532880044355838,
+          "rhov": 0.01065572860846041,
+          "rhow": 4.4024836996817827e-17,
+          "rhoE": 0.03296952838170296
+        },
+        "roe_face": {
+          "rho": 0.005010939168191907,
+          "rhou": 0.010176981440835469,
+          "rhov": 0.01031664151060922,
+          "rhow": 7.291561380068947e-18,
+          "rhoE": 0.03178873092785333
+        },
+        "central_rhs": {
+          "rho": 0.006610189171414575,
+          "rhou": 0.015538735129119607,
+          "rhov": 0.01635887418778167,
+          "rhow": 3.967510440359765e-05,
+          "rhoE": 0.047698634131703936
+        },
+        "roe_rhs": {
+          "rho": 0.018865026182722032,
+          "rhou": 0.038437611968675026,
+          "rhov": 0.039256247141811626,
+          "rhow": 3.441400405728965e-17,
+          "rhoE": 0.12621259560865883
+        },
+        "total_rhs": {
+          "rho": 0.020609798309088833,
+          "rhou": 0.04237649426444909,
+          "rhov": 0.04267720539376939,
+          "rhow": 3.967510440359779e-05,
+          "rhoE": 0.13782881147358708
+        }
+      },
+      "input_sha256": "4f498b346db8fea1fff17d0c17d90106c7cdee6d6cec6199fbf4596b21eb606c",
+      "mesh": "iv20",
+      "nominal_resolution": 20,
+      "surface_order": 3,
+      "orders": {
+        "jump_quadrature": {
+          "rho": 1.9193337600791485,
+          "rhou": 1.913230679030763,
+          "rhov": 1.9297288286281504,
+          "rhow": null,
+          "rhoE": 1.7680749898626071
+        },
+        "jump_face": {
+          "rho": 1.9099097752066165,
+          "rhou": 1.9257477763754214,
+          "rhov": 1.9482187837812355,
+          "rhow": null,
+          "rhoE": 1.7664903458483794
+        },
+        "roe_quadrature": {
+          "rho": 1.9420398946419544,
+          "rhou": 1.8972173125756628,
+          "rhov": 1.9104878772250231,
+          "rhow": null,
+          "rhoE": 1.8360396163072568
+        },
+        "roe_face": {
+          "rho": 1.9214049582179673,
+          "rhou": 1.8825036697982367,
+          "rhov": 1.89402181414123,
+          "rhow": null,
+          "rhoE": 1.8141697399748857
+        },
+        "central_rhs": {
+          "rho": 1.967446971988546,
+          "rhou": 1.8375671572154666,
+          "rhov": 1.8541894271027934,
+          "rhow": 6.892966051539614,
+          "rhoE": 1.8463185311734658
+        },
+        "roe_rhs": {
+          "rho": 1.3865449080923034,
+          "rhou": 1.3133679486834793,
+          "rhov": 1.3144863842996362,
+          "rhow": null,
+          "rhoE": 1.2219964402773433
+        },
+        "total_rhs": {
+          "rho": 1.485453273052798,
+          "rhou": 1.4106322243133473,
+          "rhov": 1.4546974158315982,
+          "rhow": 6.8929660515396085,
+          "rhoE": 1.345888975364641
+        }
+      }
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv40_np8",
+      "mpi_ranks": 8,
+      "nodes": 30416,
+      "cells": 60832,
+      "edges": 121664,
+      "periodic_unknowns": 30416,
+      "h": 0.23604019455678307,
+      "volume": 400.00000000001444,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 30659328,
+      "surface_quadrature_points": 3284928,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 3,
+      "surface_rho_min": 0.49422634603821863,
+      "surface_pressure_min": 0.3727953455027519,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.0010203585811791596,
+          "rhou": 0.0020451894019495815,
+          "rhov": 0.0020672330144197383,
+          "rhow": 0.0,
+          "rhoE": 0.006077973691511616
+        },
+        "jump_face": {
+          "rho": 0.0009876665595916388,
+          "rhou": 0.001977071667399842,
+          "rhov": 0.0019936151877909644,
+          "rhow": 0.0,
+          "rhoE": 0.005867149847118414
+        },
+        "roe_quadrature": {
+          "rho": 0.0008421398973985203,
+          "rhou": 0.0017176630688676244,
+          "rhov": 0.0017252749834875587,
+          "rhow": 4.1347820431701327e-17,
+          "rhoE": 0.005488870599207421
+        },
+        "roe_face": {
+          "rho": 0.0008101128055776027,
+          "rhou": 0.0016617968102250026,
+          "rhov": 0.0016698458177900122,
+          "rhow": 7.058096631591506e-18,
+          "rhoE": 0.005294750312907184
+        },
+        "central_rhs": {
+          "rho": 0.0017176059069810479,
+          "rhou": 0.0036240802921783657,
+          "rhov": 0.0036289929887585114,
+          "rhow": 8.419350117235505e-06,
+          "rhoE": 0.011675072453619609
+        },
+        "roe_rhs": {
+          "rho": 0.003467528855652174,
+          "rhou": 0.007573127822654244,
+          "rhov": 0.007589023047366482,
+          "rhow": 6.562691339324513e-17,
+          "rhoE": 0.02403794605847685
+        },
+        "total_rhs": {
+          "rho": 0.0038644001747499585,
+          "rhou": 0.008510100669516218,
+          "rhov": 0.008336361440624388,
+          "rhow": 8.41935011723559e-06,
+          "rhoE": 0.026787796198415523
+        }
+      },
+      "input_sha256": "03ee4a75a6bf93fe09cd800ec33ede0aa81442dbab4356e35af7344b4b5169cf",
+      "mesh": "iv40",
+      "nominal_resolution": 40,
+      "surface_order": 3,
+      "orders": {
+        "jump_quadrature": {
+          "rho": 2.671432427450271,
+          "rhou": 2.6687103527203315,
+          "rhov": 2.677069089400907,
+          "rhow": null,
+          "rhoE": 2.6043229814601823
+        },
+        "jump_face": {
+          "rho": 2.6745663899944954,
+          "rhou": 2.6651798452875797,
+          "rhov": 2.678503916403927,
+          "rhow": null,
+          "rhoE": 2.607253209716824
+        },
+        "roe_quadrature": {
+          "rho": 2.658484181750664,
+          "rhou": 2.647475727479617,
+          "rhov": 2.6579487510903936,
+          "rhow": null,
+          "rhoE": 2.61729224101309
+        },
+        "roe_face": {
+          "rho": 2.6601296579344473,
+          "rhou": 2.645566116327577,
+          "rhov": 2.6584097367838457,
+          "rhow": null,
+          "rhoE": 2.6166131130355788
+        },
+        "central_rhs": {
+          "rho": 1.967399706664602,
+          "rhou": 2.125142144977663,
+          "rhov": 2.1982508541218873,
+          "rhow": 2.2630326655803583,
+          "rhoE": 2.0546483966359506
+        },
+        "roe_rhs": {
+          "rho": 2.472777197165711,
+          "rhou": 2.371409847044139,
+          "rhov": 2.3991138868807664,
+          "rhow": null,
+          "rhoE": 2.420903994380029
+        },
+        "total_rhs": {
+          "rho": 2.443715539866169,
+          "rhou": 2.343541141888795,
+          "rhov": 2.38397588526355,
+          "rhow": 2.263032665580349,
+          "rhoE": 2.3913158156948198
+        }
+      }
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv80_np16",
+      "mpi_ranks": 16,
+      "nodes": 239968,
+      "cells": 479936,
+      "edges": 959872,
+      "periodic_unknowns": 239968,
+      "h": 0.11856838008967246,
+      "volume": 399.99999999995373,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 241887744,
+      "surface_quadrature_points": 25916544,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 3,
+      "surface_rho_min": 0.4938518512098779,
+      "surface_pressure_min": 0.37242184278464296,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.0001354589612695906,
+          "rhou": 0.0002813281904072618,
+          "rhov": 0.00027979791495456776,
+          "rhow": 0.0,
+          "rhoE": 0.0008155834718772848
+        },
+        "jump_face": {
+          "rho": 0.00013176606093433813,
+          "rhou": 0.0002732027906426907,
+          "rhov": 0.00027193738334036833,
+          "rhow": 0.0,
+          "rhoE": 0.0007935779733831136
+        },
+        "roe_quadrature": {
+          "rho": 0.00011173980131866322,
+          "rhou": 0.00023364046169888742,
+          "rhov": 0.00023369253266158368,
+          "rhow": 4.0254391058985306e-17,
+          "rhoE": 0.0007416650058619877
+        },
+        "roe_face": {
+          "rho": 0.0001083637664979729,
+          "rhou": 0.00022780071627136121,
+          "rhov": 0.0002279903823593752,
+          "rhow": 7.259714664152824e-18,
+          "rhoE": 0.000721926767585785
+        },
+        "central_rhs": {
+          "rho": 0.00035703941769581416,
+          "rhou": 0.0006901724987663565,
+          "rhov": 0.00078071859971118,
+          "rhow": 2.2622230332698195e-06,
+          "rhoE": 0.0023594545644010055
+        },
+        "roe_rhs": {
+          "rho": 0.000530344835801623,
+          "rhou": 0.0011853238520954416,
+          "rhov": 0.001181366574587924,
+          "rhow": 1.2979337085383065e-16,
+          "rhoE": 0.003772190402928128
+        },
+        "total_rhs": {
+          "rho": 0.0006346551174756475,
+          "rhou": 0.00137732490963677,
+          "rhov": 0.0013795291252897005,
+          "rhow": 2.2622230332704057e-06,
+          "rhoE": 0.0043789985489903855
+        }
+      },
+      "input_sha256": "41148700f2d5ff0a474f9f75af473c17a30fc8ec565d59ec0463081a4d85e7ef",
+      "mesh": "iv80",
+      "nominal_resolution": 80,
+      "surface_order": 3,
+      "orders": {
+        "jump_quadrature": {
+          "rho": 2.9327591843601706,
+          "rhou": 2.8811741729863525,
+          "rhov": 2.904666735903892,
+          "rhow": null,
+          "rhoE": 2.9171925806114145
+        },
+        "jump_face": {
+          "rho": 2.9256081088299406,
+          "rhou": 2.8745424461569047,
+          "rhov": 2.893387984877432,
+          "rhow": null,
+          "rhoE": 2.9056453317324724
+        },
+        "roe_quadrature": {
+          "rho": 2.9335326118619443,
+          "rhou": 2.897459668971906,
+          "rhov": 2.9035582085826177,
+          "rhow": null,
+          "rhoE": 2.9071088903579936
+        },
+        "roe_face": {
+          "rho": 2.9217776215234132,
+          "rhou": 2.8861991530287834,
+          "rhov": 2.8920082210618854,
+          "rhow": null,
+          "rhoE": 2.8939896916630667
+        },
+        "central_rhs": {
+          "rho": 2.281499656315819,
+          "rhou": 2.408692396695645,
+          "rhov": 2.2316170325373097,
+          "rhow": 1.9087309489654238,
+          "rhoE": 2.322435800875242
+        },
+        "roe_rhs": {
+          "rho": 2.727141026306579,
+          "rhou": 2.693619609276775,
+          "rhov": 2.7015219323459037,
+          "rhow": null,
+          "rhoE": 2.6898254684093397
+        },
+        "total_rhs": {
+          "rho": 2.623744146772282,
+          "rhou": 2.64499373169103,
+          "rhov": 2.6127125206140707,
+          "rhow": 1.9087309489650621,
+          "rhoE": 2.6304925174944547
+        }
+      }
+    }
+  ],
+  "static_fitted_orders": {
+    "jump_quadrature": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.528024528130651,
+          "r_squared": 0.9917223433976281
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.802540524648054,
+          "r_squared": 0.9992759632608202
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.5094957719593216,
+          "r_squared": 0.9922203235536247
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.775303827984152,
+          "r_squared": 0.9995118558821687
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.524849191704981,
+          "r_squared": 0.992246015068538
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.7912552321156694,
+          "r_squared": 0.9994462584812865
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": null,
+          "r_squared": null
+        },
+        "finest_three": {
+          "points": 3,
+          "order": null,
+          "r_squared": null
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.451628121342287,
+          "r_squared": 0.9887728948271401
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.76129021398086,
+          "r_squared": 0.9989313156252448
+        }
+      }
+    },
+    "jump_face": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.5243253261316134,
+          "r_squared": 0.9916293153669811
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.8005144653579532,
+          "r_squared": 0.999330829707608
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.509775046647967,
+          "r_squared": 0.9925279560878157
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.77021743328252,
+          "r_squared": 0.999524254117564
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.52747933481566,
+          "r_squared": 0.9927066980356763
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.786311634483835,
+          "r_squared": 0.9995046124708732
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": null,
+          "r_squared": null
+        },
+        "finest_three": {
+          "points": 3,
+          "order": null,
+          "r_squared": null
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.4488352755002536,
+          "r_squared": 0.988901210829162
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.756957066294237,
+          "r_squared": 0.9990247809670958
+        }
+      }
+    },
+    "roe_quadrature": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.5297864619629813,
+          "r_squared": 0.9921367790768704
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.7964764667181012,
+          "r_squared": 0.9991945153805104
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.501175470353034,
+          "r_squared": 0.9917386145025671
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.7728931140748827,
+          "r_squared": 0.9993231769642749
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.511150941975916,
+          "r_squared": 0.9919121231550585
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.7811714513081434,
+          "r_squared": 0.9993505231167362
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": null,
+          "r_squared": null
+        },
+        "finest_three": {
+          "points": 3,
+          "order": null,
+          "r_squared": null
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.47388863176938,
+          "r_squared": 0.9903997882562205
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.762693767749779,
+          "r_squared": 0.9990837915620132
+        }
+      }
+    },
+    "roe_face": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.5207772791397685,
+          "r_squared": 0.9918968024926145
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.7913989050925236,
+          "r_squared": 0.999268382198641
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.492642916100606,
+          "r_squared": 0.9915939341747726
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.766292137412732,
+          "r_squared": 0.9993698385027314
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.502962695353963,
+          "r_squared": 0.991738558065572
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.775606510448089,
+          "r_squared": 0.9994100989256224
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": null,
+          "r_squared": null
+        },
+        "finest_three": {
+          "points": 3,
+          "order": null,
+          "r_squared": null
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.463168355358689,
+          "r_squared": 0.9901133737562137
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.755773434240726,
+          "r_squared": 0.9991564763359311
+        }
+      }
+    },
+    "central_rhs": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.0625895862659935,
+          "r_squared": 0.998601710743734
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.124984208212175,
+          "r_squared": 0.9981826208913114
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.1259497506061256,
+          "r_squared": 0.9964156555673377
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.267399808916432,
+          "r_squared": 0.9986984841506716
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.106531952594551,
+          "r_squared": 0.998199193175629
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.214990724981404,
+          "r_squared": 0.9999810908456561
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": 3.5259612530027895,
+          "r_squared": 0.898130692095227
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.08527886628109,
+          "r_squared": 0.9976001398276568
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.074133253012981,
+          "r_squared": 0.9973686179628912
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.188997812051731,
+          "r_squared": 0.9987544545691939
+        }
+      }
+    },
+    "roe_rhs": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.2283684709645826,
+          "r_squared": 0.9810483193354025
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.6003919811585314,
+          "r_squared": 0.999203293910623
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.1559025124435003,
+          "r_squared": 0.9789694343946684
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5330630559401404,
+          "r_squared": 0.9986534843164774
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.169738066228622,
+          "r_squared": 0.9789045747510094
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5508325393718483,
+          "r_squared": 0.998830162222851
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": null,
+          "r_squared": null
+        },
+        "finest_three": {
+          "points": 3,
+          "order": null,
+          "r_squared": null
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.147558762811903,
+          "r_squared": 0.9756024917715089
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5558223746198365,
+          "r_squared": 0.9990782771493261
+        }
+      }
+    },
+    "total_rhs": {
+      "rho": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.2146566994612407,
+          "r_squared": 0.985892430647182
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5340362110891546,
+          "r_squared": 0.9995795774612323
+        }
+      },
+      "rhou": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.158778799761382,
+          "r_squared": 0.9832210092010724
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.494780440580055,
+          "r_squared": 0.9987847755497224
+        }
+      },
+      "rhov": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.1782542501546764,
+          "r_squared": 0.9851892849108285
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.4987334607022147,
+          "r_squared": 0.9993021860664805
+        }
+      },
+      "rhow": {
+        "all_grids": {
+          "points": 4,
+          "order": 3.525961253002673,
+          "r_squared": 0.8981306920952115
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.0852788662809045,
+          "r_squared": 0.9976001398276516
+        }
+      },
+      "rhoE": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.1543820930217366,
+          "r_squared": 0.9813472730600996
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5113111909781978,
+          "r_squared": 0.9992446995519234
+        }
+      }
+    }
+  },
+  "static_iv10_np2": {
+    "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv10_np2",
+    "mpi_ranks": 2,
+    "nodes": 512,
+    "cells": 1024,
+    "edges": 2048,
+    "periodic_unknowns": 512,
+    "h": 0.9210078746600943,
+    "volume": 399.9999999999969,
+    "coefficient_rows": [
+      9,
+      9
+    ],
+    "stencil_size": [
+      16,
+      16.0,
+      16
+    ],
+    "volume_quadrature_points": 516096,
+    "surface_quadrature_points": 55296,
+    "boundary_quadrature_points": 0,
+    "points_per_micro_tetrahedron": 14,
+    "points_per_micro_triangle": 3,
+    "surface_rho_min": 0.4911526182136897,
+    "surface_pressure_min": 0.36439014065429703,
+    "l2": {
+      "jump_quadrature": {
+        "rho": 0.02330003572391817,
+        "rhou": 0.04642314038843905,
+        "rhov": 0.04772258580789219,
+        "rhow": 0.0,
+        "rhoE": 0.11966320859533248
+      },
+      "jump_face": {
+        "rho": 0.02245834996451837,
+        "rhou": 0.04514923529639252,
+        "rhov": 0.04664818558844648,
+        "rhow": 0.0,
+        "rhoE": 0.11562059313055975
+      },
+      "roe_quadrature": {
+        "rho": 0.01935560071860826,
+        "rhou": 0.03801170269705991,
+        "rhov": 0.03880181161323881,
+        "rhow": 4.801571786555161e-17,
+        "rhoE": 0.11415894682366001
+      },
+      "roe_face": {
+        "rho": 0.018382104690554346,
+        "rhou": 0.03636357306040273,
+        "rhov": 0.03715093447241213,
+        "rhow": 7.601293826476983e-18,
+        "rhoE": 0.1084539593017799
+      },
+      "central_rhs": {
+        "rho": 0.025015912764607514,
+        "rhou": 0.053859417008746184,
+        "rhov": 0.0573433072312587,
+        "rhow": 0.004202950686590726,
+        "rhoE": 0.16631174954566666
+      },
+      "roe_rhs": {
+        "rho": 0.04819486067557238,
+        "rhou": 0.09345479059528759,
+        "rhov": 0.09551740760884173,
+        "rhow": 1.7582638853793588e-17,
+        "rhoE": 0.28847253651284444
+      },
+      "total_rhs": {
+        "rho": 0.05629562619743384,
+        "rhou": 0.11003853155331005,
+        "rhov": 0.11417245451630216,
+        "rhow": 0.0042029506865907265,
+        "rhoE": 0.34256209524741693
+      }
+    },
+    "input_sha256": "8d4d2b20705d4e9fecab29fc2b5f0da428f1e03c59926fcb9db823413415ac50"
+  },
+  "static_iv10_np1_np2_max_L2_difference": 1.9373391779708982e-14,
+  "higher_surface_quadrature_runs": [
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv40_np8_sq5",
+      "mpi_ranks": 8,
+      "nodes": 30416,
+      "cells": 60832,
+      "edges": 121664,
+      "periodic_unknowns": 30416,
+      "h": 0.23604019455678307,
+      "volume": 400.00000000001444,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 30659328,
+      "surface_quadrature_points": 6569856,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 6,
+      "surface_rho_min": 0.49398617287859437,
+      "surface_pressure_min": 0.37255024695513206,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.001020373562151499,
+          "rhou": 0.0020452190899494884,
+          "rhov": 0.0020672648341086997,
+          "rhow": 0.0,
+          "rhoE": 0.0060780677899577905
+        },
+        "jump_face": {
+          "rho": 0.0009876665595916388,
+          "rhou": 0.0019770716673998424,
+          "rhov": 0.0019936151877909644,
+          "rhow": 0.0,
+          "rhoE": 0.005867149847118414
+        },
+        "roe_quadrature": {
+          "rho": 0.0008421571053643861,
+          "rhou": 0.0017177048981441392,
+          "rhov": 0.0017253219870556682,
+          "rhow": 4.1434908930027013e-17,
+          "rhoE": 0.005489022730415859
+        },
+        "roe_face": {
+          "rho": 0.0008101094380281797,
+          "rhou": 0.0016617989365078556,
+          "rhov": 0.0016698482297879515,
+          "rhow": 5.4604082563735424e-18,
+          "rhoE": 0.005294757073694067
+        },
+        "central_rhs": {
+          "rho": 0.0017176059069810565,
+          "rhou": 0.0036240789282466655,
+          "rhov": 0.003628991937332899,
+          "rhow": 8.419825855657327e-06,
+          "rhoE": 0.011675070888133793
+        },
+        "roe_rhs": {
+          "rho": 0.003467510150218815,
+          "rhou": 0.0075731511678247595,
+          "rhov": 0.007589050013209191,
+          "rhow": 4.9151121233168706e-17,
+          "rhoE": 0.02403804387079685
+        },
+        "total_rhs": {
+          "rho": 0.0038643813359388875,
+          "rhou": 0.008510119075869066,
+          "rhov": 0.008336388041175506,
+          "rhow": 8.419825855657373e-06,
+          "rhoE": 0.026787879278105577
+        }
+      },
+      "input_sha256": "2e60f0a6c8f08a948c7fbfb3a1ff6f464244f266091b49ca510f680f53b7ce6d",
+      "mesh": "iv40",
+      "nominal_resolution": 40,
+      "surface_order": 5
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv80_np16_sq5",
+      "mpi_ranks": 16,
+      "nodes": 239968,
+      "cells": 479936,
+      "edges": 959872,
+      "periodic_unknowns": 239968,
+      "h": 0.11856838008967246,
+      "volume": 399.99999999995373,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 241887744,
+      "surface_quadrature_points": 51833088,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 6,
+      "surface_rho_min": 0.4938140395556878,
+      "surface_pressure_min": 0.3723807690628504,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.00013546087843145245,
+          "rhou": 0.00028133224313119906,
+          "rhov": 0.0002798019062190709,
+          "rhow": 0.0,
+          "rhoE": 0.0008155949998093166
+        },
+        "jump_face": {
+          "rho": 0.00013176606093433807,
+          "rhou": 0.0002732027906426907,
+          "rhov": 0.00027193738334036833,
+          "rhow": 0.0,
+          "rhoE": 0.0007935779733831136
+        },
+        "roe_quadrature": {
+          "rho": 0.00011174237716978263,
+          "rhou": 0.00023364579221950082,
+          "rhov": 0.0002336978388116096,
+          "rhow": 4.024925885236557e-17,
+          "rhoE": 0.000741682869305692
+        },
+        "roe_face": {
+          "rho": 0.0001083638053051748,
+          "rhou": 0.000227800752334261,
+          "rhov": 0.00022799039105761721,
+          "rhow": 5.7198441732576e-18,
+          "rhoE": 0.0007219268753949985
+        },
+        "central_rhs": {
+          "rho": 0.0003570394176958225,
+          "rhou": 0.000690172469035663,
+          "rhov": 0.0007807185820868335,
+          "rhow": 2.2622382797299143e-06,
+          "rhoE": 0.002359454513691494
+        },
+        "roe_rhs": {
+          "rho": 0.0005303442293778681,
+          "rhou": 0.0011853238739367644,
+          "rhov": 0.0011813667252276567,
+          "rhow": 9.65465913758025e-17,
+          "rhoE": 0.0037721904427278673
+        },
+        "total_rhs": {
+          "rho": 0.0006346541438400896,
+          "rhou": 0.0013773245266883011,
+          "rhov": 0.0013795294248600046,
+          "rhow": 2.2622382797300176e-06,
+          "rhoE": 0.00437899809068408
+        }
+      },
+      "input_sha256": "7ec90daafd938bea4a8a5987983b8f826d67b1cc8a61353f5bd2390c75cb1266",
+      "mesh": "iv80",
+      "nominal_resolution": 80,
+      "surface_order": 5
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/static/iv80_np16_sq7",
+      "mpi_ranks": 16,
+      "nodes": 239968,
+      "cells": 479936,
+      "edges": 959872,
+      "periodic_unknowns": 239968,
+      "h": 0.11856838008967246,
+      "volume": 399.99999999995373,
+      "coefficient_rows": [
+        9,
+        9
+      ],
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "volume_quadrature_points": 241887744,
+      "surface_quadrature_points": 103666176,
+      "boundary_quadrature_points": 0,
+      "points_per_micro_tetrahedron": 14,
+      "points_per_micro_triangle": 12,
+      "surface_rho_min": 0.493818641493873,
+      "surface_pressure_min": 0.37238628125074547,
+      "l2": {
+        "jump_quadrature": {
+          "rho": 0.0001354608784314524,
+          "rhou": 0.0002813322431311991,
+          "rhov": 0.0002798019062190708,
+          "rhow": 0.0,
+          "rhoE": 0.0008155949998093167
+        },
+        "jump_face": {
+          "rho": 0.00013176606093433813,
+          "rhou": 0.00027320279064269086,
+          "rhov": 0.0002719373833403683,
+          "rhow": 0.0,
+          "rhoE": 0.000793577973383114
+        },
+        "roe_quadrature": {
+          "rho": 0.00011174235508019908,
+          "rhou": 0.00023364578266537713,
+          "rhov": 0.00023369785900270138,
+          "rhow": 4.025518073266e-17,
+          "rhoE": 0.0007416828840122887
+        },
+        "roe_face": {
+          "rho": 0.00010836378353336287,
+          "rhou": 0.00022780074209061946,
+          "rhov": 0.00022799041013538395,
+          "rhow": 4.446036203667988e-18,
+          "rhoE": 0.0007219268851091782
+        },
+        "central_rhs": {
+          "rho": 0.000357039417695829,
+          "rhou": 0.0006901724690348481,
+          "rhov": 0.0007807185820867949,
+          "rhow": 2.262238282091446e-06,
+          "rhoE": 0.002359454513689333
+        },
+        "roe_rhs": {
+          "rho": 0.000530344294700224,
+          "rhou": 0.001185324089739781,
+          "rhov": 0.0011813667148518627,
+          "rhow": 6.68317589592902e-17,
+          "rhoE": 0.003772190438483223
+        },
+        "total_rhs": {
+          "rho": 0.0006346545031168632,
+          "rhou": 0.0013773249859632883,
+          "rhov": 0.0013795296750872012,
+          "rhow": 2.2622382820910144e-06,
+          "rhoE": 0.00437899944674041
+        }
+      },
+      "input_sha256": "1174e5fe855a822c52ce79579556d0420c781aa9c5f49adb5339b1daf65b97e2",
+      "mesh": "iv80",
+      "nominal_resolution": 80,
+      "surface_order": 7
+    }
+  ],
+  "surface_quadrature_comparison": [
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0010203585811791596,
+      "comparison_L2": 0.001020373562151499,
+      "absolute_change": 1.4980972339387333e-08,
+      "relative_change": 1.4682066300730767e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0020451894019495815,
+      "comparison_L2": 0.0020452190899494884,
+      "absolute_change": 2.9687999906959778e-08,
+      "relative_change": 1.4516014936738486e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0020672330144197383,
+      "comparison_L2": 0.0020672648341086997,
+      "absolute_change": 3.181968896140072e-08,
+      "relative_change": 1.5392405567915546e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0,
+      "comparison_L2": 0.0,
+      "absolute_change": 0.0,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.006077973691511616,
+      "comparison_L2": 0.0060780677899577905,
+      "absolute_change": 9.409844617478541e-08,
+      "relative_change": 1.5481877834844227e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0009876665595916388,
+      "comparison_L2": 0.0009876665595916388,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.001977071667399842,
+      "comparison_L2": 0.0019770716673998424,
+      "absolute_change": 4.336808689942018e-19,
+      "relative_change": 2.220446049250313e-16
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0019936151877909644,
+      "comparison_L2": 0.0019936151877909644,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0,
+      "comparison_L2": 0.0,
+      "absolute_change": 0.0,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.005867149847118414,
+      "comparison_L2": 0.005867149847118414,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0008421398973985203,
+      "comparison_L2": 0.0008421571053643861,
+      "absolute_change": 1.7207965865824806e-08,
+      "relative_change": 2.043361906856056e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0017176630688676244,
+      "comparison_L2": 0.0017177048981441392,
+      "absolute_change": 4.182927651474877e-08,
+      "relative_change": 2.435243399756537e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0017252749834875587,
+      "comparison_L2": 0.0017253219870556682,
+      "absolute_change": 4.7003568109547575e-08,
+      "relative_change": 2.7244102279055937e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 4.1347820431701327e-17,
+      "comparison_L2": 4.1434908930027013e-17,
+      "absolute_change": 8.708849832568619e-20,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.005488870599207421,
+      "comparison_L2": 0.005489022730415859,
+      "absolute_change": 1.5213120843800276e-07,
+      "relative_change": 2.7716304417779725e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0008101128055776027,
+      "comparison_L2": 0.0008101094380281797,
+      "absolute_change": -3.367549422910593e-09,
+      "relative_change": -4.156889509387973e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0016617968102250026,
+      "comparison_L2": 0.0016617989365078556,
+      "absolute_change": 2.126282852912831e-09,
+      "relative_change": 1.279508324847356e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0016698458177900122,
+      "comparison_L2": 0.0016698482297879515,
+      "absolute_change": 2.4119979392684537e-09,
+      "relative_change": 1.4444435010307899e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 7.058096631591506e-18,
+      "comparison_L2": 5.4604082563735424e-18,
+      "absolute_change": -1.5976883752179633e-18,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.005294750312907184,
+      "comparison_L2": 0.005294757073694067,
+      "absolute_change": 6.760786883455716e-09,
+      "relative_change": 1.2768849302347007e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0017176059069810479,
+      "comparison_L2": 0.0017176059069810565,
+      "absolute_change": 8.673617379884035e-18,
+      "relative_change": 5.10702591327572e-15
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0036240802921783657,
+      "comparison_L2": 0.0036240789282466655,
+      "absolute_change": -1.3639317002211993e-09,
+      "relative_change": -3.763525060485051e-07
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0036289929887585114,
+      "comparison_L2": 0.003628991937332899,
+      "absolute_change": -1.0514256123736465e-09,
+      "relative_change": -2.897293038817139e-07
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 8.419350117235505e-06,
+      "comparison_L2": 8.419825855657327e-06,
+      "absolute_change": 4.757384218216794e-10,
+      "relative_change": 5.6505361482495076e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.011675072453619609,
+      "comparison_L2": 0.011675070888133793,
+      "absolute_change": -1.5654858156327611e-09,
+      "relative_change": -1.3408788868130017e-07
+    },
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.003467528855652174,
+      "comparison_L2": 0.003467510150218815,
+      "absolute_change": -1.8705433358929408e-08,
+      "relative_change": -5.394456437879391e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.007573127822654244,
+      "comparison_L2": 0.0075731511678247595,
+      "absolute_change": 2.3345170515470803e-08,
+      "relative_change": 3.0826325743138483e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.007589023047366482,
+      "comparison_L2": 0.007589050013209191,
+      "absolute_change": 2.6965842708955023e-08,
+      "relative_change": 3.553269312783769e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 6.562691339324513e-17,
+      "comparison_L2": 4.9151121233168706e-17,
+      "absolute_change": -1.6475792160076426e-17,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.02403794605847685,
+      "comparison_L2": 0.02403804387079685,
+      "absolute_change": 9.781232000044549e-08,
+      "relative_change": 4.069079769131179e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rho",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0038644001747499585,
+      "comparison_L2": 0.0038643813359388875,
+      "absolute_change": -1.8838811071016093e-08,
+      "relative_change": -4.874963828616075e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhou",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.008510100669516218,
+      "comparison_L2": 0.008510119075869066,
+      "absolute_change": 1.8406352848138186e-08,
+      "relative_change": 2.1628830919606656e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhov",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.008336361440624388,
+      "comparison_L2": 0.008336388041175506,
+      "absolute_change": 2.660055111770865e-08,
+      "relative_change": 3.190906645134106e-06
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhow",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 8.41935011723559e-06,
+      "comparison_L2": 8.419825855657373e-06,
+      "absolute_change": 4.757384217827159e-10,
+      "relative_change": 5.650536147783214e-05
+    },
+    {
+      "mesh": "iv40",
+      "component": "rhoE",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.026787796198415523,
+      "comparison_L2": 0.026787879278105577,
+      "absolute_change": 8.307969005458271e-08,
+      "relative_change": 3.101400706473356e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0001354589612695906,
+      "comparison_L2": 0.00013546087843145245,
+      "absolute_change": 1.9171618618541494e-09,
+      "relative_change": 1.415308255636738e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0002813281904072618,
+      "comparison_L2": 0.00028133224313119906,
+      "absolute_change": 4.052723937258279e-09,
+      "relative_change": 1.4405680182294489e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00027979791495456776,
+      "comparison_L2": 0.0002798019062190709,
+      "absolute_change": 3.991264503145145e-09,
+      "relative_change": 1.4264811457831428e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0,
+      "comparison_L2": 0.0,
+      "absolute_change": 0.0,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0008155834718772848,
+      "comparison_L2": 0.0008155949998093166,
+      "absolute_change": 1.1527932031814465e-08,
+      "relative_change": 1.413458269983181e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00013176606093433813,
+      "comparison_L2": 0.00013176606093433807,
+      "absolute_change": -5.421010862427522e-20,
+      "relative_change": -4.440892098500626e-16
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0002732027906426907,
+      "comparison_L2": 0.0002732027906426907,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00027193738334036833,
+      "comparison_L2": 0.00027193738334036833,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0,
+      "comparison_L2": 0.0,
+      "absolute_change": 0.0,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0007935779733831136,
+      "comparison_L2": 0.0007935779733831136,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00011173980131866322,
+      "comparison_L2": 0.00011174237716978263,
+      "absolute_change": 2.5758511194108385e-09,
+      "relative_change": 2.305222569765064e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00023364046169888742,
+      "comparison_L2": 0.00023364579221950082,
+      "absolute_change": 5.33052061339875e-09,
+      "relative_change": 2.2815057694414165e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00023369253266158368,
+      "comparison_L2": 0.0002336978388116096,
+      "absolute_change": 5.306150025927939e-09,
+      "relative_change": 2.2705689246782512e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 4.0254391058985306e-17,
+      "comparison_L2": 4.024925885236557e-17,
+      "absolute_change": -5.132206619733134e-21,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0007416650058619877,
+      "comparison_L2": 0.000741682869305692,
+      "absolute_change": 1.7863443704281556e-08,
+      "relative_change": 2.40855960078612e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0001083637664979729,
+      "comparison_L2": 0.0001083638053051748,
+      "absolute_change": 3.880720190454958e-11,
+      "relative_change": 3.5811972165511463e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00022780071627136121,
+      "comparison_L2": 0.000227800752334261,
+      "absolute_change": 3.606289979097774e-11,
+      "relative_change": 1.583089832557505e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0002279903823593752,
+      "comparison_L2": 0.00022799039105761721,
+      "absolute_change": 8.698242023571015e-12,
+      "relative_change": 3.815179372423927e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 7.259714664152824e-18,
+      "comparison_L2": 5.7198441732576e-18,
+      "absolute_change": -1.5398704908952235e-18,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.000721926767585785,
+      "comparison_L2": 0.0007219268753949985,
+      "absolute_change": 1.0780921348794298e-10,
+      "relative_change": 1.4933538738937102e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00035703941769581416,
+      "comparison_L2": 0.0003570394176958225,
+      "absolute_change": 8.348356728138384e-18,
+      "relative_change": 2.3314683517128287e-14
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0006901724987663565,
+      "comparison_L2": 0.000690172469035663,
+      "absolute_change": -2.973069349303942e-11,
+      "relative_change": -4.307719236873453e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00078071859971118,
+      "comparison_L2": 0.0007807185820868335,
+      "absolute_change": -1.7624346535134727e-11,
+      "relative_change": -2.2574518587781256e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 2.2622230332698195e-06,
+      "comparison_L2": 2.2622382797299143e-06,
+      "absolute_change": 1.524646009478029e-11,
+      "relative_change": 6.739591928095479e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0023594545644010055,
+      "comparison_L2": 0.002359454513691494,
+      "absolute_change": -5.070951167654436e-11,
+      "relative_change": -2.1492048363214167e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.000530344835801623,
+      "comparison_L2": 0.0005303442293778681,
+      "absolute_change": -6.064237548534732e-10,
+      "relative_change": -1.1434517956931955e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0011853238520954416,
+      "comparison_L2": 0.0011853238739367644,
+      "absolute_change": 2.184132280418083e-11,
+      "relative_change": 1.8426460135501088e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.001181366574587924,
+      "comparison_L2": 0.0011813667252276567,
+      "absolute_change": 1.5063973267566422e-10,
+      "relative_change": 1.2751311562197998e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 1.2979337085383065e-16,
+      "comparison_L2": 9.65465913758025e-17,
+      "absolute_change": -3.324677947802814e-17,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.003772190402928128,
+      "comparison_L2": 0.0037721904427278673,
+      "absolute_change": 3.9799739458973304e-11,
+      "relative_change": 1.0550829987465704e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0006346551174756475,
+      "comparison_L2": 0.0006346541438400896,
+      "absolute_change": -9.736355579192599e-10,
+      "relative_change": -1.5341175563232667e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.00137732490963677,
+      "comparison_L2": 0.0013773245266883011,
+      "absolute_change": -3.829484689424345e-10,
+      "relative_change": -2.7803785895841315e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0013795291252897005,
+      "comparison_L2": 0.0013795294248600046,
+      "absolute_change": 2.995703041099723e-10,
+      "relative_change": 2.1715402631627967e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 2.2622230332704057e-06,
+      "comparison_L2": 2.2622382797300176e-06,
+      "absolute_change": 1.524645961197151e-11,
+      "relative_change": 6.739591714710613e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 5,
+      "surface_q3_L2": 0.0043789985489903855,
+      "comparison_L2": 0.00437899809068408,
+      "absolute_change": -4.5830630523296945e-10,
+      "relative_change": -1.0466007238640884e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0001354589612695906,
+      "comparison_L2": 0.0001354608784314524,
+      "absolute_change": 1.9171618617999393e-09,
+      "relative_change": 1.4153082555923291e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0002813281904072618,
+      "comparison_L2": 0.0002813322431311991,
+      "absolute_change": 4.052723937312489e-09,
+      "relative_change": 1.4405680182516534e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00027979791495456776,
+      "comparison_L2": 0.0002798019062190708,
+      "absolute_change": 3.991264503036725e-09,
+      "relative_change": 1.4264811457609383e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0,
+      "comparison_L2": 0.0,
+      "absolute_change": 0.0,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "jump_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0008155834718772848,
+      "comparison_L2": 0.0008155949998093167,
+      "absolute_change": 1.1527932031922886e-08,
+      "relative_change": 1.413458269983181e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00013176606093433813,
+      "comparison_L2": 0.00013176606093433813,
+      "absolute_change": 0.0,
+      "relative_change": 0.0
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0002732027906426907,
+      "comparison_L2": 0.00027320279064269086,
+      "absolute_change": 1.6263032587282567e-19,
+      "relative_change": 6.661338147750939e-16
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00027193738334036833,
+      "comparison_L2": 0.0002719373833403683,
+      "absolute_change": -5.421010862427522e-20,
+      "relative_change": -2.220446049250313e-16
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0,
+      "comparison_L2": 0.0,
+      "absolute_change": 0.0,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "jump_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0007935779733831136,
+      "comparison_L2": 0.000793577973383114,
+      "absolute_change": 3.2526065174565133e-19,
+      "relative_change": 4.440892098500626e-16
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00011173980131866322,
+      "comparison_L2": 0.00011174235508019908,
+      "absolute_change": 2.5537615358576767e-09,
+      "relative_change": 2.28545380045464e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00023364046169888742,
+      "comparison_L2": 0.00023364578266537713,
+      "absolute_change": 5.320966489711894e-09,
+      "relative_change": 2.277416527518561e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00023369253266158368,
+      "comparison_L2": 0.00023369785900270138,
+      "absolute_change": 5.326341117700651e-09,
+      "relative_change": 2.279208949063083e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 4.0254391058985306e-17,
+      "comparison_L2": 4.025518073266e-17,
+      "absolute_change": 7.8967367469451815e-22,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "roe_quadrature",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0007416650058619877,
+      "comparison_L2": 0.0007416828840122887,
+      "absolute_change": 1.787815030100757e-08,
+      "relative_change": 2.4105425171283557e-05
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0001083637664979729,
+      "comparison_L2": 0.00010836378353336287,
+      "absolute_change": 1.7035389971494647e-11,
+      "relative_change": 1.5720559121135125e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00022780071627136121,
+      "comparison_L2": 0.00022780074209061946,
+      "absolute_change": 2.5819258243995474e-11,
+      "relative_change": 1.1334142691055149e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0002279903823593752,
+      "comparison_L2": 0.00022799041013538395,
+      "absolute_change": 2.777600876082212e-11,
+      "relative_change": 1.2182973896379679e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 7.259714664152824e-18,
+      "comparison_L2": 4.446036203667988e-18,
+      "absolute_change": -2.813678460484836e-18,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "roe_face",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.000721926767585785,
+      "comparison_L2": 0.0007219268851091782,
+      "absolute_change": 1.1752339325234867e-10,
+      "relative_change": 1.6279129488872002e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00035703941769581416,
+      "comparison_L2": 0.000357039417695829,
+      "absolute_change": 1.485356976305141e-17,
+      "relative_change": 4.1522341120980855e-14
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0006901724987663565,
+      "comparison_L2": 0.0006901724690348481,
+      "absolute_change": -2.973150837939226e-11,
+      "relative_change": -4.307837309092122e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00078071859971118,
+      "comparison_L2": 0.0007807185820867949,
+      "absolute_change": -1.7624385132732068e-11,
+      "relative_change": -2.2574567992705852e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 2.2622230332698195e-06,
+      "comparison_L2": 2.262238282091446e-06,
+      "absolute_change": 1.5248821626448884e-11,
+      "relative_change": 6.740635826840702e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "central_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0023594545644010055,
+      "comparison_L2": 0.002359454513689333,
+      "absolute_change": -5.071167270831456e-11,
+      "relative_change": -2.1492964297209483e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.000530344835801623,
+      "comparison_L2": 0.000530344294700224,
+      "absolute_change": -5.411013989306546e-10,
+      "relative_change": -1.0202822058325012e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0011853238520954416,
+      "comparison_L2": 0.001185324089739781,
+      "absolute_change": 2.376443393199007e-10,
+      "relative_change": 2.0048895410518242e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.001181366574587924,
+      "comparison_L2": 0.0011813667148518627,
+      "absolute_change": 1.4026393870165965e-10,
+      "relative_change": 1.1873024141628719e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 1.2979337085383065e-16,
+      "comparison_L2": 6.68317589592902e-17,
+      "absolute_change": -6.296161189454045e-17,
+      "relative_change": null
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "roe_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.003772190402928128,
+      "comparison_L2": 0.003772190438483223,
+      "absolute_change": 3.555509532626733e-11,
+      "relative_change": 9.42558342487132e-09
+    },
+    {
+      "mesh": "iv80",
+      "component": "rho",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0006346551174756475,
+      "comparison_L2": 0.0006346545031168632,
+      "absolute_change": -6.143587843315812e-10,
+      "relative_change": -9.680199015704716e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhou",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.00137732490963677,
+      "comparison_L2": 0.0013773249859632883,
+      "absolute_change": 7.632651823942516e-11,
+      "relative_change": 5.5416494504356706e-08
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhov",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0013795291252897005,
+      "comparison_L2": 0.0013795296750872012,
+      "absolute_change": 5.49797500712032e-10,
+      "relative_change": 3.9853997324534873e-07
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhow",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 2.2622230332704057e-06,
+      "comparison_L2": 2.2622382820910144e-06,
+      "absolute_change": 1.5248820608738798e-11,
+      "relative_change": 6.740635376978332e-06
+    },
+    {
+      "mesh": "iv80",
+      "component": "rhoE",
+      "quantity": "total_rhs",
+      "baseline_surface_order": 3,
+      "comparison_surface_order": 7,
+      "surface_q3_L2": 0.0043789985489903855,
+      "comparison_L2": 0.00437899944674041,
+      "absolute_change": 8.977500244936043e-10,
+      "relative_change": 2.050126335362279e-07
+    }
+  ],
+  "missing_required_surface_checks": [],
+  "transient_runs": [
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/transient/iv10_np1",
+      "mpi_ranks": 1,
+      "steps": 61,
+      "time": 2.0,
+      "cfl": 0.5,
+      "initial_cfl_step": 0.031038456276426835,
+      "wall_seconds": 6.414377141,
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "gauss_points_stored": 571392,
+      "initial": {
+        "volume": 399.999999999997,
+        "errors": {
+          "rho": {
+            "L1": 0.0014902642082554492,
+            "L2": 0.004253716167980585,
+            "Linf": 0.021463909556287186
+          },
+          "pressure": {
+            "L1": 0.0019416589592880103,
+            "L2": 0.00634500138400675,
+            "Linf": 0.034440554887809394
+          }
+        },
+        "min_density_mean": 0.5373956054031106,
+        "min_pressure_of_mean": 0.43760065133217685,
+        "min_density_point": 0.5180618547210277,
+        "min_pressure_point": 0.40976502960951133,
+        "input_sha256": {
+          "points_initial.rank0000.csv": "6e5bf2a224588be95e7e4fc64732e016a86fb40be9ba9a9644255d08b95fb739"
+        }
+      },
+      "final": {
+        "volume": 399.999999999997,
+        "errors": {
+          "rho": {
+            "L1": 0.0170008247943167,
+            "L2": 0.0414582566289147,
+            "Linf": 0.2586307009045955
+          },
+          "pressure": {
+            "L1": 0.023142422259165706,
+            "L2": 0.06309028422845735,
+            "Linf": 0.393886536072898
+          }
+        },
+        "min_density_mean": 0.8085753625326911,
+        "min_pressure_of_mean": 0.82625063114415,
+        "min_density_point": 0.8046042884059477,
+        "min_pressure_point": 0.8214321741901918,
+        "input_sha256": {
+          "points_final.rank0000.csv": "11cfe9979dc4d72820e857522ecc784ddb62e3f70f76a360814487bbb91c2ee5"
+        }
+      },
+      "conservation": {
+        "initial": {
+          "mass": 392.96697465093894,
+          "momentum_x": 392.96697482494176,
+          "momentum_y": 392.96697469973157,
+          "momentum_z": 0.0,
+          "total_energy": 1379.0373098162854
+        },
+        "final": {
+          "mass": 392.96697465093786,
+          "momentum_x": 392.96697482494034,
+          "momentum_y": 392.9669746997299,
+          "momentum_z": 1.8561541192951836e-16,
+          "total_energy": 1379.037309816281
+        },
+        "absolute_drift": {
+          "mass": -1.0800249583553523e-12,
+          "momentum_x": -1.4210854715202004e-12,
+          "momentum_y": -1.6484591469634324e-12,
+          "momentum_z": 1.8561541192951836e-16,
+          "total_energy": -4.320099833421409e-12
+        },
+        "scaled_drift": {
+          "mass": -2.748386068103323e-15,
+          "momentum_x": -3.616297456429419e-15,
+          "momentum_y": -4.194905050794739e-15,
+          "momentum_z": 1.8561541192951836e-16,
+          "total_energy": -3.132692496910711e-15
+        },
+        "max_abs_scaled_drift": 4.194905050794739e-15,
+        "input_sha256": "540bf2efd6d6136cd756c3c1fd8959541f4ea6fe42cde3f0a644d9569f1a87ad"
+      },
+      "input_sha256": "dcc969bbbd015f8e0b3f5b1455cd8deeeda6465e32959efd9b08bffcb717e4b9",
+      "mesh": "iv10",
+      "nominal_resolution": 10,
+      "h": 0.921007874660094,
+      "expected_gauss_points_from_static": 571392,
+      "orders": {
+        "rho": {
+          "L1": null,
+          "L2": null,
+          "Linf": null
+        },
+        "pressure": {
+          "L1": null,
+          "L2": null,
+          "Linf": null
+        }
+      }
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/transient/iv20_np4",
+      "mpi_ranks": 4,
+      "steps": 124,
+      "time": 2.0,
+      "cfl": 0.5,
+      "initial_cfl_step": 0.015481179354929863,
+      "wall_seconds": 28.900714891,
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "gauss_points_stored": 4347936,
+      "initial": {
+        "volume": 399.9999999999965,
+        "errors": {
+          "rho": {
+            "L1": 0.00015459327979716394,
+            "L2": 0.0005144094470650952,
+            "Linf": 0.003646688535511422
+          },
+          "pressure": {
+            "L1": 0.00020530221697499538,
+            "L2": 0.0007528770313079692,
+            "Linf": 0.005597617290275081
+          }
+        },
+        "min_density_mean": 0.549341817820279,
+        "min_pressure_of_mean": 0.43910014448498547,
+        "min_density_point": 0.5419181098908704,
+        "min_pressure_point": 0.4251274767060958,
+        "input_sha256": {
+          "points_initial.rank0000.csv": "f78c9d06de53761528e4b8d9622ddcf4c3909d15946a3236061b66ae6d7fcb3f",
+          "points_initial.rank0001.csv": "6ece325f73ddf0cafcb85b1eadb4e02483ae809f71c92f0eef3c2260abbb6d24",
+          "points_initial.rank0002.csv": "81be957c0274f13e38455ee4e2b7e17d4da3dc92fb24c86d1c68263c8204a2d6",
+          "points_initial.rank0003.csv": "582a7d3e7b8b33fe9bb64aa239826fc0977f60bf59b37f80850de804ca0dbe0b"
+        }
+      },
+      "final": {
+        "volume": 399.9999999999965,
+        "errors": {
+          "rho": {
+            "L1": 0.006021032279743445,
+            "L2": 0.015080086827615212,
+            "Linf": 0.11894664192475335
+          },
+          "pressure": {
+            "L1": 0.008652278801097514,
+            "L2": 0.02484318655478193,
+            "Linf": 0.19209778544891803
+          }
+        },
+        "min_density_mean": 0.6084720499908871,
+        "min_pressure_of_mean": 0.5605689934936248,
+        "min_density_point": 0.5996536379812644,
+        "min_pressure_point": 0.5504128534770985,
+        "input_sha256": {
+          "points_final.rank0000.csv": "48d15486d59d4e0cf99128e83cc377b73b967519230f456b14faf359a23a6ba3",
+          "points_final.rank0001.csv": "348f15bcc9aacc1ae7353addc2deaf38876d387833e3bb8dee5a209b64358ff3",
+          "points_final.rank0002.csv": "2e90874fbf2adaa533ccf03010106d01c4abde22223445e866fc22569a76787d",
+          "points_final.rank0003.csv": "db6b2f40f961ec78d677403a552da0b6fd307d372f3bea8fe5d860953db6258b"
+        }
+      },
+      "conservation": {
+        "initial": {
+          "mass": 392.9669742412203,
+          "momentum_x": 392.9669742411906,
+          "momentum_y": 392.9669742412821,
+          "momentum_z": 0.0,
+          "total_energy": 1379.0373064172948
+        },
+        "final": {
+          "mass": 392.96697424121686,
+          "momentum_x": 392.9669742411878,
+          "momentum_y": 392.96697424127933,
+          "momentum_z": -1.6845791254993525e-17,
+          "total_energy": 1379.0373064172845
+        },
+        "absolute_drift": {
+          "mass": -3.467448550509289e-12,
+          "momentum_x": -2.7853275241795927e-12,
+          "momentum_y": -2.7853275241795927e-12,
+          "momentum_z": -1.6845791254993525e-17,
+          "total_energy": -1.0231815394945443e-11
+        },
+        "scaled_drift": {
+          "mass": -8.82376580679479e-15,
+          "momentum_x": -7.087943025130777e-15,
+          "momentum_y": -7.087943025129126e-15,
+          "momentum_z": -1.6845791254993525e-17,
+          "total_energy": -7.41953487939166e-15
+        },
+        "max_abs_scaled_drift": 8.82376580679479e-15,
+        "input_sha256": "475f4cef6489b5fdcb98447c6395fa1c2fc0f8336fd9cd95ecedc3bac92b844e"
+      },
+      "input_sha256": "a7ed29583e6ce06e5667739c700758e39b2b060a99ba7d888e344d4f586e3947",
+      "mesh": "iv20",
+      "nominal_resolution": 20,
+      "h": 0.46825276195257587,
+      "expected_gauss_points_from_static": 4347936,
+      "orders": {
+        "rho": {
+          "L1": 1.5344626566621813,
+          "L2": 1.495005496494927,
+          "Linf": 1.1482212926709001
+        },
+        "pressure": {
+          "L1": 1.4544010868492874,
+          "L2": 1.3777352304206951,
+          "Linf": 1.0614936268736832
+        }
+      }
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/transient/iv40_np8",
+      "mpi_ranks": 8,
+      "steps": 266,
+      "time": 2.0,
+      "cfl": 0.5,
+      "initial_cfl_step": 0.0071686162483439895,
+      "wall_seconds": 335.232938042,
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "gauss_points_stored": 33944256,
+      "initial": {
+        "volume": 399.99999999999693,
+        "errors": {
+          "rho": {
+            "L1": 1.4157876259772851e-05,
+            "L2": 4.559529584712862e-05,
+            "Linf": 0.000430015587122079
+          },
+          "pressure": {
+            "L1": 1.9219186428829724e-05,
+            "L2": 6.744009740634997e-05,
+            "Linf": 0.0006700097821217277
+          }
+        },
+        "min_density_mean": 0.49605608790944505,
+        "min_pressure_of_mean": 0.3757018728337716,
+        "min_density_point": 0.49394530013347027,
+        "min_pressure_point": 0.37251130492050955,
+        "input_sha256": {
+          "points_initial.rank0000.csv": "f7a169a94260d1366e9f8a0a459c959526c08f180b221bcb2494674cce72cb9f",
+          "points_initial.rank0001.csv": "ef9f25f892ca726a8e74383e743d721b4d2dc77969fc3a0c47aaf2857eba57db",
+          "points_initial.rank0002.csv": "8caf774fb57ad68888de556efbd4951189821bc02fd6069f18572b4d13a07e62",
+          "points_initial.rank0003.csv": "8db99c067c9f8922a162e4f916037b93f92ce71eb066f31b6a91342690e4cb93",
+          "points_initial.rank0004.csv": "b0007cf665058edebee8c617d6b8eb1f8803b80d355b8b4205cabbbfbd28df1e",
+          "points_initial.rank0005.csv": "e997f5b7d0936c15746bcd4c0ccc95271bcc295a9e68dc640726ccd5e30cbe09",
+          "points_initial.rank0006.csv": "07509ae5899280b8abc6249a5b546f7f9f09a9fa4f1711aaf43f3b27079ab217",
+          "points_initial.rank0007.csv": "3e795efb7a42ad47e8b19fe473aeb01a0372bbad83bae09bc5cd5da2bc4bd8e8"
+        }
+      },
+      "final": {
+        "volume": 399.99999999999693,
+        "errors": {
+          "rho": {
+            "L1": 0.0012223537573136103,
+            "L2": 0.0030978915321738507,
+            "Linf": 0.023016261493186918
+          },
+          "pressure": {
+            "L1": 0.0016654851907851246,
+            "L2": 0.004688366179753477,
+            "Linf": 0.03644745354861234
+          }
+        },
+        "min_density_mean": 0.49546420769582583,
+        "min_pressure_of_mean": 0.3903265134638473,
+        "min_density_point": 0.49212256010999816,
+        "min_pressure_point": 0.3852267258076943,
+        "input_sha256": {
+          "points_final.rank0000.csv": "2906b69711710f80912d2c6792c86c2673c88203ea2722c12f3bf6d64ee8c999",
+          "points_final.rank0001.csv": "a149c4c8a695f86b706624f63dce2656c355f93aeef722228261176869deda04",
+          "points_final.rank0002.csv": "522d7140b86abfd0624b7abd3abe055aeb0f45a5dd9de2e963b8a7c79d7cd178",
+          "points_final.rank0003.csv": "c7de136c14f679727454de7ca3787bd18d6438e35558aa18493a8dcfb37f3cfd",
+          "points_final.rank0004.csv": "21d94ac02bce50a72fedae4960a298221ed663f333ee465a1faa1b0c88f13e8f",
+          "points_final.rank0005.csv": "ad0ef8200012af154f2644a9af9b914567c6b40a811e70cfe6a3a54b620d107a",
+          "points_final.rank0006.csv": "7a6b027b3f651880df58447d6873f6af7e511592d6d7a0e67513a5c0bdf05f39",
+          "points_final.rank0007.csv": "a8133609f366bf80c18ea815bb56bae6c4b4d72441645b6f811c368b4ecb17ab"
+        }
+      },
+      "conservation": {
+        "initial": {
+          "mass": 392.9669742407784,
+          "momentum_x": 392.96697424076854,
+          "momentum_y": 392.9669742407729,
+          "momentum_z": 0.0,
+          "total_energy": 1379.0373064043383
+        },
+        "final": {
+          "mass": 392.96697424076973,
+          "momentum_x": 392.9669742407627,
+          "momentum_y": 392.9669742407676,
+          "momentum_z": -1.3908280993915612e-18,
+          "total_energy": 1379.0373064043147
+        },
+        "absolute_drift": {
+          "mass": -8.697043085703626e-12,
+          "momentum_x": -5.8548721426632255e-12,
+          "momentum_y": -5.286437954055145e-12,
+          "momentum_z": -1.3908280993915612e-18,
+          "total_energy": -2.3646862246096134e-11
+        },
+        "scaled_drift": {
+          "mass": -2.2131740466247884e-14,
+          "momentum_x": -1.489914554263784e-14,
+          "momentum_y": -1.345262655791557e-14,
+          "momentum_z": -1.3908280993915612e-18,
+          "total_energy": -1.7147369499199608e-14
+        },
+        "max_abs_scaled_drift": 2.2131740466247884e-14,
+        "input_sha256": "bf89dbca1dfe06f23a9836b606cf760b276d11e984e59e6086bf7b4cdbac4b07"
+      },
+      "input_sha256": "047e1572b053852af2579dba4d199392efe91ff59b2e697803fc9f974776980b",
+      "mesh": "iv40",
+      "nominal_resolution": 40,
+      "h": 0.23604019455678307,
+      "expected_gauss_points_from_static": 33944256,
+      "orders": {
+        "rho": {
+          "L1": 2.3276877867309436,
+          "L2": 2.3104222198942335,
+          "Linf": 2.397750819914161
+        },
+        "pressure": {
+          "L1": 2.405389038799365,
+          "L2": 2.4342838577445134,
+          "Linf": 2.4264497297410976
+        }
+      }
+    },
+    {
+      "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/transient/iv80_np64",
+      "mpi_ranks": 64,
+      "steps": 548,
+      "time": 2.0,
+      "cfl": 0.5,
+      "initial_cfl_step": 0.0035687216467976375,
+      "wall_seconds": 2955.604886028,
+      "stencil_size": [
+        16,
+        16.0,
+        16
+      ],
+      "gauss_points_stored": 267804288,
+      "initial": {
+        "volume": 399.99999999999756,
+        "errors": {
+          "rho": {
+            "L1": 1.3579810264259432e-06,
+            "L2": 4.822870176332265e-06,
+            "Linf": 0.00010621570295599181
+          },
+          "pressure": {
+            "L1": 1.900239436955156e-06,
+            "L2": 7.097889852945564e-06,
+            "Linf": 0.00015985979191945887
+          }
+        },
+        "min_density_mean": 0.49515265152773497,
+        "min_pressure_of_mean": 0.3741135610492427,
+        "min_density_point": 0.4942263154965918,
+        "min_pressure_point": 0.37281405457066774,
+        "input_sha256": {
+          "points_initial.rank0000.csv": "56bda25f1f59dc4435c043eff236ae551ce3874e658dfbbe69ffac00e67717f3",
+          "points_initial.rank0001.csv": "fbcd79135fb5a11080ee0ca51b0cefe18571fa21a1217b5511b25284ccaeb392",
+          "points_initial.rank0002.csv": "6f9da7d7cd91b414521e9bcf1f6c60b577ba36afa30c5f04e9820b4114d66e76",
+          "points_initial.rank0003.csv": "dc3927710cd445555306b78471ff3ed2baf83219cf20fb70542c3623ff51c84c",
+          "points_initial.rank0004.csv": "4adb8f61a771ccf90324630dceaa707cb47764890a04df8f4eb620f72785eff4",
+          "points_initial.rank0005.csv": "b5cc514c1da5f1f8c1c6833262c85848026e8e0ed6e8138950943a0ba5aebed2",
+          "points_initial.rank0006.csv": "6a37fd32ba0147fdd0ba3a6f84933c40e136fae811b315abd977d10507ed54e5",
+          "points_initial.rank0007.csv": "aa5cfff322a1dea4106d31c13abe24e8963e06f5db89dea2c036a7010e73ab24",
+          "points_initial.rank0008.csv": "870e789311e4c889116bb7d244f7fb1927307e1ca2e1932be0feda9194bbb8de",
+          "points_initial.rank0009.csv": "1cbbe6b6c50deb042a3f3864c8d22e893728065d4fb17c6b49381ac9749c44ab",
+          "points_initial.rank0010.csv": "57f06ab6f4acc056cb747e7c47621c00cdf0b26fa4544c5f4981e50d4c8fcf0b",
+          "points_initial.rank0011.csv": "58ee2063af50c6b46b49c834ac5e79b3b7f1b575110ca612b700812c2fe5cca9",
+          "points_initial.rank0012.csv": "771b91c207f0845cc952e8c50ee5858d1cd061817c11d5b3d3924f34a8b6d60c",
+          "points_initial.rank0013.csv": "76863ae210849925b984a41421172bd099c4465d68e692c69d967ad8a725b54f",
+          "points_initial.rank0014.csv": "ad43242fbdf47b5777106838de12ff1e5a6fe8caaef4b873093f0bf3b563cb8e",
+          "points_initial.rank0015.csv": "76cfb69bbafdab3e3c63476bce7e1c1f1c0ac8d1463b9bb607d647c95e37bb90",
+          "points_initial.rank0016.csv": "9ab515e728d94543ca89416d5fa05ad5024c28c6d7021f2c007400ddf85f565f",
+          "points_initial.rank0017.csv": "4dc91bc109bec27cc6f97487daaae9d63517909ce78e2d2bb822eacf588d8444",
+          "points_initial.rank0018.csv": "879ea409924624e9c97a3e8f7a7491aa9b9504d569c1dffabafe2e5758db1fd5",
+          "points_initial.rank0019.csv": "20c6c352e243e5082838505e352b550b7a3e5142a872a17c5b5054c6a4db1b46",
+          "points_initial.rank0020.csv": "1cd13f00ecbe0847145e82daa02dae63f6b4c26cd56e1adbaa62ed8b37bd0a5c",
+          "points_initial.rank0021.csv": "d3e58dee08d9db2665d949221345555161ab1d47a14913e02b6dae54834db95e",
+          "points_initial.rank0022.csv": "5ab99be8e8024336be72f7406a62ae9bd23de7446143083e68641b174b1b3507",
+          "points_initial.rank0023.csv": "0ebc3c2a874b089cf5cc3f409f2f60968b4603ac674ded57d4ce70f0350373ad",
+          "points_initial.rank0024.csv": "1c6ce4e8dae66c562802ec8f16917ad63012b92b76f2a08aa8dacc8c18fb09f3",
+          "points_initial.rank0025.csv": "102a8dee257321c05de747bf45eb11cf74fa00b0ec1bc37d4c72406c58414661",
+          "points_initial.rank0026.csv": "cf237a3f77775b397944fdb8e48b36dd483322d8eb97492b8ec16589d5869531",
+          "points_initial.rank0027.csv": "7ea47523b4326209e8736412567137fc87fbc07dc9565005a37b5c04b64cc818",
+          "points_initial.rank0028.csv": "5becce077180cd84106efc2c732849811a031da7fd02f477280b5662b93efae0",
+          "points_initial.rank0029.csv": "fef44bcf127b32e296600aa99b1129a52b7330a25fd016ee4e356edef652ebc4",
+          "points_initial.rank0030.csv": "b0b8ee6b9fdfc71d34b726c89ba6516f1b0f197fc1ec20876699eca51bfb4999",
+          "points_initial.rank0031.csv": "9896e8f9f893528def875f5dce4f09bd9127e3e899bd83a4539e4bd0c6f90a3c",
+          "points_initial.rank0032.csv": "675d58c034982a9984ea47129bafbbf6937234d92c77e9943c6c31109435ab5e",
+          "points_initial.rank0033.csv": "524d9dbeff5b3e7fa3d4cab19bd5aa6ed2696af9bcb3f9fab4cf4200e8469b1c",
+          "points_initial.rank0034.csv": "655eb2cfdbb72cd58d9a0aaeff9ae0022cb6e0b193b542cb7f0d9b4919ff5af5",
+          "points_initial.rank0035.csv": "4b4843c0b61da5f59587aaa120d7b77d65cc14f546932c1a397c001981ce8eb7",
+          "points_initial.rank0036.csv": "6900cca03cfbe39e120a4919e50a4618a6badb3d8385f9d195c51699087d2974",
+          "points_initial.rank0037.csv": "069fd82e8ca4af7382b76ec1d4872a550636cce7a536409f571eb4a59b6e6fb4",
+          "points_initial.rank0038.csv": "25c43cbc88f47f3ff874e85e54492d1122fff41addc0ac39b9ede243178457a1",
+          "points_initial.rank0039.csv": "f3b18216f2c0e043848a4b40620a5774a02c2d3a9f594eea1b989a47bd0f633b",
+          "points_initial.rank0040.csv": "4048deb4a6a48cd691d0c44750898d8e5f554de6644e46bc1b8152dc0b97d39d",
+          "points_initial.rank0041.csv": "3ef775c4a3d1a964de759144b434d332c12a99ee2d5f55f32aae8b47098c39b7",
+          "points_initial.rank0042.csv": "f470e34591ee2dad73fb086ea71d4ab1284bc12f340918cc81b8debacee94302",
+          "points_initial.rank0043.csv": "67db848935178e3d03469839a634455210af5780e7e8ab4d6115cc22fa5e0081",
+          "points_initial.rank0044.csv": "cee099fdfe1ce0d91799a56dbb870da8485a7692aafd8ed2150a9bb755928221",
+          "points_initial.rank0045.csv": "420c1ed51b1641b2a4f924df84a2a5ed602ed2cc43b57f0e68a8ba956af5cd7c",
+          "points_initial.rank0046.csv": "5a4da0125bb7922394ecc43700df3aaf3966899d6e30a603a6e2724d02772c66",
+          "points_initial.rank0047.csv": "546542af036aa0ba01a8906929f9e93b273df248146603c64a75c5ae2c2bd6f0",
+          "points_initial.rank0048.csv": "a11c07b4ad817b374ee5e8a9782ada8c8353858d98429366ed1b1d294c56a900",
+          "points_initial.rank0049.csv": "7887f8e5bdc38adca725b8a2884972ce68038b797d944370e702442e9091bc08",
+          "points_initial.rank0050.csv": "4174cef2cef95425a15303a4e97023450fe622b642a1dd12acb844db7ca61d4b",
+          "points_initial.rank0051.csv": "f0128f4cbf53a07dbce3be148b3df6750d54d954002c6b06cddd25d3eab66f51",
+          "points_initial.rank0052.csv": "f002c7ca42779610cd0a92fb0c744d4c79981c6827744fd1ada767bc02b103a7",
+          "points_initial.rank0053.csv": "3902a79b23b65b25189e38a26a2f5fbaa35491dd839ac31a6d34552847744e2c",
+          "points_initial.rank0054.csv": "7d04e5922db2f46d9309dd1f22ee97f6faacabed3410b05e759b6c6f8e56736b",
+          "points_initial.rank0055.csv": "d43b7970e9887d1587550bb0a120fdccd9ea4c90a341c6e0d69191088b4ddc4b",
+          "points_initial.rank0056.csv": "fb2919f93010d05a3451922492da23fa15a94b24305c9913b4a2fceb8d45d173",
+          "points_initial.rank0057.csv": "d18aea58ab99f7b40d98d19f4f22836e03c3b7f61b9c333001847716e2140ee1",
+          "points_initial.rank0058.csv": "388935d39447a92e1fb32f934d60dfb30307c9b30d1ce66be802a43cf3b95b7a",
+          "points_initial.rank0059.csv": "5350b98978018f904e7d8e2b4a338edea04c87ed7fddcc8b77d10645d6446559",
+          "points_initial.rank0060.csv": "b478f5d92f7f1223f3c34dda038e015592b2910dcd4e681866d0c7b2678f7282",
+          "points_initial.rank0061.csv": "9dce2e7c0b2f04ae86f6c5930ceac7d21f9624337090d7ff283e3be763e80419",
+          "points_initial.rank0062.csv": "2c14804aa33248ffebc6311c59644c8b772cfc4618c91765497220ee2a7621b5",
+          "points_initial.rank0063.csv": "c5a67f4b427c819647907b59757ddc84525be811d0a7cdee17b87bc7733cf13c"
+        }
+      },
+      "final": {
+        "volume": 399.99999999999756,
+        "errors": {
+          "rho": {
+            "L1": 0.00019867903260590121,
+            "L2": 0.00049813620056127,
+            "Linf": 0.003476014645368175
+          },
+          "pressure": {
+            "L1": 0.0002521105077866447,
+            "L2": 0.000707523379587084,
+            "Linf": 0.005516921422211496
+          }
+        },
+        "min_density_mean": 0.4931937477035844,
+        "min_pressure_of_mean": 0.372230920634244,
+        "min_density_point": 0.4925480920420162,
+        "min_pressure_point": 0.3712308336327495,
+        "input_sha256": {
+          "points_final.rank0000.csv": "c8aed83bd5bd6d503357bdf817293b17768026482dcc7f2a6184c4b1266dbbb1",
+          "points_final.rank0001.csv": "1ff178c035e33e48063ef0e67af76f9389344f8e20324d1db0f081c155665aaf",
+          "points_final.rank0002.csv": "a8f8bf56715e4b98e81061a3cc3b8fe413c83f17435d763684d0387c54d31c14",
+          "points_final.rank0003.csv": "44d305a8f53b1452df2b44a22e16391155a170cd755eff9b9170f03cf9adc9e6",
+          "points_final.rank0004.csv": "ef6003d6c7356cbf1fc02f7d9f8d616a0d214fbd693797f0be52f429eda45a1a",
+          "points_final.rank0005.csv": "fcf5f391641d7d66c9c1c2589581a7394af0d8d04d70f2c75aff7d2cd976d449",
+          "points_final.rank0006.csv": "8137210a7a5494d41b3fa6602df52a50185be9f496af22e80833cb91e0da7b7f",
+          "points_final.rank0007.csv": "b761efb38236a9f6c664c09af687bb0f8d84b2674e60cc478024935fd09dcb7d",
+          "points_final.rank0008.csv": "ea32e53a053635ae00acf8b09166f4440ff2329615b1d6129522b2afca35a893",
+          "points_final.rank0009.csv": "28ca7066fe79de6036d01a2c57852cb52575fd42e6c0c395eb8a6df87faee413",
+          "points_final.rank0010.csv": "9a5a0f96de405730914c93ba004ceb78e1edd169f956264126126a0159cdd432",
+          "points_final.rank0011.csv": "c55e9af8881dc6eeafba62e3451c79e6d30e694cd28e2efdd3920b3896b4539b",
+          "points_final.rank0012.csv": "b80a55a362ed89c05ec3ad76792157a4e5ad40dc321000cb6f06bb2a54f4353c",
+          "points_final.rank0013.csv": "a3c29a573b227763763a7cf96a53a2300b865172f1c0a09773fed648461fdd0e",
+          "points_final.rank0014.csv": "97b4c0754aecec0f88a685ad83722c7a241c1a5bf6d27a7bf2dd17ce2df77c4f",
+          "points_final.rank0015.csv": "fdfd4ac04be21a95195e42e8c7fbe86e571afa75e725879dfc1cafc3c1e4a0fa",
+          "points_final.rank0016.csv": "418ac268260b2502931f0b8a42abc6e75f08cca7b5e4d8e6b54bfd8c918fff44",
+          "points_final.rank0017.csv": "586ddd9e980a3e12e79568db70605ed1a7494920d088299c3c2fd7ae3e9344ed",
+          "points_final.rank0018.csv": "943ece52acec836812e87937e93067e324fcd9ce380dae2b5634c524ef1b53d9",
+          "points_final.rank0019.csv": "c9f0028838081d5a1f2d5563b197fdcb001591be4d685e97568e0b45af22ff75",
+          "points_final.rank0020.csv": "83fcad6e3fd3f72008d02878543ec16e23b29e5b7140e1b439a4d9d58b19482f",
+          "points_final.rank0021.csv": "34f753d9d27ea10b5dc643b2badfba8603b938fb74981755be441a85c2409bf0",
+          "points_final.rank0022.csv": "e313653703df9c36e24d1cd7984caf044a9d22fceda972d20e9b405bbe3cbf84",
+          "points_final.rank0023.csv": "c7d85316852e9e25d034a4222b29154e56bdd826bb37969b29d0ab37acee1cd3",
+          "points_final.rank0024.csv": "3259407db95f443e7c80928f4b04423060499c53aef4973f1b131df439ce333c",
+          "points_final.rank0025.csv": "6f37d6e43e3bc82776c0b3c03005dc32c5bbb4489f599b67b076e4a7abf0fa1d",
+          "points_final.rank0026.csv": "7e8d4e31ee7e0d38dd5c65f57835ab34c67368cbb121170d23b10e9c8a0cf6b4",
+          "points_final.rank0027.csv": "486205a75652386b9de833b967b05b447ec34874a9d9d56eb2846b4c4137bf80",
+          "points_final.rank0028.csv": "c683348b805c6ee1a54783128dfca3188d6d5b193af2707f716396537aed6295",
+          "points_final.rank0029.csv": "4574f3e57e83820464c48c0419e3c59e612bcc42571b1cdecb1e42749a2e9f1a",
+          "points_final.rank0030.csv": "e066c12d604c0fb86152144630e07127da042c6c4f656ff990aedf4ef3128ed4",
+          "points_final.rank0031.csv": "c17ef389724f5ef2205fc4afeca3490d56b2573d757ac585c2a4c16ca5c67659",
+          "points_final.rank0032.csv": "c9a618247a2bb41826591e5c3c6bd6822984f45518474a9ae1d5314f414cec55",
+          "points_final.rank0033.csv": "7c397cb5f007f695bf79c64c521523fb07f74c20064f6b84887f5ed3e887aedd",
+          "points_final.rank0034.csv": "9e0704197cdcef524eca60d21d4e341ff3cbbff889446e1240617d5124942ec1",
+          "points_final.rank0035.csv": "9ba78beae54f926b15a87864f596b2354ed24f4cffec76abd5acdeee44e5c5af",
+          "points_final.rank0036.csv": "c04aaaac556e411f13ce5b03941f810cb45fc0d6817493a1cde18800f363f8c7",
+          "points_final.rank0037.csv": "9647bb86c601bc47df9312a2933426eba36262e6e9af51237e460c8145a263cf",
+          "points_final.rank0038.csv": "02a949f6091fbbd1cbea056730be6d73b3fc3e70906f6b2089cd0475e668c109",
+          "points_final.rank0039.csv": "d80239c05979c14b6a1884b0585f476e7e6fee28673cf48a02839edcda514076",
+          "points_final.rank0040.csv": "c2004c0a7732805b89fd06d49df23193b6710edfbd2494bba31d90c9855ce2fd",
+          "points_final.rank0041.csv": "7b260ee8bd09a6b31d63d165e8ed078920459853c0ae5dd4b2d61d68d2635241",
+          "points_final.rank0042.csv": "387bedea1a077de693f2ab84eb173ce79d9f889ac3e0bb453227267c95431c36",
+          "points_final.rank0043.csv": "f62d16ba6fe6fb1b30df665f9eba82e7a9671878bac158478648e6e8791018ae",
+          "points_final.rank0044.csv": "7ba6aa130fe58292ec4d1ddab8c201c1e5a1d5ee8543c50b060e76fe624e358e",
+          "points_final.rank0045.csv": "f1411789461a4af51d5117b79c72574fbfdca6f520a7d6c0d42515a5850b14e8",
+          "points_final.rank0046.csv": "21f2031cc4082b46a0d3846b0683db3083d4227d41a8d7347e113883067fb87b",
+          "points_final.rank0047.csv": "13358ffd784bc6d9245cf107eb633c5e2617ff26279ed782ffe64c49c87155e1",
+          "points_final.rank0048.csv": "b3e0658fd68c162c63baaaf6d48739af6e8b8d166a1af7094f36220e3495f54d",
+          "points_final.rank0049.csv": "d544f200128045bf42bfb530a3e700cfd7976acf2b95ba62c01eca862ac2f7f2",
+          "points_final.rank0050.csv": "ebd9467e517742eb7f1a17600cb3a96dde69139426a6f127528cd98c285f4273",
+          "points_final.rank0051.csv": "74c6a588dfa34b89f93ca11d49a1f6c7c0798dd3cae0343c55de8dad002d656f",
+          "points_final.rank0052.csv": "0041bb60da1896007daa427067013d636a20ccf3b09b6be0f423f020d4733b33",
+          "points_final.rank0053.csv": "a734de7a608b09e2e3ccfa6f7cf7fea171d928f04bf7e5f04a5477e39adb2878",
+          "points_final.rank0054.csv": "370420221c7df8186209805fff84d2f57cca07f8bf55ca18d3c8528e761c18dc",
+          "points_final.rank0055.csv": "faf87d68b4520e4e742c87e7b5d4c895132b69ef8ee8cbb3403eca1247d25ed9",
+          "points_final.rank0056.csv": "c2f99ef0d406fbf364a2bffb0d8b5482e4e48ec6f60c98121ecbb1e5eded0695",
+          "points_final.rank0057.csv": "bff42469ff1a3876b79966967cf112a82bc09b0a41e5cfe1e25ecffa80dfe653",
+          "points_final.rank0058.csv": "d2f0c766e7121e3b9b42cb8b7372281b92e6ff673d7fbda8b6f261dfde5f2d29",
+          "points_final.rank0059.csv": "2c0306f04cf082393c66dc8654c66c8d856be3e268b5173b6bf5dc93189a863f",
+          "points_final.rank0060.csv": "e9af930df6f112976f55e128dcf7cbc9c63ff7ff31d2c95e96bc8240970085c5",
+          "points_final.rank0061.csv": "967160c125b7783584cd4f09441a7f04f4cae6d49f750f627995da3e8e272ae2",
+          "points_final.rank0062.csv": "f8b55c7e3318d61689a1d70219182f3aa2f16582d2c38f0be73532e3dd531545",
+          "points_final.rank0063.csv": "03cfaf85ef0b8b643b0eb3cf52b40d49834d0269321ce62ac414b7740e833108"
+        }
+      },
+      "conservation": {
+        "initial": {
+          "mass": 392.9669742407658,
+          "momentum_x": 392.96697424076365,
+          "momentum_y": 392.96697424076405,
+          "momentum_z": 0.0,
+          "total_energy": 1379.0373064041178
+        },
+        "final": {
+          "mass": 392.9669742407508,
+          "momentum_x": 392.9669742407508,
+          "momentum_y": 392.96697424075046,
+          "momentum_z": 9.846493314035224e-19,
+          "total_energy": 1379.0373064040682
+        },
+        "absolute_drift": {
+          "mass": -1.5006662579253316e-11,
+          "momentum_x": -1.2846612662542611e-11,
+          "momentum_y": -1.3585577107733116e-11,
+          "momentum_z": 9.846493314035224e-19,
+          "total_energy": -4.956746124662459e-11
+        },
+        "scaled_drift": {
+          "mass": -3.818810119666424e-14,
+          "momentum_x": -3.2691329054720326e-14,
+          "momentum_y": -3.4571803734859074e-14,
+          "momentum_z": 9.846493314035224e-19,
+          "total_energy": -3.594352452717416e-14
+        },
+        "max_abs_scaled_drift": 3.818810119666424e-14,
+        "input_sha256": "10ec7ed03d706f7123fabbdbe49a695d25c3dbba41a75254ef53bbf23bcfdabc"
+      },
+      "input_sha256": "b0d2cb1d8fca9d6d7ca5f3bfa1bc9ef86ea7261ae97b38ee5f85dada9f7c4bbe",
+      "mesh": "iv80",
+      "nominal_resolution": 80,
+      "h": 0.11856838008967246,
+      "expected_gauss_points_from_static": 267804288,
+      "orders": {
+        "rho": {
+          "L1": 2.6387953551199272,
+          "L2": 2.6544239892215877,
+          "Linf": 2.745506017285664
+        },
+        "pressure": {
+          "L1": 2.742150499161917,
+          "L2": 2.7466014182860947,
+          "Linf": 2.7422192730866586
+        }
+      }
+    }
+  ],
+  "transient_fitted_orders": {
+    "rho": {
+      "L1": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.1871921592861576,
+          "r_squared": 0.9870349609919378
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.4837710052946362,
+          "r_squared": 0.998694304739568
+        }
+      },
+      "L2": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.1733260363441644,
+          "r_squared": 0.9856137174820274
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.483008517380526,
+          "r_squared": 0.9984030840618793
+        }
+      },
+      "Linf": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.133310912253658,
+          "r_squared": 0.9712826700403842
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5722202189039343,
+          "r_squared": 0.9984791682189085
+        }
+      }
+    },
+    "pressure": {
+      "L1": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.2259749758950798,
+          "r_squared": 0.9829357030269117
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5743428604430623,
+          "r_squared": 0.9985760185458206
+        }
+      },
+      "L2": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.21622102450241,
+          "r_squared": 0.9803573105720507
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.590974131516125,
+          "r_squared": 0.99879064910901
+        }
+      },
+      "Linf": {
+        "all_grids": {
+          "points": 4,
+          "order": 2.118155878376487,
+          "r_squared": 0.9674606999833735
+        },
+        "finest_three": {
+          "points": 3,
+          "order": 2.5848718694048247,
+          "r_squared": 0.9987579648094774
+        }
+      }
+    }
+  },
+  "transient_iv10_np2": {
+    "directory": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/data/out/NCFV/traditional_roe16_surface3_20260917/transient/iv10_np2",
+    "mpi_ranks": 2,
+    "steps": 61,
+    "time": 2.0,
+    "cfl": 0.5,
+    "initial_cfl_step": 0.031038456276426853,
+    "wall_seconds": 3.706096236,
+    "stencil_size": [
+      16,
+      16.0,
+      16
+    ],
+    "gauss_points_stored": 571392,
+    "initial": {
+      "volume": 399.999999999997,
+      "errors": {
+        "rho": {
+          "L1": 0.0014902642082557057,
+          "L2": 0.004253716167981674,
+          "Linf": 0.021463909556311944
+        },
+        "pressure": {
+          "L1": 0.0019416589592883015,
+          "L2": 0.006345001384008049,
+          "Linf": 0.034440554887843366
+        }
+      },
+      "min_density_mean": 0.5373956054031124,
+      "min_pressure_of_mean": 0.43760065133217935,
+      "min_density_point": 0.518061854721055,
+      "min_pressure_point": 0.4097650296095505,
+      "input_sha256": {
+        "points_initial.rank0000.csv": "a62e85a47e377f16a7f5e602a6de2bd7d4002934123101a2a629f04c832f93f0",
+        "points_initial.rank0001.csv": "646c1085af6ae67c442fe1dbf090fb1b7810671370434d3ab366c71c9cebd968"
+      }
+    },
+    "final": {
+      "volume": 399.999999999997,
+      "errors": {
+        "rho": {
+          "L1": 0.01700082479431635,
+          "L2": 0.04145825662891424,
+          "Linf": 0.25863070090459084
+        },
+        "pressure": {
+          "L1": 0.02314242225916524,
+          "L2": 0.06309028422845661,
+          "Linf": 0.3938865360728923
+        }
+      },
+      "min_density_mean": 0.8085753625326868,
+      "min_pressure_of_mean": 0.8262506311441433,
+      "min_density_point": 0.8046042884059431,
+      "min_pressure_point": 0.8214321741901849,
+      "input_sha256": {
+        "points_final.rank0000.csv": "d64ad558a1124a8f39e99a8ffa4e4fa1955005362fd1ffa111de5b76af074ecd",
+        "points_final.rank0001.csv": "0f542e323f2297e3b02bdb28a8c1329c2fc6272d9c8ad0227184d43dfe46cea0"
+      }
+    },
+    "conservation": {
+      "initial": {
+        "mass": 392.96697465093933,
+        "momentum_x": 392.9669748249415,
+        "momentum_y": 392.96697469973117,
+        "momentum_z": 0.0,
+        "total_energy": 1379.0373098162868
+      },
+      "final": {
+        "mass": 392.9669746509377,
+        "momentum_x": 392.96697482493994,
+        "momentum_y": 392.9669746997297,
+        "momentum_z": -6.263978051535002e-17,
+        "total_energy": 1379.0373098162818
+      },
+      "absolute_drift": {
+        "mass": -1.6484591469634324e-12,
+        "momentum_x": -1.5347723092418164e-12,
+        "momentum_y": -1.4779288903810084e-12,
+        "momentum_z": -6.263978051535002e-17,
+        "total_energy": -5.002220859751105e-12
+      },
+      "scaled_drift": {
+        "mass": -4.194905051315594e-15,
+        "momentum_x": -3.905601252943775e-15,
+        "momentum_y": -3.7609493558849424e-15,
+        "momentum_z": -6.263978051535002e-17,
+        "total_energy": -3.627328154317662e-15
+      },
+      "max_abs_scaled_drift": 4.194905051315594e-15,
+      "input_sha256": "eb690f6465c55023b70db075608d482bccdaaa1dd481bc9b8f55ef4fdd9447df"
+    },
+    "input_sha256": "06a2e654d886336b8d6a3e4e45a7622e0bfe8b5826d213f8ba13e2c2cb039aa0",
+    "expected_gauss_points_from_static": 571392
+  },
+  "iv10_np1_np2_node_comparison": {
+    "passed": true,
+    "tolerance": 1e-10,
+    "max_abs_state_difference": 1.3034018309099338e-13,
+    "max_abs_all_field_difference": 1.3034018309099338e-13,
+    "max_abs_node_error_difference": 3.9190872769268026e-14,
+    "max_abs_error_norm_difference": 3.397282455352979e-14,
+    "by_snapshot_and_field": {
+      "initial": {
+        "fields": {
+          "x": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "y": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "z": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "partial_volume": {
+            "max_abs": 6.106226635438361e-15,
+            "mean_abs": 2.1543097167286973e-16,
+            "rms": 8.104816699042615e-16
+          },
+          "mean_rho": {
+            "max_abs": 6.994405055138486e-15,
+            "mean_abs": 3.8294020732188017e-16,
+            "rms": 1.2403551861564225e-15
+          },
+          "mean_rhou": {
+            "max_abs": 1.2656542480726785e-14,
+            "mean_abs": 3.3463900053765094e-16,
+            "rms": 1.3492017451384033e-15
+          },
+          "mean_rhov": {
+            "max_abs": 1.021405182655144e-14,
+            "mean_abs": 3.2677853478713104e-16,
+            "rms": 1.2333188541300802e-15
+          },
+          "mean_rhow": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "mean_rhoE": {
+            "max_abs": 2.7533531010703882e-14,
+            "mean_abs": 1.1696373036773622e-15,
+            "rms": 3.889310384335949e-15
+          },
+          "point_rho": {
+            "max_abs": 2.731148640577885e-14,
+            "mean_abs": 9.90743945217254e-16,
+            "rms": 3.682490672601613e-15
+          },
+          "point_rhou": {
+            "max_abs": 5.595524044110789e-14,
+            "mean_abs": 1.6166538593931357e-15,
+            "rms": 6.8050491264967284e-15
+          },
+          "point_rhov": {
+            "max_abs": 5.051514762044462e-14,
+            "mean_abs": 1.2160411566597418e-15,
+            "rms": 5.617981454417338e-15
+          },
+          "point_rhow": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "point_rhoE": {
+            "max_abs": 1.3034018309099338e-13,
+            "mean_abs": 3.2166110053299946e-15,
+            "rms": 1.34230817658496e-14
+          },
+          "rho_exact": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "p_point": {
+            "max_abs": 3.9190872769268026e-14,
+            "mean_abs": 1.1384122811097797e-15,
+            "rms": 4.509809968795845e-15
+          },
+          "p_exact": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          }
+        },
+        "error_norms": {
+          "rho": {
+            "np1": {
+              "L1": 0.0014902642082554492,
+              "L2": 0.004253716167980585,
+              "Linf": 0.021463909556287186
+            },
+            "np2": {
+              "L1": 0.0014902642082557057,
+              "L2": 0.004253716167981674,
+              "Linf": 0.021463909556311944
+            },
+            "absolute_difference": {
+              "L1": 2.5652223401007035e-16,
+              "L2": 1.0894063429134349e-15,
+              "Linf": 2.475797344914099e-14
+            }
+          },
+          "pressure": {
+            "np1": {
+              "L1": 0.0019416589592880103,
+              "L2": 0.00634500138400675,
+              "Linf": 0.034440554887809394
+            },
+            "np2": {
+              "L1": 0.0019416589592883015,
+              "L2": 0.006345001384008049,
+              "Linf": 0.034440554887843366
+            },
+            "absolute_difference": {
+              "L1": 2.912167035296065e-16,
+              "L2": 1.2984405217686401e-15,
+              "Linf": 3.397282455352979e-14
+            }
+          }
+        }
+      },
+      "final": {
+        "fields": {
+          "x": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "y": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "z": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "partial_volume": {
+            "max_abs": 6.106226635438361e-15,
+            "mean_abs": 2.1543097167286973e-16,
+            "rms": 8.104816699042615e-16
+          },
+          "mean_rho": {
+            "max_abs": 8.659739592076221e-15,
+            "mean_abs": 1.0881053003064522e-15,
+            "rms": 1.6105260944337784e-15
+          },
+          "mean_rhou": {
+            "max_abs": 1.5654144647214707e-14,
+            "mean_abs": 1.8496489062602706e-15,
+            "rms": 3.054587476783769e-15
+          },
+          "mean_rhov": {
+            "max_abs": 3.697042672001771e-14,
+            "mean_abs": 2.0194349664715006e-15,
+            "rms": 4.0998852601322885e-15
+          },
+          "mean_rhow": {
+            "max_abs": 1.3559032369103718e-15,
+            "mean_abs": 2.0380859933866074e-16,
+            "rms": 2.792043822705224e-16
+          },
+          "mean_rhoE": {
+            "max_abs": 3.419486915845482e-14,
+            "mean_abs": 5.239732259187946e-15,
+            "rms": 7.986784439813662e-15
+          },
+          "point_rho": {
+            "max_abs": 7.66053886991358e-15,
+            "mean_abs": 1.0948273537758624e-15,
+            "rms": 1.6008631280103806e-15
+          },
+          "point_rhou": {
+            "max_abs": 2.4646951146678475e-14,
+            "mean_abs": 1.895402237939159e-15,
+            "rms": 3.3510224123196373e-15
+          },
+          "point_rhov": {
+            "max_abs": 7.771561172376096e-15,
+            "mean_abs": 1.592476150946709e-15,
+            "rms": 2.204428823001068e-15
+          },
+          "point_rhow": {
+            "max_abs": 1.4805864867462049e-15,
+            "mean_abs": 2.2027100685539665e-16,
+            "rms": 3.0224622495107837e-16
+          },
+          "point_rhoE": {
+            "max_abs": 3.3306690738754696e-14,
+            "mean_abs": 4.915338969180283e-15,
+            "rms": 7.249387613065828e-15
+          },
+          "rho_exact": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          },
+          "p_point": {
+            "max_abs": 1.0769163338864018e-14,
+            "mean_abs": 1.4641066137244252e-15,
+            "rms": 2.154724881959251e-15
+          },
+          "p_exact": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+            "rms": 0.0
+          }
+        },
+        "error_norms": {
+          "rho": {
+            "np1": {
+              "L1": 0.0170008247943167,
+              "L2": 0.0414582566289147,
+              "Linf": 0.2586307009045955
+            },
+            "np2": {
+              "L1": 0.01700082479431635,
+              "L2": 0.04145825662891424,
+              "Linf": 0.25863070090459084
+            },
+            "absolute_difference": {
+              "L1": 3.5041414214731503e-16,
+              "L2": 4.579669976578771e-16,
+              "Linf": 4.6629367034256575e-15
+            }
+          },
+          "pressure": {
+            "np1": {
+              "L1": 0.023142422259165706,
+              "L2": 0.06309028422845735,
+              "Linf": 0.393886536072898
+            },
+            "np2": {
+              "L1": 0.02314242225916524,
+              "L2": 0.06309028422845661,
+              "Linf": 0.3938865360728923
+            },
+            "absolute_difference": {
+              "L1": 4.649058915617843e-16,
+              "L2": 7.355227538141662e-16,
+              "Linf": 5.662137425588298e-15
+            }
+          }
+        }
+      }
+    }
+  },
+  "common_spatial_configuration": {
+    "dimension": 3,
+    "mesh": {
+      "meshFile": "../cases/NCFV/iv10_3d_1_dnds.cgns",
+      "reorderCells": 0,
+      "periodicTolerance": 1e-08,
+      "periodicLengths": [
+        10.0,
+        10.0,
+        4.0
+      ],
+      "periodicBoundaryPairs": [
+        "bc-2",
+        "bc-2-1",
+        "bc-3",
+        "bc-3-1",
+        "bc-4",
+        "bc-4-1"
+      ],
+      "partitionOptions": {
+        "metisType": "KWAY",
+        "metisUfactor": 20,
+        "metisSeed": 0,
+        "edgeWeightMethod": 0,
+        "metisNcuts": 3
+      }
+    },
+    "algorithm": {
+      "mode": "TraditionalQuadrature",
+      "quadratureOrder": 4,
+      "surfaceQuadratureOrder": 3,
+      "retainMicroGeometry": false,
+      "checkGeometryClosure": true,
+      "closureTolerance": 2e-10
+    },
+    "reconstruction": {
+      "stencilSizeFactor": 1.7,
+      "maximumStencilRings": 4,
+      "distanceWeightPower": 1.0,
+      "distanceWeightFloor": 0.15,
+      "svdTolerance": 1e-11,
+      "maximumConditionNumber": 1000000000000.0,
+      "enableLimiter": false
+    },
+    "physics": {
+      "gamma": 1.4,
+      "riemannSolver": "Roe",
+      "boundaryMode": "FarField",
+      "initialPrimitive": [
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "farFieldPrimitive": [
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "requireBoundaryZoneCoverage": true,
+      "boundaryZones": [
+        {
+          "name": "bc-2",
+          "mode": "Periodic",
+          "primitive": [],
+          "wallVelocity": [],
+          "wallTemperature": 1.0,
+          "staticPressure": 1.0,
+          "strongState": true
+        },
+        {
+          "name": "bc-2-1",
+          "mode": "Periodic",
+          "primitive": [],
+          "wallVelocity": [],
+          "wallTemperature": 1.0,
+          "staticPressure": 1.0,
+          "strongState": true
+        },
+        {
+          "name": "bc-3",
+          "mode": "Periodic",
+          "primitive": [],
+          "wallVelocity": [],
+          "wallTemperature": 1.0,
+          "staticPressure": 1.0,
+          "strongState": true
+        },
+        {
+          "name": "bc-3-1",
+          "mode": "Periodic",
+          "primitive": [],
+          "wallVelocity": [],
+          "wallTemperature": 1.0,
+          "staticPressure": 1.0,
+          "strongState": true
+        },
+        {
+          "name": "bc-4",
+          "mode": "Periodic",
+          "primitive": [],
+          "wallVelocity": [],
+          "wallTemperature": 1.0,
+          "staticPressure": 1.0,
+          "strongState": true
+        },
+        {
+          "name": "bc-4-1",
+          "mode": "Periodic",
+          "primitive": [],
+          "wallVelocity": [],
+          "wallTemperature": 1.0,
+          "staticPressure": 1.0,
+          "strongState": true
+        }
+      ],
+      "viscous": {
+        "enabled": false,
+        "model": "Sutherland",
+        "dynamicViscosity": 1e-05,
+        "gasConstant": 1.0,
+        "prandtlNumber": 0.72,
+        "referenceTemperature": 273.15,
+        "sutherlandConstant": 110.4,
+        "spectralRadiusFactor": 4.0
+      }
+    },
+    "initialField": {
+      "nodeFile": "",
+      "isentropicVortex": true,
+      "vortexStrength": 5.0,
+      "vortexCenter": [
+        5.0,
+        5.0,
+        0.0
+      ],
+      "nodeFileVariables": "Primitive",
+      "nodeFileIndexBase": 0,
+      "requireCompleteNodeFile": true,
+      "boxes": [],
+      "planes": [],
+      "expressions": []
+    },
+    "time": {
+      "iterations": 0,
+      "timeStep": 0.0001,
+      "useCFLTimeStep": true,
+      "useLocalTimeStep": false,
+      "cfl": 0.5,
+      "minimumTimeStep": 1e-12,
+      "maximumTimeStep": 0.01,
+      "endTime": 0.0,
+      "reportInterval": 20
+    },
+    "io": {
+      "writeVTK": false,
+      "writeInitial": false,
+      "writeFinal": false,
+      "outputInterval": 100,
+      "outputPrefix": "../data/out/NCFV/convergence/iv10/solution",
+      "vtkSeriesName": "../data/out/NCFV/convergence/iv10/series",
+      "vtkFloatEncoding": "binary",
+      "asciiPrecision": 12,
+      "restartInput": "",
+      "restartInterval": 0,
+      "writeFinalRestart": false,
+      "restartPrefix": "../data/out/NCFV/convergence/iv10/restart",
+      "restartSerializer": {
+        "type": "H5",
+        "hdfDeflateLevel": 0,
+        "hdfChunkSize": 0,
+        "hdfCollOnData": false,
+        "hdfCollOnMeta": true,
+        "jsonBinaryDeflateLevel": 5,
+        "jsonUseCodecOnUInt8": true
+      },
+      "writeResolvedConfiguration": false
+    }
+  }
+}

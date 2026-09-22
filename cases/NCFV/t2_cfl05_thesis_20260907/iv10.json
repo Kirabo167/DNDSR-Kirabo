@@ -8,7 +8,6 @@
     "dimension": 3,
     "mesh": {
         "meshFile": "../cases/NCFV/iv10_3d_1_dnds.cgns",
-        "ghostLayers": 2,
         "periodicTolerance": 1e-8,
         "periodicLengths": [
             10,

@@ -153,25 +153,33 @@ int main(int argc, char **argv)
             const auto mesh = solver.Mesh();
             const auto &geometry = solver.Geometry();
             const auto &reconstruction = solver.ReconstructionData();
+            const NodeHalo &nodeHalo = solver.NodeCommunication();
 
             // A separate diagnostic state: no const_cast or production-state edit.
             NodeStatePair means, points;
-            DNDS::CFV::BuildUDofOnMesh(means, "NCFV.quadratic.means", mpi,
-                                      mesh, 5, true, true, DNDS::Geom::MeshLoc::Node);
-            DNDS::CFV::BuildUDofOnMesh(points, "NCFV.quadratic.points", mpi,
-                                      mesh, 5, true, true, DNDS::Geom::MeshLoc::Node);
+            const auto allocateState = [&](NodeStatePair &field,
+                                           const std::string &name)
+            {
+                field.InitPair(name, mpi);
+                field.father->Resize(mesh->NumNode(), 5, 1);
+                field.son->Resize(nodeHalo.NumNodeGhost(), 5, 1);
+                field.BorrowSetup(nodeHalo.Layout());
+                field.trans.initPersistentPull();
+            };
+            allocateState(means, "NCFV.quadratic.means");
+            allocateState(points, "NCFV.quadratic.points");
             NodeMatrixPair gradients, coefficients;
             gradients.InitPair("NCFV.quadratic.gradients", mpi);
             gradients.father->Resize(mesh->NumNode(), 3, 5);
-            gradients.son->Resize(mesh->NumNodeGhost(), 3, 5);
-            gradients.BorrowSetup(mesh->coords);
+            gradients.son->Resize(nodeHalo.NumNodeGhost(), 3, 5);
+            gradients.BorrowSetup(nodeHalo.Layout());
             gradients.trans.initPersistentPull();
             if (!efficient)
             {
                 coefficients.InitPair("NCFV.quadratic.coefficients", mpi);
                 coefficients.father->Resize(mesh->NumNode(), 9, 5);
-                coefficients.son->Resize(mesh->NumNodeGhost(), 9, 5);
-                coefficients.BorrowSetup(mesh->coords);
+                coefficients.son->Resize(nodeHalo.NumNodeGhost(), 9, 5);
+                coefficients.BorrowSetup(nodeHalo.Layout());
                 coefficients.trans.initPersistentPull();
             }
 
@@ -183,8 +191,9 @@ int main(int argc, char **argv)
                 if (efficient)
                 {
                     means[i] = Polynomial<real>(mesh->coords[i]).first;
-                    for (const auto &weight : volume.pointRecoveryWeights)
-                        means[i] += Polynomial<real>(mesh->coords[weight.node]).second.transpose() * weight.value;
+                    for (const auto &entry : volume.pointRecoveryStencil)
+                        means[i] += Polynomial<real>(nodeHalo.Coordinate(entry.node)).second.transpose() *
+                                    entry.gradientWeight;
                 }
                 else
                 {
