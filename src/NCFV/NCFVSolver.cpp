@@ -94,7 +94,7 @@ namespace DNDS::NCFV
         _reader->BuildCell2Cell();
         _reader->MeshPartitionCell2Cell(_configuration.mesh.partitionOptions);
         _reader->PartitionReorderToMeshCell2Cell();
-        constexpr int geometryCellLayers = 1;
+        const int geometryCellLayers = 1;
         Geom::BuildGhostPrimary(*_mesh, geometryCellLayers);
 
         Geom::PrepareMeshOptions options;
@@ -746,8 +746,7 @@ namespace DNDS::NCFV
             runtimeDependencies.end(),
             reconstructionDependencies.begin(),
             reconstructionDependencies.end());
-        _nodeHalo->Finalize(
-            *_geometry, std::move(runtimeDependencies));
+        _nodeHalo->Finalize(*_geometry, std::move(runtimeDependencies));
         _geometry->RemapNodeIndices(
             [this](index meshLocal)
             { return _nodeHalo->MeshLocalToLocal(meshLocal); });

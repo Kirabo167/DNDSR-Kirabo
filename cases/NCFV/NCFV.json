@@ -33,6 +33,9 @@
         "distanceWeightFloor": 0.15,
         "svdTolerance": 1e-11,
         "maximumConditionNumber": 1e12,
+        "variationalIterations": 30,
+        "variationalRelaxation": 1.0,
+        "variationalWeight": 1.0,
         "enableLimiter": true
     },
     "physics": {

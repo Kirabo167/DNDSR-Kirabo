@@ -75,6 +75,9 @@ face `mu_t`; the flow viscous stress, viscous CFL radius, and frozen 4x4 implici
 with positivity-bounded SSPRK3 substeps. Therefore LU-SGS/GMRES remains the four-variable ACM flow
 solve; turbulence source Jacobians are not inserted into that implicit system.
 
+The governing-equation derivation, SST blending formulas, and implementation map are in
+[`docs/solver-guide/acm_rans_zh.md`](../../docs/solver-guide/acm_rans_zh.md).
+
 A non-laminar model requires `acmSettings.enableViscousFlux=true` and positive
 `acmSettings.dynamicViscosity`. A typical three-dimensional SST selection is:
 

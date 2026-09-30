@@ -196,6 +196,62 @@ namespace DNDS::NCFV
             }
             return result;
         }
+
+        Eigen::MatrixXd QuadraticHessianRows(
+            const Vector3 &referenceLengths, int dimension)
+        {
+            const Vector3 inverse = InverseReferenceLengths(
+                referenceLengths, dimension);
+            const int nBasis = dimension + dimension * (dimension + 1) / 2;
+            Eigen::MatrixXd hessian = Eigen::MatrixXd::Zero(
+                dimension * dimension, nBasis);
+            if (dimension == 2)
+            {
+                hessian(0, 2) = inverse.x() * inverse.x();
+                hessian(1, 3) = inverse.x() * inverse.y();
+                hessian(2, 3) = inverse.x() * inverse.y();
+                hessian(3, 4) = inverse.y() * inverse.y();
+            }
+            else
+            {
+                hessian(0, 3) = inverse.x() * inverse.x();
+                hessian(1, 4) = hessian(3, 4) =
+                    inverse.x() * inverse.y();
+                hessian(2, 5) = hessian(6, 5) =
+                    inverse.x() * inverse.z();
+                hessian(4, 6) = inverse.y() * inverse.y();
+                hessian(5, 7) = hessian(7, 7) =
+                    inverse.y() * inverse.z();
+                hessian(8, 8) = inverse.z() * inverse.z();
+            }
+            return hessian;
+        }
+
+        Eigen::MatrixXd VariationalDifferentialRows(
+            const Vector3 &displacement,
+            const Vector3 &referenceLengths,
+            const Eigen::VectorXd &meanBasis,
+            real edgeLength,
+            real sqrtWeight,
+            int dimension)
+        {
+            const int nBasis = dimension + dimension * (dimension + 1) / 2;
+            Eigen::MatrixXd rows(
+                1 + dimension + dimension * dimension, nBasis);
+            rows.row(0) =
+                sqrtWeight * (Reconstruction::EvaluateBasis(
+                     displacement, referenceLengths, dimension) -
+                 meanBasis)
+                    .transpose();
+            rows.middleRows(1, dimension) =
+                sqrtWeight * 0.5 * edgeLength *
+                Reconstruction::EvaluateBasisGradient(
+                    displacement, referenceLengths, dimension);
+            rows.bottomRows(dimension * dimension) =
+                0.25 * edgeLength * edgeLength *
+                QuadraticHessianRows(referenceLengths, dimension);
+            return rows;
+        }
     }
 
     int Reconstruction::QuadraticBasisSize(int dimension)
@@ -701,7 +757,8 @@ namespace DNDS::NCFV
         for (index local : result.stencil)
             result.stencilGlobals.push_back(
                 _nodeHalo.LocalToGlobal(local));
-        result.inverseRows = _mode == IntegrationMode::EfficientDifferential
+        result.inverseRows = _mode == IntegrationMode::EfficientDifferential &&
+                                     _settings.method != ReconstructionMethod::Variational
                                  ? acceptedInverse.topRows(dimension)
                                  : acceptedInverse;
         return result;
@@ -711,8 +768,9 @@ namespace DNDS::NCFV
     {
         DNDS_check_throw_info(
             _settings.method == ReconstructionMethod::LeastSquares ||
-                _settings.method == ReconstructionMethod::SVDLeastSquares,
-            "NCFV reconstruction selected an unknown least-squares method");
+                _settings.method == ReconstructionMethod::SVDLeastSquares ||
+                _settings.method == ReconstructionMethod::Variational,
+            "NCFV reconstruction selected an unsupported method/mode");
         BuildNodeGraph();
         _operators.clear();
         _operators.resize(static_cast<std::size_t>(_mesh->NumNode()));
@@ -776,13 +834,19 @@ namespace DNDS::NCFV
                       DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
         if (_mpi.rank == 0)
             log() << "NCFV quadratic reconstruction: stored rows="
-                  << (_mode == IntegrationMode::EfficientDifferential
+                  << (_mode == IntegrationMode::EfficientDifferential &&
+                              _settings.method != ReconstructionMethod::Variational
                           ? _mesh->getDim()
                           : BasisSize())
                   << ", method="
                   << (_settings.method == ReconstructionMethod::LeastSquares
                           ? "LeastSquares"
-                          : "SVDLeastSquares")
+                          : _settings.method == ReconstructionMethod::SVDLeastSquares
+                                ? "SVDLeastSquares"
+                                : "Variational")
+                  << (_settings.method == ReconstructionMethod::Variational
+                          ? fmt::format(", w={}", _settings.variationalWeight)
+                          : "")
                   << ", max rings=" << globalMaximumRings
                   << ", max condition=" << globalMaximumCondition
                   << ", max cubic-gradient indicator="
@@ -848,8 +912,89 @@ namespace DNDS::NCFV
             _nodeGraph.clear();
             _nodeGraph.shrink_to_fit();
         }
+        if (_settings.method == ReconstructionMethod::Variational)
+            BuildVariationalOperators();
         _nodeGraphGlobals.clear();
         _nodeGraphGlobals.shrink_to_fit();
+    }
+
+    void Reconstruction::BuildVariationalOperators()
+    {
+        const int dimension = _mesh->getDim();
+        const int nBasis = BasisSize();
+        const real sqrtWeight = std::sqrt(_settings.variationalWeight);
+        _variationalOperators.clear();
+        _variationalOperators.resize(
+            static_cast<std::size_t>(_mesh->NumNode()));
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            const auto &referenceLengths =
+                _operators[static_cast<std::size_t>(iNode)].referenceLengths;
+            const auto &meanBasis =
+                _operators[static_cast<std::size_t>(iNode)].targetBasisMean;
+            Eigen::MatrixXd matrixA =
+                Eigen::MatrixXd::Zero(nBasis, nBasis);
+            struct UnsolvedNeighbor
+            {
+                index node;
+                Eigen::MatrixXd cross;
+                Eigen::VectorXd jump;
+            };
+            std::vector<UnsolvedNeighbor> unsolved;
+            const auto &neighbors =
+                _nodeGraphGlobals[static_cast<std::size_t>(iNode)];
+            unsolved.reserve(neighbors.size());
+            for (index global : neighbors)
+            {
+                const index neighbor = _nodeHalo.GlobalToLocal(global);
+                const Vector3 edge = _nodeHalo.Displacement(
+                    iNode, neighbor);
+                const real edgeLength = edge.head(dimension).norm();
+                DNDS_check_throw_info(
+                    edgeLength > verySmallReal,
+                    "NCFV variational reconstruction has a zero-length edge");
+                const Vector3 neighborLengths =
+                    _nodeHalo.ReferenceLengths(neighbor);
+                const Eigen::VectorXd neighborMeanBasis = MeanBasis(
+                    _nodeHalo.MomentsRelative(neighbor, neighbor),
+                    Vector3::Zero(), neighborLengths, dimension);
+                const Eigen::MatrixXd left =
+                    VariationalDifferentialRows(
+                        0.5 * edge, referenceLengths, meanBasis,
+                        edgeLength, sqrtWeight, dimension);
+                const Eigen::MatrixXd right =
+                    VariationalDifferentialRows(
+                        -0.5 * edge, neighborLengths,
+                        neighborMeanBasis, edgeLength, sqrtWeight, dimension);
+                matrixA.noalias() += left.transpose() * left;
+                // The value row already contains sqrt(w); the known mean jump
+                // must carry the same factor, giving w times the value basis.
+                unsolved.push_back({
+                    neighbor, left.transpose() * right,
+                    sqrtWeight * left.row(0).transpose()});
+            }
+            Eigen::LDLT<Eigen::MatrixXd> factorization(matrixA);
+            DNDS_check_throw_info(
+                factorization.info() == Eigen::Success &&
+                    factorization.isPositive() &&
+                    factorization.vectorD().minCoeff() > verySmallReal,
+                "NCFV variational reconstruction has a singular local functional");
+            auto &solved =
+                _variationalOperators[static_cast<std::size_t>(iNode)];
+            solved.reserve(unsolved.size());
+            for (const auto &entry : unsolved)
+            {
+                VariationalNeighborOperator result;
+                result.node = entry.node;
+                result.coupling = factorization.solve(entry.cross);
+                result.meanJump = factorization.solve(entry.jump);
+                DNDS_check_throw_info(
+                    result.coupling.allFinite() &&
+                        result.meanJump.allFinite(),
+                    "NCFV variational reconstruction generated nonfinite coefficients");
+                solved.push_back(std::move(result));
+            }
+        }
     }
 
     void Reconstruction::ComputeCoefficients(
@@ -859,6 +1004,9 @@ namespace DNDS::NCFV
     {
         const int nVars = means.father->MatRowSize();
         const int dimension = _mesh->getDim();
+        // The least-squares polynomial is a warm start for the coupled
+        // variational sweeps.  Starting from zero leaves a sizable iteration
+        // error even after 100 sweeps on stretched quadratic test fields.
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
             const ReconstructionOperator &op = _operators[static_cast<std::size_t>(iNode)];
@@ -869,12 +1017,54 @@ namespace DNDS::NCFV
                     (means[op.stencil[row]] - means[iNode]).transpose();
             }
             const Eigen::MatrixXd reconstructed = op.inverseRows * differences;
-            if (_mode == IntegrationMode::EfficientDifferential)
+            if (_mode == IntegrationMode::EfficientDifferential &&
+                _settings.method != ReconstructionMethod::Variational)
                 gradients[iNode] = op.referenceLengths.head(dimension).cwiseInverse().asDiagonal() *
                                    reconstructed.topRows(dimension);
             else
                 coefficients[iNode] = reconstructed;
         }
+        if (_settings.method != ReconstructionMethod::Variational)
+            return;
+
+        const int nBasis = BasisSize();
+        const index nOwned = _mesh->NumNode();
+        Eigen::MatrixXd updated(nBasis, nVars);
+        for (int iteration = 0;
+             iteration < _settings.variationalIterations; iteration++)
+        {
+            coefficients.trans.startPersistentPull();
+            coefficients.trans.waitPersistentPull();
+            for (index iNode = 0; iNode < nOwned; iNode++)
+            {
+                updated.setZero();
+                for (const auto &entry :
+                     _variationalOperators[static_cast<std::size_t>(iNode)])
+                {
+                    updated.noalias() +=
+                        entry.coupling * coefficients[entry.node];
+                    updated.noalias() +=
+                        entry.meanJump *
+                        (means[entry.node] - means[iNode]).transpose();
+                }
+                updated = (1.0 - _settings.variationalRelaxation) *
+                              coefficients[iNode] +
+                          _settings.variationalRelaxation * updated;
+                DNDS_check_throw_info(
+                    updated.allFinite(),
+                    "NCFV variational reconstruction diverged");
+                coefficients[iNode] = updated;
+            }
+        }
+        if (_mode == IntegrationMode::EfficientDifferential)
+            for (index iNode = 0; iNode < nOwned; iNode++)
+            {
+                const auto &referenceLengths =
+                    _operators[static_cast<std::size_t>(iNode)].referenceLengths;
+                gradients[iNode] =
+                    referenceLengths.head(dimension).cwiseInverse().asDiagonal() *
+                    coefficients[iNode].topRows(dimension);
+            }
     }
 
     void Reconstruction::RecoverPointValues(

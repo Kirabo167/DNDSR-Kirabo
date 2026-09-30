@@ -1,0 +1,110 @@
+{
+  "mesh": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/cases/NCFV/iv20_3d_1_dnds.cgns",
+  "mode": "Traditional",
+  "method": "LeastSquares",
+  "stencil": 0,
+  "nodes": 3896,
+  "mpi_ranks": 4,
+  "dt": 0.1,
+  "steps": 16,
+  "final_time": 1.6,
+  "roe_scale": 1.0,
+  "ablated_component": "my",
+  "component_rhs_validation_max_mismatch_t0": 2.345346139520643e-15,
+  "initial_static": {
+    "time": 0.0,
+    "rhs_decomposition_max_mismatch": 7.827072323607354e-15,
+    "full_domain": {
+      "volume": 399.9999999999949,
+      "center_error_L2V": 0.004600426175596805,
+      "roe_dissipation_L2V": 0.01157783806702603,
+      "total_error_L2V": 0.012981867713463739,
+      "center_dissipation_dot_per_volume": 6.659317013239479e-06,
+      "center_dissipation_cosine": 0.12502709856717545,
+      "dissipation_signed_integral": 6.938893903907228e-17
+    },
+    "core_r_lt_3": {
+      "volume": 115.3024840773978,
+      "center_error_L2V": 0.008536695644188678,
+      "roe_dissipation_L2V": 0.021553630421511483,
+      "total_error_L2V": 0.02416092387354704,
+      "center_dissipation_dot_per_volume": 2.3158042777360197e-05,
+      "center_dissipation_cosine": 0.1258611286994311,
+      "dissipation_signed_integral": -0.013596116598531272
+    }
+  },
+  "analytic_final_static": {
+    "time": 1.6,
+    "rhs_decomposition_max_mismatch": 7.66053886991358e-15,
+    "full_domain": {
+      "volume": 399.9999999999949,
+      "center_error_L2V": 0.0035574887079510716,
+      "roe_dissipation_L2V": 0.01019585890971911,
+      "total_error_L2V": 0.01097113640242195,
+      "center_dissipation_dot_per_volume": 1.8772845732250658e-06,
+      "center_dissipation_cosine": 0.05175624547280664,
+      "dissipation_signed_integral": 3.469446951953614e-17
+    },
+    "core_r_lt_3": {
+      "volume": 112.0906512949681,
+      "center_error_L2V": 0.006619991473109573,
+      "roe_dissipation_L2V": 0.019243343852311145,
+      "total_error_L2V": 0.02068133032006338,
+      "center_dissipation_dot_per_volume": 6.79342704262409e-06,
+      "center_dissipation_cosine": 0.05332746575303909,
+      "dissipation_signed_integral": -0.021270481011065573
+    }
+  },
+  "transient": {
+    "time": 1.6,
+    "volume": 399.9999999999949,
+    "rho_point_L1V": 0.006482524037645739,
+    "rho_point_L2V": 0.016201183282599375,
+    "rho_point_Linf": 0.1674814946522743,
+    "pressure_point_L1V": 0.007813984899953781,
+    "pressure_point_L2V": 0.019513848104067578,
+    "mass_drift": -5.684341886080801e-13,
+    "rho_signed_bias": 1.8127030788303653e-05,
+    "rho_mean_L1V": 0.006104712681405571,
+    "rho_mean_L2V": 0.015113242109345,
+    "rho_mean_Linf": 0.15134144080375428,
+    "pressure_of_mean_L2V": 0.017881234321850244,
+    "rho_mean_signed_bias": 1.1165045016997698e-12,
+    "regions": {
+      "core_r_lt_3": {
+        "volume_fraction": 0.28022662823742384,
+        "rho_mean_L1V": 0.01715501939248932,
+        "rho_mean_L2V": 0.028201160065393867,
+        "rho_point_L2V": 0.030219820651826768,
+        "rho_mean_error_energy_fraction": 0.9757264299049043,
+        "rho_point_error_energy_fraction": 0.9749889553559133
+      },
+      "splice_strip_width_0p5": {
+        "volume_fraction": 0.17499312295854946,
+        "rho_mean_L1V": 0.0008479680040506887,
+        "rho_mean_L2V": 0.0013068637919459937,
+        "rho_point_L2V": 0.001498032286459386,
+        "rho_mean_error_energy_fraction": 0.0013084777842967965,
+        "rho_point_error_energy_fraction": 0.0014961318163008114
+      },
+      "outside_core": {
+        "volume_fraction": 0.7197733717625768,
+        "rho_mean_L1V": 0.0018025388137429404,
+        "rho_mean_L2V": 0.00277540636384023,
+        "rho_point_L2V": 0.003020054379653542,
+        "rho_mean_error_energy_fraction": 0.02427357009509607,
+        "rho_point_error_energy_fraction": 0.025011044644086475
+      },
+      "physical_boundary_width_0p5": {
+        "volume_fraction": 0.24255794416646997,
+        "rho_mean_L1V": 0.0012785874968756063,
+        "rho_mean_L2V": 0.0020483341644274423,
+        "rho_point_L2V": 0.002061138539515493,
+        "rho_mean_error_energy_fraction": 0.004455555329478103,
+        "rho_point_error_energy_fraction": 0.003925874393581653
+      }
+    },
+    "mean_reference_quadrature_order": 6,
+    "mean_reference_points_per_micro_tet": 24
+  }
+}

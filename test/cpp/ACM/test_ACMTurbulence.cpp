@@ -29,6 +29,14 @@ TEST_CASE("ACM turbulence model configuration is runtime selectable")
     CHECK(TurbulenceVariableCount(TurbulenceModel::RealizableKEpsilon) == 2);
     CHECK(std::string(TurbulenceModelName(TurbulenceModel::Laminar)) == "Laminar");
     CHECK(std::string(TurbulenceModelName(TurbulenceModel::KOmegaSST)) == "KOmegaSST");
+    CHECK(std::string(TurbulenceVariableName(TurbulenceModel::SpalartAllmaras, 0)) ==
+          "TurbulenceNuTilde");
+    CHECK(std::string(TurbulenceVariableName(TurbulenceModel::KOmegaSST, 0)) ==
+          "TurbulenceK");
+    CHECK(std::string(TurbulenceVariableName(TurbulenceModel::KOmegaSST, 1)) ==
+          "TurbulenceOmega");
+    CHECK(std::string(TurbulenceVariableName(TurbulenceModel::RealizableKEpsilon, 1)) ==
+          "TurbulenceEpsilon");
 
     TurbulenceSettings settings;
     settings.model = TurbulenceModel::KOmegaSST;
@@ -39,6 +47,52 @@ TEST_CASE("ACM turbulence model configuration is runtime selectable")
     CHECK(roundTrip.model == TurbulenceModel::KOmegaSST);
     CHECK(roundTrip.InitialState()(0) == doctest::Approx(0.2));
     CHECK(roundTrip.InitialState()(1) == doctest::Approx(3.0));
+}
+
+/// @test Verify SST viscosity, production, destruction, and near-wall diffusion
+/// against their homogeneous-shear formulas rather than only finite-value checks.
+TEST_CASE("ACM SST near-wall homogeneous shear follows the model equations")
+{
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::KOmegaSST;
+    TurbulenceState state;
+    state << 0.2, 4.0;
+    VelocityGradient velocityGradient = VelocityGradient::Zero();
+    velocityGradient(0, 1) = 2.0;
+    const TurbulenceGradient zeroGradient = TurbulenceGradient::Zero();
+    constexpr real wallDistance = 0.01;
+    constexpr real rho0 = 1.0;
+    constexpr real molecularViscosity = 0.001;
+
+    // |Omega|=2, S^2=4, and F1=F2=1 at this distance.
+    const real turbulentViscosity = TurbulentDynamicViscosity(
+        state, velocityGradient, zeroGradient, wallDistance, rho0,
+        molecularViscosity, settings);
+    CHECK(turbulentViscosity == doctest::Approx(0.31 * 0.2 / 2.0));
+
+    const TurbulenceState source = TurbulenceSource(
+        state, velocityGradient, zeroGradient, wallDistance, rho0,
+        molecularViscosity, settings);
+    constexpr real betaStar = 0.09;
+    constexpr real beta1 = 0.075;
+    constexpr real sigmaOmega1 = 0.5;
+    constexpr real kappa = 0.41;
+    const real gamma1 = beta1 / betaStar -
+                        sigmaOmega1 * kappa * kappa / std::sqrt(betaStar);
+    CHECK(source(0) == doctest::Approx(4.0 * turbulentViscosity -
+                                      betaStar * state(0) * state(1)));
+    CHECK(source(1) == doctest::Approx(4.0 * gamma1 -
+                                      beta1 * state(1) * state(1)));
+
+    TurbulenceGradient turbulenceGradient = TurbulenceGradient::Zero();
+    turbulenceGradient(0, 0) = 1.0;
+    turbulenceGradient(0, 1) = 2.0;
+    const TurbulenceState flux = TurbulenceDiffusiveFlux(
+        state, turbulenceGradient, Vector3::UnitX(), wallDistance,
+        rho0, molecularViscosity, turbulentViscosity, settings);
+    CHECK(flux(0) == doctest::Approx(molecularViscosity + 0.85 * turbulentViscosity));
+    CHECK(flux(1) == doctest::Approx(2.0 * (molecularViscosity +
+                                           0.5 * turbulentViscosity)));
 }
 
 /// @test Verify the realizable k-epsilon E correction responds to turbulent-time gradients.

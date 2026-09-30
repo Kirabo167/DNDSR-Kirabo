@@ -423,10 +423,8 @@ namespace DNDS::NCFV
         _edge2node.trans.createFatherGlobalMapping();
 
         // InterpolateGlobal resolves every edge of an owned cell.  A node-centred
-        // control volume additionally needs edges that touch an owned node but
-        // whose incident cells are all ghosts on this rank.  Resolve those IDs
-        // through a distributed endpoint-pair directory before building the
-        // ordinary edge ghost mapping.
+        // control volume also needs edges touching an owned node. Resolve
+        // those IDs through the distributed endpoint-pair directory.
         std::vector<index> visibleEdgeGlobals = ResolveOwnedNodeEdgeGlobals();
         for (index iCell = 0; iCell < _cell2edge.Size(); iCell++)
             for (rowsize i = 0; i < _cell2edge.RowSize(iCell); i++)

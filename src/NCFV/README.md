@@ -40,8 +40,8 @@
 
 ## 2. 两种 JSON 可切换算法
 
-两种方法共用同一套对偶拓扑、二次零均值最小二乘重构、限制器、Euler
-通量和 SSPRK3 时间推进，只替换体/面的积分实现。
+两种积分模式共用同一套对偶拓扑、可选重构方法、限制器、Euler 通量和
+SSPRK3 时间推进，只替换体/面的积分实现。
 
 ### `EfficientDifferential`
 
@@ -111,12 +111,12 @@
 
 ## 3. 重构、通量与 MPI
 
-节点对偶体均值采用完整二次基做加权最小二乘。JSON 配置项
-`reconstruction.method` 可以选择 `LeastSquares`（最小二乘重构，通过
-正规方程和 LDLT 求解）或 `SVDLeastSquares`（SVD 最小二乘重构，通过
-Jacobi SVD 构造伪逆）；JSON 同时接受中文别名 `最小二乘重构` 和
-`SVD最小二乘重构`，默认使用后者。高效模式只保存逆算子的前
-`dimension` 行，因此所得一阶梯度仍来自完整二次问题；传统模式保存全部
+节点对偶体均值采用完整二次基重构。JSON 配置项
+`reconstruction.method` 可以选择 `LeastSquares`（正规方程和 LDLT）、
+`SVDLeastSquares`（Jacobi SVD 伪逆）或 `Variational`（变分重构）；
+中文别名分别为 `最小二乘重构`、`SVD最小二乘重构` 和 `变分重构`。
+默认仍为 `SVDLeastSquares`。LS 与 SVDLS 在高效模式只保存逆算子的前
+`dimension` 行，因此一阶梯度仍来自完整二次问题；传统模式保存全部
 5（二维）或 9（三维）行。候选点按原始节点边图逐环扩展，完整一环
 无条件保留；二环候选优先按近似反向成对加入，直到达到
 `ceil(stencilSizeFactor * basisSize)`。配对先补强当前加权矩阵的最弱谱方向，
@@ -130,7 +130,19 @@ Jacobi SVD 构造伪逆）；JSON 同时接受中文别名 `最小二乘重构` 
 `cubicErrorIndicator`。初始化日志输出模板点数、一环保留数、最大条件数和
 最大三次指标，便于定位局部精度损失。
 
-无黏通量默认并要求使用标准特征 Roe 路径 `Roe`。该路径调用
+`Variational` 在两种积分模式下采用相同的边中点变分重构，保留完整二次系数，
+对相邻原始节点的边中点值、一阶导数和 Hessian 跳跃构造局部泛函，
+以最小二乘二次多项式为初值进行邻居迭代。`variationalWeight` 控制
+值与一阶导数跳跃相对 Hessian 跳跃的权重；`variationalIterations`
+和 `variationalRelaxation` 分别控制迭代轮数与松弛系数。
+传统积分使用完整二次系数在求积点计算通量；高效积分从二次系数的
+一次项提取格点梯度，并使用高效模式的梯度权重恢复点值及计算通量。
+高效积分不使用变分 Hessian 做通量积分，也不启用此前移除的界面面均值
+变分泛函和 PCG 路径。
+
+无黏通量默认使用标准特征 Roe 路径 `Roe`；配置也支持 `HLLC`、
+`HLLEP`、`HLLEP_V1` 及已列入 schema 的 Roe 变体，可用于同条件精度对照。
+`Roe` 路径调用
 `RoeFlux_IdealGas_HartenYee<...,0>`，对三组 Roe 特征值施加 Harten--Yee
 H2 熵修正。`Roe_M2` 在共享 Euler 通量库中的实际含义是标量
 LLF/Rusanov；NCFV 配置校验会拒绝该选项，避免再把它误当作 Roe 通量。
@@ -147,7 +159,7 @@ LLF/Rusanov；NCFV 配置校验会拒绝该选项，避免再把它误当作 Roe
 基函数使用 \(\boldsymbol\xi=H_i^{-1}(\boldsymbol x-\boldsymbol x_i)\)，
 再减去目标控制体上的体均值；邻居积分也必须使用目标节点的 \(H_i\)。
 二次矩按 \(H_i^{-1}M_{2,i}H_i^{-1}\) 缩放，含所有交叉项。
-高效模式从完整伪逆截取一次系数后，按
+LS 与 SVDLS 的高效模式从完整伪逆截取一次系数后，按
 \(\nabla u_i=H_i^{-1}\boldsymbol a_{1,i}\) 还原物理梯度。
 传统模式在积分点及限制器采样点使用同一套尺度，并对基函数求物理导数。
 代码中纯二次项仍采用 \(\xi_d^2/2\) 的系数约定，不影响归一化及多项式空间。
@@ -171,15 +183,14 @@ NCFV 只保留长期稀疏 MPI 路径：
    `Deduplicate1to1Periodic` 合并周期节点拓扑，再分区。周期边和面使用
    “规范化全局节点键 + 相对 periodic bits”构建分布式哈希目录，不复制
    全局拓扑。
-2. 网格只构建一层**点相邻** cell halo。DNDSR 的 `cell2cell` 是
-   `cell -> node -> cell`，所以这一层足以补全 owned 节点的 cell star、
-   对偶体几何和 owner 侧一环边邻接；不把重构最大环数直接转化成固定的
-   多层 cell halo。
+2. 常规路径构建一层**点相邻** cell halo。DNDSR 的 `cell2cell` 是
+   `cell -> node -> cell`，这一层足以补全 owned 节点的 cell star、
+   对偶体几何和 owner 侧一环边邻接。
 3. `NodeHalo` 在初始化时发布 owned 节点的边邻接行，按
    `maximumStencilRings` 逐环稀疏 pull 所需远程邻接行及坐标/中心矩/参考
-   长度。重构选定模板后，把重构、点值恢复、内部面、边界面积分所引用的
-   全局节点编号取并集，重新建立最终精确 owner/ghost 映射和持久 MPI 类型，
-   并释放候选环、临时几何和邻接表。
+   长度。LS/SVDLS 选定模板后，把重构、点值恢复、内部面、边界面积分所引用的
+   全局节点编号取并集，重新建立最终精确 owner/ghost 映射和持久 MPI 类型。
+   最终释放候选环、临时几何和邻接表。
 4. 节点均值、梯度或二次系数、点值及必要的限制器系数均借用这个最终映射。
    运行期只对依赖列表中的 owner/ghost 做点对点稀疏 pull；周期路径不再调用
    `MPI_Allgatherv`，也不让每个 rank 保存全局状态。
@@ -240,6 +251,27 @@ mpirun --oversubscribe -np 4 ./app/euler.exe ../cases/NCFV/NCFV.json
 ./app/euler.exe ../cases/NCFV/NCFV.json \
   -k /algorithm/mode -v TraditionalQuadrature
 ```
+
+传统变分重构的三棱柱等熵涡示例为
+`cases/NCFV/NCFV_traditional_variational_vortex.json`，默认 IV10、
+固定步长 0.2，推进至 `t=1.6`：
+
+```bash
+cd build
+mpirun -np 1 ./app/euler.exe ../cases/NCFV/NCFV_traditional_variational_vortex.json
+```
+
+在同一网格、变分参数和时间步长下，仅切换通量积分实现可运行
+“变分重构一次导数 + 高效通量积分”：
+
+```bash
+mpirun -np 1 ./app/euler.exe ../cases/NCFV/NCFV_traditional_variational_vortex.json \
+  -k /algorithm/mode -v EfficientDifferential \
+  -k /io/outputPrefix -v ../data/out/NCFV/efficient_variational/iv10/solution
+```
+
+等熵涡的体积加权格点密度误差写入
+`io.outputPrefix + ".diagnostics.csv"`。
 
 真实三维平移周期网格建议显式给出周期长度及有序面配对：
 

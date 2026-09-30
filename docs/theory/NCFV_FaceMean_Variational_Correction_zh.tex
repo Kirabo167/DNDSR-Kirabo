@@ -1,0 +1,201 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{space}{xeCJK}
+%
+\documentclass[
+]{ctexart}
+\usepackage{amsmath,amssymb}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+  \ifXeTeX
+    \usepackage{xeCJK}
+    \setCJKmainfont[]{Noto Serif CJK SC}
+          \fi
+  \ifLuaTeX
+    \usepackage[]{luatexja-fontspec}
+    \setmainjfont[]{Noto Serif CJK SC}
+  \fi
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage[margin=2cm]{geometry}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\author{}
+\date{}
+
+\begin{document}
+
+\hypertarget{ncfv-ux9ad8ux6548ux754cux9762ux9762ux5747ux503cux53d8ux5206ux91cdux6784ux81eaux7136ux683cux70b9ux652fux6491ux4e0eux52d8ux8bef}{%
+\section{NCFV
+高效界面面均值变分重构：自然格点支撑与勘误}\label{ncfv-ux9ad8ux6548ux754cux9762ux9762ux5747ux503cux53d8ux5206ux91cdux6784ux81eaux7136ux683cux70b9ux652fux6491ux4e0eux52d8ux8bef}}
+
+\hypertarget{ux4e3aux4ec0ux4e48ux4e0dux9700ux8981ux56faux5b9aux70b9ux6570ux7684ux91cdux6784ux6a21ux677f}{%
+\subsection{1.
+为什么不需要固定点数的重构模板}\label{ux4e3aux4ec0ux4e48ux4e0dux9700ux8981ux56faux5b9aux70b9ux6570ux7684ux91cdux6784ux6a21ux677f}}
+
+对原始边 \(e=(i,j)\)，NCFV
+的对偶宏面由该棱周围原始单元的微面组成。定义自然格点集
+
+\[S_e=\bigcup_{K\supset e}\operatorname{vertices}(K).\]
+
+高效界面公式已将 \(S_e\) 存在
+\texttt{EdgeControlSurface::efficientStencil} 中。其两侧面均值
+\texttt{EfficientSurfaceMean(0/1,\ surface)} 均由端点恢复值与 \(S_e\)
+上的节点梯度计算。因此变分重构若以这两个面均值的跳跃为值项，其非零系数由几何支撑自动决定，无须人为设置
+15 点或其他固定模板点数。
+
+先前实现之所以出现 15 点，是因为它先按 \texttt{stencilSizeFactor}
+选择最小二乘模板，用 LS
+系数作变分迭代初值。那是迭代的辅助近似，不是变分泛函的数学要求；同时，先前泛函在边中点取值，并未使用整张界面的高效面均值。本说明修正这两处偏离。
+
+现行求解器为加快 PCG
+收敛，也会计算一个局部二次拟合初值，但候选格点是该节点所参与界面自然支撑的\textbf{全集}，并不截取固定数量的模板点。这个初值不进入变分泛函；迭代收敛后得到的系数仍由界面泛函决定。
+
+\hypertarget{ux9762ux5747ux503cux8df3ux8dc3ux7684ux7ebfux6027ux5f62ux5f0f}{%
+\subsection{2.
+面均值跳跃的线性形式}\label{ux9762ux5747ux503cux8df3ux8dc3ux7684ux7ebfux6027ux5f62ux5f0f}}
+
+设节点 \(k\) 的对偶体均值为 \(\bar U_k\)，零均值二次多项式系数为
+\(C_k\in\mathbb R^9\)。其节点点值为
+\(U_k^*=\bar U_k-\mu_k^TC_k\)，节点梯度 \(G_k\) 是 \(C_k\)
+的线性函数。对边 \(e\) 的侧别 \(s=0,1\)，已有高效公式写为
+
+\[M_{e,s}=U_{a_s}^*+\frac{1}{A_e}\sum_{k\in S_e}W_{e,k}^{(s)}\cdot G_k,\]
+
+其中 \(a_0=i,a_1=j\)，\(A_e\) 是宏面面积，\(W_{e,k}^{(s)}\) 是已预计算的
+\texttt{stateGradientWeights{[}s{]}}。于是两侧面均值差为
+
+\[\delta_e=M_{e,0}-M_{e,1}=\bar U_i-\bar U_j+\sum_{k\in S_e}b_{e,k}^TC_k.\]
+
+\(b_{e,k}\)
+由节点点值恢复矩阵与两侧高效积分权重之差组成。一个界面值项由此耦合该棱周围单元的全部顶点，支撑大小随局部网格拓扑自然变化。
+
+\hypertarget{ux4e3aux4ec0ux4e48ux5355ux72ecux7684ux503cux8df3ux8dc3ux4ecdux4e0dux591f}{%
+\subsection{3.
+为什么单独的值跳跃仍不够}\label{ux4e3aux4ec0ux4e48ux5355ux72ecux7684ux503cux8df3ux8dc3ux4ecdux4e0dux591f}}
+
+三维二次重构每格点有 9 个系数。IV10 网格有 512 个唯一格点、2048
+条原始边；若每边只给一个标量面均值差，则每个守恒变量最多只有 2048
+条标量约束，而待定系数有 \(512\times9=4608\) 个。故仅最小化
+\(\sum_e\delta_e^2\) 必然有非平凡零空间，不能宣称唯一解。
+
+当前高效变分实现保留了一阶梯度与 Hessian 的边中点跳跃约束。对
+\(\ell_e=\lVert x_j-x_i\rVert\)、边中点 \(m_e\)，采用
+
+\[
+\mathcal J(C)=\frac12\sum_e\frac{A_e}{\ell_e}\left[
+w\lVert\delta_e\rVert^2+
+w\frac{\ell_e^2}{4}\lVert\nabla P_i(m_e)-\nabla P_j(m_e)\rVert_F^2+
+\frac{\ell_e^4}{16}\lVert\nabla^2P_i-\nabla^2P_j\rVert_F^2
+\right].
+\]
+
+权重 \(w>0\) 通过 JSON \texttt{reconstruction.variationalWeight}
+指定。对各守恒变量分别求驻值，得到 \(AC=b\)。若把每个值、梯度和 Hessian
+跳跃写成一条线性残差 \(R_eC-d_e\)，则 \(A=\sum_e R_e^TW_eR_e\)，所以
+\(A\)
+对称半正定。只有当所有残差的共同零空间被已知控制体均值与网格几何约束完全消除时，才能进一步断言正定和唯一解。程序用局部对角块预条件的矩阵自由
+PCG 求解；\texttt{variationalIterations}
+是最大迭代次数。收敛阈值相对于初始残差和已知均值强迫项中较大的预条件范数取
+\(10^{-10}\)；达到上限仍不满足阈值时报告残差并停止。分布式装配保留两环节点
+ghost，并补全每个 owned 格点所属原始单元的 \texttt{cell2edge}
+行，使该节点参与的每一张界面都进入其矩阵行。
+
+此泛函的值项是\textbf{两侧面均值之差的平方}。王乾论文式（4-5）的值项是\textbf{面上点态跳跃平方的积分}，一、二阶导数也在界面上积分；两者不是同一个离散泛函。若要求严格采用论文的
+IJI，需要为高效模式另外预计算界面上的二次多项式积矩，而不能只使用现有面均值权重。
+
+\hypertarget{ux56dbux7ea7ux4e09ux68f1ux67f1ux7f51ux683cux7684ux5b9eux9645ux7cbeux5ea6}{%
+\subsection{4.
+四级三棱柱网格的实际精度}\label{ux56dbux7ea7ux4e09ux68f1ux67f1ux7f51ux683cux7684ux5b9eux9645ux7cbeux5ea6}}
+
+先前``边中点 jet 泛函 + 15 点 LS
+初值''的数据仅是旧实现基线，不能验证本说明的方法。下表来自当前\textbf{高效界面面均值变分重构}的独立复测：\(w=5\)，无黏
+Roe 通量，显式三步三阶 SSPRK，固定时间步分别为
+\(0.2,0.1,0.05,0.025\)，均推进至 \(t=1.6\)。各 \(L_2\)
+范数按节点对偶体积加权；压力误差为
+\(p(\bar U_h)-p(\bar U_{\mathrm{exact}})\)，格点值误差比较恢复点值与解析点值。
+
+\begin{longtable}[]{@{}lrrrr@{}}
+\toprule\noalign{}
+网格 & 格点数 & 密度体均值 \(L_2\) & 密度格点值 \(L_2\) & 压力
+\(L_2\) \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10 & 512 & 1.371428e-2 & 1.731583e-2 & 2.306638e-2 \\
+IV20 & 3896 & 3.068091e-3 & 3.322962e-3 & 2.936649e-3 \\
+IV40 & 30416 & 1.743894e-4 & 1.852275e-4 & 2.100726e-4 \\
+IV80 & 239968 & 1.193046e-5 & 1.226567e-5 & 1.318135e-5 \\
+\end{longtable}
+
+\begin{longtable}[]{@{}lrrr@{}}
+\toprule\noalign{}
+加密级别 & 密度体均值观察阶 & 密度格点值观察阶 & 压力观察阶 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10→IV20 & 2.214 & 2.440 & 3.047 \\
+IV20→IV40 & 4.186 & 4.215 & 3.850 \\
+IV40→IV80 & 3.896 & 3.943 & 4.021 \\
+\end{longtable}
+
+观察阶按 \(h=(400/N)^{1/3}\)
+计算。网格与时间步同时变化，故它是\textbf{时空合成阶}，不能据此宣称普适四阶空间精度。质量漂移绝对值最大为
+\(1.5\times10^{-10}\)；自然支撑初值与零初值所得密度及压力 \(L_2\)
+的最大差为
+\(1.7\times10^{-13}\)。\href{../reports/ncfv_face_variational_w5p0_prism_ssprk3_t1p6_warm_20260923/summary.md}{完整
+JSON、日志和指标}。
+
+\end{document}

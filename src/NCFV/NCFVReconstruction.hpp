@@ -38,12 +38,19 @@ namespace DNDS::NCFV
     /**
      * @brief Weighted quadratic least-squares operators on dual-volume means.
      *
-     * EfficientDifferential solves the same complete quadratic problem as the
-     * traditional method, then stores only the first `dimension` rows.  Thus its
-     * gradient is not a lower-order linear fit.
+     * EfficientDifferential with least squares solves the complete quadratic
+     * problem, then stores only the first `dimension` rows. Variational mode
+     * retains the full quadratic coefficients for neighbour sweeps, then
+     * supplies their first derivatives to efficient flux integration.
      */
     class Reconstruction
     {
+        struct VariationalNeighborOperator
+        {
+            index node = UnInitIndex;
+            Eigen::MatrixXd coupling;
+            Eigen::VectorXd meanJump;
+        };
         const MPIInfo &_mpi;
         ssp<Geom::UnstructuredMesh> _mesh;
         const Topology &_topology;
@@ -55,9 +62,11 @@ namespace DNDS::NCFV
         std::vector<std::vector<index>> _nodeGraph;
         std::vector<std::vector<index>> _nodeGraphGlobals;
         std::vector<ReconstructionOperator> _operators;
+        std::vector<std::vector<VariationalNeighborOperator>> _variationalOperators;
 
         void BuildNodeGraph();
         ReconstructionOperator BuildOperator(index iNode) const;
+        void BuildVariationalOperators();
 
     public:
         Reconstruction(

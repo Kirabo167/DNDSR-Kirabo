@@ -294,6 +294,19 @@ namespace DNDS::ACM
         return "Unknown";
     }
 
+    const char *TurbulenceVariableName(TurbulenceModel model, int variable)
+    {
+        DNDS_check_throw_info(variable >= 0 && variable < TurbulenceVariableCount(model),
+                              "Invalid ACM turbulence variable index");
+        if (model == TurbulenceModel::SpalartAllmaras)
+            return "TurbulenceNuTilde";
+        if (variable == 0)
+            return "TurbulenceK";
+        return model == TurbulenceModel::RealizableKEpsilon
+                   ? "TurbulenceEpsilon"
+                   : "TurbulenceOmega";
+    }
+
     /** @copydoc ClampTurbulenceState */
     TurbulenceState ClampTurbulenceState(
         const TurbulenceState &state,

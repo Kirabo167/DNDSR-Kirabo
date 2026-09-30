@@ -127,7 +127,15 @@ namespace DNDS::NCFV
                               "NCFV stencil size factor must be at least one");
         DNDS_check_throw_info(
             reconstruction.method != ReconstructionMethod::Unknown,
-            "NCFV reconstruction.method must be LeastSquares or SVDLeastSquares");
+            "NCFV reconstruction.method must be LeastSquares, SVDLeastSquares, or Variational");
+        DNDS_check_throw_info(reconstruction.variationalIterations >= 1 &&
+                                  reconstruction.variationalIterations <= 10000 &&
+                                  reconstruction.variationalRelaxation > 0 &&
+                                  reconstruction.variationalRelaxation <= 1,
+                              "NCFV variational iteration settings are invalid");
+        DNDS_check_throw_info(std::isfinite(reconstruction.variationalWeight) &&
+                                  reconstruction.variationalWeight > 0,
+                              "NCFV reconstruction.variationalWeight must be finite and positive");
         DNDS_check_throw_info(reconstruction.svdTolerance > 0,
                               "NCFV least-squares rank tolerance must be positive");
         DNDS_check_throw_info(physics.gamma > 1,

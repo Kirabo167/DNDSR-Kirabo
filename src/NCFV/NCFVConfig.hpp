@@ -39,6 +39,7 @@ namespace DNDS::NCFV
         Unknown,
         LeastSquares,
         SVDLeastSquares,
+        Variational,
     };
 
     DNDS_DEFINE_ENUM_JSON(
@@ -47,8 +48,10 @@ namespace DNDS::NCFV
             {ReconstructionMethod::Unknown, nullptr},
             {ReconstructionMethod::LeastSquares, "LeastSquares"},
             {ReconstructionMethod::SVDLeastSquares, "SVDLeastSquares"},
+            {ReconstructionMethod::Variational, "Variational"},
             {ReconstructionMethod::LeastSquares, "最小二乘重构"},
             {ReconstructionMethod::SVDLeastSquares, "SVD最小二乘重构"},
+            {ReconstructionMethod::Variational, "变分重构"},
         })
 
     /** @brief Boundary models supported by the standalone Navier--Stokes solver. */
@@ -170,13 +173,16 @@ namespace DNDS::NCFV
         real distanceWeightFloor = 0.15;
         real svdTolerance = 1e-11;
         real maximumConditionNumber = 1e12;
+        int variationalIterations = 30;
+        real variationalRelaxation = 1.0;
+        real variationalWeight = 1.0;
         bool enableLimiter = true;
 
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
         {
             DNDS_FIELD(
                 method,
-                "Weighted reconstruction method: LeastSquares (最小二乘重构) uses normal equations; SVDLeastSquares (SVD最小二乘重构) uses Jacobi SVD",
+                "LeastSquares, SVDLeastSquares, or Variational; efficient Variational fluxes use the reconstructed first derivatives",
                 DNDS::Config::enum_values(
                     DNDS_ENUM_ALLOWED_VALUES(ReconstructionMethod)));
             DNDS_FIELD(stencilSizeFactor, "Stencil size divided by quadratic basis size",
@@ -189,6 +195,13 @@ namespace DNDS::NCFV
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(maximumConditionNumber, "Maximum accepted reconstruction condition estimate",
                        DNDS::Config::range(1.0));
+            DNDS_FIELD(variationalIterations, "Traditional variational outer neighbour sweeps",
+                       DNDS::Config::range(1, 10000));
+            DNDS_FIELD(variationalRelaxation, "Relaxation for the traditional midpoint variational sweeps",
+                       DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(variationalWeight,
+                       "Variational w: shared weight on squared value and first-derivative jumps, relative to the Hessian jump",
+                       DNDS::Config::range(0.0));
             DNDS_FIELD(enableLimiter, "Enable one-coefficient Barth--Jespersen limiting");
         }
     };

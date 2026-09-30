@@ -174,6 +174,10 @@ TEST_CASE("NCFV integration mode JSON names are stable")
           ReconstructionMethod::LeastSquares);
     CHECK(nlohmann::json("SVDLeastSquares").get<ReconstructionMethod>() ==
           ReconstructionMethod::SVDLeastSquares);
+    CHECK(nlohmann::json("Variational").get<ReconstructionMethod>() ==
+          ReconstructionMethod::Variational);
+    CHECK(nlohmann::json("变分重构").get<ReconstructionMethod>() ==
+          ReconstructionMethod::Variational);
     CHECK(nlohmann::json("最小二乘重构").get<ReconstructionMethod>() ==
           ReconstructionMethod::LeastSquares);
     CHECK(nlohmann::json("SVD最小二乘重构").get<ReconstructionMethod>() ==
@@ -182,11 +186,18 @@ TEST_CASE("NCFV integration mode JSON names are stable")
           ReconstructionMethod::Unknown);
     DNDS::NCFV::ReconstructionSettings reconstruction;
     CHECK(reconstruction.method == ReconstructionMethod::SVDLeastSquares);
+    CHECK(reconstruction.variationalWeight == doctest::Approx(1.0));
     nlohmann::ordered_json reconstructionJson = reconstruction;
     CHECK(reconstructionJson.at("method") == "SVDLeastSquares");
     reconstructionJson["method"] = "LeastSquares";
     CHECK(reconstructionJson.get<DNDS::NCFV::ReconstructionSettings>().method ==
           ReconstructionMethod::LeastSquares);
+    reconstructionJson["method"] = "Variational";
+    reconstructionJson["variationalWeight"] = 5.0;
+    const auto variationalSettings =
+        reconstructionJson.get<DNDS::NCFV::ReconstructionSettings>();
+    CHECK(variationalSettings.method == ReconstructionMethod::Variational);
+    CHECK(variationalSettings.variationalWeight == doctest::Approx(5.0));
     CHECK(nlohmann::json("NoSlipAdiabaticWall").get<BoundaryMode>() ==
           BoundaryMode::NoSlipAdiabaticWall);
     CHECK(nlohmann::json("PressureOutlet").get<BoundaryMode>() ==
@@ -195,6 +206,20 @@ TEST_CASE("NCFV integration mode JSON names are stable")
           ViscosityModel::Sutherland);
     CHECK(nlohmann::json("Conservative").get<InitialFieldVariables>() ==
           InitialFieldVariables::Conservative);
+}
+
+TEST_CASE("NCFV variational reconstruction accepts both integration modes")
+{
+    DNDS::NCFV::Configuration configuration;
+    configuration.mesh.meshFile = "unused.cgns";
+    configuration.algorithm.mode = DNDS::NCFV::IntegrationMode::EfficientDifferential;
+    configuration.reconstruction.method = DNDS::NCFV::ReconstructionMethod::Variational;
+    CHECK_NOTHROW(configuration.Validate());
+    configuration.algorithm.mode = DNDS::NCFV::IntegrationMode::TraditionalQuadrature;
+    CHECK_NOTHROW(configuration.Validate());
+    configuration.algorithm.mode = DNDS::NCFV::IntegrationMode::EfficientDifferential;
+    configuration.reconstruction.method = DNDS::NCFV::ReconstructionMethod::SVDLeastSquares;
+    CHECK_NOTHROW(configuration.Validate());
 }
 
 TEST_CASE("NCFV third-order surface quadrature integrates quadratic traces exactly")

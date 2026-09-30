@@ -1,0 +1,25 @@
+{
+  "mesh": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/cases/NCFV/iv80_3d_1_dnds.cgns",
+  "mode": "Traditional",
+  "method": "LeastSquares",
+  "stencil": 0,
+  "nodes": 239968,
+  "mpi_ranks": 16,
+  "dt": 0.025,
+  "steps": 64,
+  "final_time": 1.6,
+  "roe_scale": 1.0,
+  "diagnostics": "point_only",
+  "ablated_component": "E",
+  "component_rhs_validation_max_mismatch_t0": 6.250382156292034e-14,
+  "transient": {
+    "time": 1.6,
+    "volume": 399.99999999995373,
+    "rho_point_L1V": 0.0003147005382258098,
+    "rho_point_L2V": 0.0008986827095988008,
+    "rho_point_Linf": 0.008610349030653053,
+    "pressure_point_L1V": 0.0003516730206811908,
+    "pressure_point_L2V": 0.0008228302024730187,
+    "mass_drift": 8.412825991399586e-12
+  }
+}

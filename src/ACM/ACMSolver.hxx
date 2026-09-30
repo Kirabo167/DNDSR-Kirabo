@@ -14,6 +14,8 @@
 
 #include <hdf5.h>
 
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -267,25 +269,40 @@ namespace DNDS::ACM
         bool turbulenceLoaded = false;
         if (_turbulence)
         {
-            const bool hasK = H5Lexists(file, "/VTKHDF/CellData/TurbulenceK", H5P_DEFAULT) > 0;
-            const bool hasOmega = H5Lexists(file, "/VTKHDF/CellData/TurbulenceOmega", H5P_DEFAULT) > 0;
-            DNDS_check_throw_info(
-                !restart.requireTurbulence || (hasK && hasOmega),
-                "ACM restart requires turbulence datasets, but the file contains only the flow field");
-            if (hasK && hasOmega)
+            const TurbulenceModel turbulenceModel = _turbulence->GetModel();
+            const int nVariables = _turbulence->ActiveVariableCount();
+            std::array<std::string, 2> paths;
+            std::array<bool, 2> present{false, false};
+            int nPresent = 0;
+            for (int variable = 0; variable < nVariables; variable++)
             {
-                const auto k = ReadVTKHDFSlice<real>(
-                    file, "/VTKHDF/CellData/TurbulenceK", cellOffset, localCells, 1, H5T_NATIVE_DOUBLE);
-                const auto omega = ReadVTKHDFSlice<real>(
-                    file, "/VTKHDF/CellData/TurbulenceOmega", cellOffset, localCells, 1, H5T_NATIVE_DOUBLE);
+                paths[variable] = std::string("/VTKHDF/CellData/") +
+                                  TurbulenceVariableName(turbulenceModel, variable);
+                present[variable] = H5Lexists(file, paths[variable].c_str(), H5P_DEFAULT) > 0;
+                nPresent += present[variable] ? 1 : 0;
+            }
+            DNDS_check_throw_info(
+                !restart.requireTurbulence || nPresent == nVariables,
+                "ACM restart requires the selected model's turbulence datasets");
+            DNDS_check_throw_info(
+                nPresent == 0 || nPresent == nVariables,
+                "ACM restart contains only part of the selected model's turbulence field");
+            if (nPresent == nVariables)
+            {
+                std::array<std::vector<real>, 2> values;
+                for (int variable = 0; variable < nVariables; variable++)
+                    values[variable] = ReadVTKHDFSlice<real>(
+                        file, paths[variable].c_str(), cellOffset, localCells, 1, H5T_NATIVE_DOUBLE);
                 auto &turbulence = _turbulence->GetState();
                 for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
                 {
-                    turbulence[iCell] << k[static_cast<std::size_t>(iCell)],
-                        omega[static_cast<std::size_t>(iCell)];
-                    DNDS_check_throw_info(
-                        turbulence[iCell].allFinite() && (turbulence[iCell].array() > 0).all(),
-                        "ACM restart turbulence field is non-finite or non-positive");
+                    for (int variable = 0; variable < nVariables; variable++)
+                    {
+                        const real value = values[variable][static_cast<std::size_t>(iCell)];
+                        DNDS_check_throw_info(std::isfinite(value) && value > 0,
+                                              "ACM restart turbulence field is non-finite or non-positive");
+                        turbulence[iCell](variable) = value;
+                    }
                 }
                 turbulence.trans.startPersistentPull();
                 turbulence.trans.waitPersistentPull();
@@ -298,7 +315,7 @@ namespace DNDS::ACM
             log() << "ACM restart loaded flow field from " << restart.flowFile
                   << " at completed step " << restart.completedSteps << std::endl;
             if (_turbulence && !turbulenceLoaded)
-                log() << "ACM restart warning: turbulence datasets are absent; using configured initial k/omega"
+                log() << "ACM restart warning: turbulence datasets are absent; using configured initial turbulence state"
                       << std::endl;
         }
     }
@@ -329,11 +346,11 @@ namespace DNDS::ACM
             1,
             0,
             0,
-            [](int iArray) -> std::string
+            [this](int iArray) -> std::string
             {
                 if (iArray == 0)
                     return "Pressure";
-                return iArray == 1 ? "TurbulenceK" : "TurbulenceOmega";
+                return TurbulenceVariableName(_turbulence->GetModel(), iArray - 1);
             },
             [this](int iArray, index iCell) -> real
             {

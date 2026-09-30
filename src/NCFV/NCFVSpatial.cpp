@@ -135,6 +135,24 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
+    real SpatialOperator<dimension>::PhysicalFluxComponent(
+        const State &state,
+        const SpatialVector &normal,
+        int component) const
+    {
+        const auto momentum = state.template segment<dimension>(1);
+        const real normalMomentum = momentum.dot(normal);
+        if (component == 0)
+            return normalMomentum;
+        const real normalVelocity = normalMomentum / state(0);
+        const real pressure = Pressure(state);
+        if (component <= dimension)
+            return state(component) * normalVelocity +
+                   pressure * normal(component - 1);
+        return (state(dimension + 1) + pressure) * normalVelocity;
+    }
+
+    template <int dimension>
     void SpatialOperator<dimension>::ComputePhysicalFluxGradients()
     {
         DNDS_assert(_mode == IntegrationMode::EfficientDifferential);
@@ -616,6 +634,21 @@ namespace DNDS::NCFV
                     phaseStart = MPI_Wtime();
                 }
                 State flux = NumericalFlux(left, right, pointNormal);
+                if (_singleZeroInviscidCorrectionComponent >= 0)
+                {
+                    const int component = _singleZeroInviscidCorrectionComponent;
+                    flux(component) = 0.5 *
+                        (PhysicalFluxComponent(left, pointNormal, component) +
+                         PhysicalFluxComponent(right, pointNormal, component));
+                }
+                else if (_scaleInteriorInviscidCorrection)
+                {
+                    const State central = 0.5 *
+                        (PhysicalFlux(left, pointNormal) +
+                         PhysicalFlux(right, pointNormal));
+                    flux = central + _interiorInviscidCorrectionScales.cwiseProduct(
+                                         flux - central);
+                }
                 if (_physics.viscous.enabled)
                     flux -= InternalViscousFlux(
                         left, right,
@@ -680,8 +713,11 @@ namespace DNDS::NCFV
             _lastRhsTiming.edgeCentralFluxSeconds += MPI_Wtime() - phaseStart;
             phaseStart = MPI_Wtime();
         }
-        const State dissipativeCorrection =
+        State dissipativeCorrection =
             surface.measure * (numerical - centralMean);
+        if (_scaleInteriorInviscidCorrection)
+            dissipativeCorrection = _interiorInviscidCorrectionScales.cwiseProduct(
+                dissipativeCorrection);
         if (_detailedFluxTiming)
         {
             _lastRhsTiming.edgeDissipationAssemblySeconds += MPI_Wtime() - phaseStart;
@@ -907,9 +943,14 @@ namespace DNDS::NCFV
     {
         AllocateNodeMatrix(_stateGradients, "NCFV.stateGradients", dimension);
         if (_mode == IntegrationMode::EfficientDifferential)
+        {
+            if (_reconstructionSettings.method == ReconstructionMethod::Variational)
+                AllocateNodeMatrix(_coefficients, "NCFV.coefficients",
+                                   Reconstruction::QuadraticBasisSize(dimension));
             AllocateLocalNodeMatrix(
                 _physicalFluxGradients, "NCFV.physicalFluxGradients",
                 dimension + 2, dimension * dimension);
+        }
         else
             AllocateNodeMatrix(_coefficients, "NCFV.coefficients",
                                Reconstruction::QuadraticBasisSize(dimension));

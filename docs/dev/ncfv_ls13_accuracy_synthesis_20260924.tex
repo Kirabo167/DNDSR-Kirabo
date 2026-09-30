@@ -1,0 +1,437 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{space}{xeCJK}
+%
+\documentclass[
+  a4paper,
+]{ctexart}
+\usepackage{amsmath,amssymb}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+  \ifXeTeX
+    \usepackage{xeCJK}
+    \setCJKmainfont[]{Noto Serif CJK SC}
+          \fi
+  \ifLuaTeX
+    \usepackage[]{luatexja-fontspec}
+    \setmainjfont[]{Noto Serif CJK SC}
+  \fi
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage[margin=1.8cm]{geometry}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{5}
+\ifLuaTeX
+\usepackage[bidi=basic]{babel}
+\else
+\usepackage[bidi=default]{babel}
+\fi
+\babelprovide[main,import]{chinese}
+% get rid of language-specific shorthands (see #6817):
+\let\LanguageShortHands\languageshorthands
+\def\languageshorthands#1{}
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\IfFileExists{bookmark.sty}{\usepackage{bookmark}}{\usepackage{hyperref}}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  pdftitle={LS13 高效 NCFV 三维算例与精度验证报告},
+  pdflang={zh-CN},
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\title{LS13 高效 NCFV 三维算例与精度验证报告}
+\usepackage{etoolbox}
+\makeatletter
+\providecommand{\subtitle}[1]{% add subtitle to \maketitle
+  \apptocmd{\@title}{\par {\large #1 \par}}{}{}
+}
+\makeatother
+\subtitle{三棱柱网格 · 等熵涡、斜向熵波及横向涡量波}
+\author{}
+\date{2026 年 9 月 24 日}
+
+\begin{document}
+\maketitle
+
+\hypertarget{ux7814ux7a76ux76eeux7684ux4e0eux8ba1ux7b97ux8bbeux7f6e}{%
+\section{研究目的与计算设置}\label{ux7814ux7a76ux76eeux7684ux4e0eux8ba1ux7b97ux8bbeux7f6e}}
+
+本报告检验节点中心有限体积（NCFV）高效算法在三棱柱网格上的精度，重点判断等熵涡未达到完整三阶观测斜率的原因是否具有普遍性。采用三维无黏理想气体
+Euler 方程
+
+\[
+\partial_t U+\nabla\cdot F(U)=0.
+\]
+
+\[
+U=(\rho,\rho u,\rho v,\rho w,\rho E)^\mathsf{T},\qquad \gamma=1.4.
+\]
+
+\[
+p=(\gamma-1)\left[\rho E-\frac{\rho}{2}(u^2+v^2+w^2)\right].
+\]
+
+计算域为
+\([0,10]\times[0,10]\times[0,4]\)，三方向均为周期边界。空间离散使用二次最小二乘重构、实际
+\textbf{13 点模板}、\texttt{EfficientDifferential}
+高效通量积分和带程序内熵修正的标准 Roe
+通量；不使用限制器和黏性项。时间推进为三阶段
+SSPRK3，采用固定全局步长，不使用局部 CFL，统一计算到 \(t=1.6\)。
+
+\begin{longtable}[]{@{}rrrrr@{}}
+\toprule\noalign{}
+网格 & 周期商节点数 & 时间步长 \(\Delta t\) & 步数 & MPI 进程数 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10 & 512 & 0.2 & 8 & 1 \\
+IV20 & 3896 & 0.1 & 16 & 4 \\
+IV40 & 30416 & 0.05 & 32 & 8 \\
+IV80 & 239968 & 0.025 & 64 & 32 \\
+\end{longtable}
+
+所有三类算例的运行日志均确认模板统计为
+\texttt{min\ =\ mean\ =\ max\ =\ 13}；最多使用 32 个 MPI
+进程。误差以节点对偶控制体体积 \(V_j\) 加权。以密度均值为例，
+
+\[
+E_{2,V}(\bar\rho)=\left[\frac{\sum_j V_j(\bar\rho_j-\bar\rho_j^{\mathrm{ref}})^2}{\sum_j V_j}\right]^{1/2}.
+\]
+
+恢复格点值误差同样以 \(V_j\)
+加权，但与解析点值比较。解析控制体均值使用每个微四面体 24
+点规则计算。相邻网格的观测阶按有效尺度 \(h_n=(400/N_n)^{1/3}\) 求得：
+
+\[
+p_{n\to 2n}=\frac{\log(E_n/E_{2n})}{\log(h_n/h_{2n})}.
+\]
+
+\hypertarget{ux8ba1ux7b97ux95eeux9898ux4e0eux89e3ux6790ux89e3}{%
+\section{计算问题与解析解}\label{ux8ba1ux7b97ux95eeux9898ux4e0eux89e3ux6790ux89e3}}
+
+\hypertarget{ux95eeux9898ux4e00ux4e09ux7ef4ux6324ux51faux7684ux7b49ux71b5ux6da1}{%
+\subsection{问题一：三维挤出的等熵涡}\label{ux95eeux9898ux4e00ux4e09ux7ef4ux6324ux51faux7684ux7b49ux71b5ux6da1}}
+
+设背景速度为 \((1,1,0)\)、涡强 \(\chi=5\)、初始涡心 \((5,5)\)。令
+\(\boldsymbol{\delta}\) 为相对平移涡心的平面坐标，并用长度为 10
+的最小镜像映射到 \([-5,5]^2\)。记 \(r^2=\delta_x^2+\delta_y^2\)，则
+
+\[
+a=\frac{\chi}{2\pi}\exp\left(\frac{1-r^2}{2}\right),\qquad
+T=1-\frac{\gamma-1}{2\gamma}a^2,\qquad
+\rho=T^{1/(\gamma-1)},\qquad p=\rho^\gamma,
+\]
+
+\[
+\boldsymbol{u}=(1-a\delta_y,\,1+a\delta_x,\,0).
+\]
+
+该算例同时含有旋转速度、高梯度涡核及压力平衡。最小镜像周期延拓在远离涡核的切换线处不完全光滑；因此它是高效算法的困难算例，但不是检验严格光滑周期解阶数的唯一依据。
+
+\hypertarget{ux95eeux9898ux4e8cux4e09ux7ef4ux659cux5411ux71b5ux6ce2}{%
+\subsection{问题二：三维斜向熵波}\label{ux95eeux9898ux4e8cux4e09ux7ef4ux659cux5411ux71b5ux6ce2}}
+
+令
+\(L=(10,10,4)\)，\(\boldsymbol{k}=2\pi(1/L_x,1/L_y,1/L_z)\)，\(\boldsymbol{U}_0=(1,1,0)\)，\(\theta=\boldsymbol{k}\cdot\boldsymbol{x}-(\boldsymbol{k}\cdot\boldsymbol{U}_0)t\)。取
+
+\[
+\rho=1+0.2\sin\theta,\qquad \boldsymbol{u}=\boldsymbol{U}_0,\qquad p=1.
+\]
+
+密度在三个方向上均变化；速度和压力严格恒定。这是无源 Euler
+方程的有限振幅精确接触模态，并且解析状态在三方向严格周期。
+
+\hypertarget{ux95eeux9898ux4e09ux4e09ux7ef4ux659cux5411ux6a2aux5411ux6da1ux91cfux6ce2}{%
+\subsection{问题三：三维斜向横向涡量波}\label{ux95eeux9898ux4e09ux4e09ux7ef4ux659cux5411ux6a2aux5411ux6da1ux91cfux6ce2}}
+
+沿用同一个 \(\boldsymbol{k},\boldsymbol{U}_0,\theta\)，取单位向量
+
+\[
+\boldsymbol{e}=\frac{(k_xk_z,\,k_yk_z,\,-k_x^2-k_y^2)}{\left|(k_xk_z,\,k_yk_z,\,-k_x^2-k_y^2)\right|},
+\qquad \boldsymbol{k}\cdot\boldsymbol{e}=0,
+\]
+
+并定义
+
+\[
+\rho=1,\qquad p=1,\qquad
+\boldsymbol{u}=\boldsymbol{U}_0+0.2\boldsymbol{e}\sin\theta.
+\]
+
+因为扰动与波向量正交，扰动的非线性自对流项严格为零。这是有限振幅的三维
+Euler 精确解；三个速度分量、动量及能量都参与变化，能够检验三维耦合。
+
+\hypertarget{ux7cbeux5ea6ux7ed3ux679c}{%
+\section{精度结果}\label{ux7cbeux5ea6ux7ed3ux679c}}
+
+\hypertarget{ux7b49ux71b5ux6da1}{%
+\subsection{等熵涡}\label{ux7b49ux71b5ux6da1}}
+
+\begin{longtable}[]{@{}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 10\tabcolsep) * \real{0.1667}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedleft
+网格
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+密度均值 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+相邻阶数
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+恢复格点密度 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+相邻阶数
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+均值压力 \(L_{2,V}\)
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10 & 2.7401226e-2 & --- & 3.2941111e-2 & --- & 4.1651236e-2 \\
+IV20 & 8.7065204e-3 & 1.695 & 9.2025623e-3 & 1.885 & 1.4670792e-2 \\
+IV40 & 1.7808669e-3 & 2.317 & 1.8091628e-3 & 2.375 & 2.6234559e-3 \\
+IV80 & 2.6992003e-4 & \textbf{2.740} & 2.7135575e-4 & \textbf{2.755} &
+3.8430246e-4 \\
+\end{longtable}
+
+密度误差随网格加密持续下降，但 IV40→IV80 的观测阶仍略低于三阶。80
+网格恢复格点密度误差平方积分约 \textbf{98.90\%} 位于涡核 \(r<3\)。
+
+\hypertarget{ux4e09ux7ef4ux659cux5411ux71b5ux6ce2}{%
+\subsection{三维斜向熵波}\label{ux4e09ux7ef4ux659cux5411ux71b5ux6ce2}}
+
+\begin{longtable}[]{@{}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedleft
+网格
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+密度均值 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+相邻阶数
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+恢复格点密度 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+相邻阶数
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10 & 3.0115288e-2 & --- & 4.3083979e-2 & --- \\
+IV20 & 7.7894271e-3 & 1.999 & 9.0935752e-3 & 2.300 \\
+IV40 & 1.1686145e-3 & 2.769 & 1.2546533e-3 & 2.892 \\
+IV80 & 1.5004369e-4 & \textbf{2.981} & 1.5522088e-4 & \textbf{3.035} \\
+\end{longtable}
+
+80 网格的格点压力 \(L_{2,V}\) 为
+\(4.40\times10^{-15}\)，说明常压性质在数值计算中保持到舍入误差量级。
+
+\hypertarget{ux4e09ux7ef4ux659cux5411ux6a2aux5411ux6da1ux91cfux6ce2}{%
+\subsection{三维斜向横向涡量波}\label{ux4e09ux7ef4ux659cux5411ux6a2aux5411ux6da1ux91cfux6ce2}}
+
+\begin{longtable}[]{@{}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 8\tabcolsep) * \real{0.2000}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedleft
+网格
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+密度均值 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+相邻阶数
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+恢复格点密度 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+相邻阶数
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10 & 1.6522563e-2 & --- & 1.7236374e-2 & --- \\
+IV20 & 5.5331171e-3 & 1.617 & 5.6708734e-3 & 1.643 \\
+IV40 & 9.2873659e-4 & 2.605 & 9.3665000e-4 & 2.629 \\
+IV80 & 1.2062301e-4 & \textbf{2.965} & 1.2090426e-4 & \textbf{2.974} \\
+\end{longtable}
+
+80 网格原始变量恢复格点误差及其 IV40→IV80 观测阶如下：
+
+\begin{longtable}[]{@{}lrr@{}}
+\toprule\noalign{}
+变量 & \(L_{2,V}\) & IV40→IV80 观测阶 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\(u\) & 2.0884116e-4 & 3.020 \\
+\(v\) & 2.0919910e-4 & 3.021 \\
+\(w\) & 1.4565630e-4 & 2.955 \\
+\(p\) & 1.6578165e-4 & 2.969 \\
+\end{longtable}
+
+两种三维波的解析周期状态不匹配量均小于
+\(9\times10^{-16}\)，八组计算均没有非物理恢复点。两类波的最大质量守恒漂移分别小于
+\(1.6\times10^{-12}\) 和 \(1.7\times10^{-11}\)。
+
+\hypertarget{ux7b49ux71b5ux6da1ux7684-roe-ux8017ux6563ux4e0eux5468ux671fux62fcux63a5ux5bf9ux7167}{%
+\section{等熵涡的 Roe
+耗散与周期拼接对照}\label{ux7b49ux71b5ux6da1ux7684-roe-ux8017ux6563ux4e0eux5468ux671fux62fcux63a5ux5bf9ux7167}}
+
+高效算法的内部面通量可以拆成左右物理通量的积分平均值与 Roe 修正：
+
+\[
+I_e=\frac{I_{L,e}^{\mathrm{phys}}+I_{R,e}^{\mathrm{phys}}}{2}
++A_e\left[F_{\mathrm{Roe}}(\bar U_L,\bar U_R,\boldsymbol{n}_e)
+-\frac{F(\bar U_L,\boldsymbol{n}_e)+F(\bar U_R,\boldsymbol{n}_e)}{2}\right].
+\]
+
+诊断中只将方括号内的 Roe 修正乘以系数
+\(\alpha\)，其余重构、积分、时间步保持一致。\(\alpha=1\) 是完整
+Roe，\(\alpha=0\) 是无该修正的中心积分。
+
+\begin{longtable}[]{@{}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}
+  >{\raggedleft\arraybackslash}p{(\columnwidth - 6\tabcolsep) * \real{0.2500}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedleft
+网格
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+完整 Roe 密度均值 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+\(\alpha=0\) 密度均值 \(L_{2,V}\)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedleft
+后者相对降幅
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IV10 & 2.7401226e-2 & 2.6144867e-2 & 4.6\% \\
+IV20 & 8.7065204e-3 & 6.4306187e-3 & 26.1\% \\
+IV40 & 1.7808669e-3 & 4.2979075e-4 & 75.9\% \\
+IV80 & 2.6992003e-4 & 3.4081181e-5 & \textbf{87.4\%} \\
+\end{longtable}
+
+IV40 的半耗散 \(\alpha=0.5\) 误差为 1.0268365e-3，处于两端之间。在 IV80
+解析场的瞬时密度残差中，Roe 项体积加权范数在 \(t=0\) 和 \(t=1.6\)
+分别为中心部分误差的 10.15 倍和 11.68 倍；独立通量分解与程序 RHS
+的最大不符约 \(1.6\times10^{-13}\)。因此在这个算例中，Roe
+修正作用于左右重构面均值跳跃是主要的可移除误差来源。零耗散的 IV40→IV80
+表观阶数为 3.681；该数值不能解释为格式具有四阶形式精度。
+
+等熵涡的最小镜像延拓在 \(t=1.6\) 的切换线 \(x=1.6\)、\(y=1.6\)
+处不完全光滑：密度连续，密度法向导数最大跳跃约
+\(1.71\times10^{-10}\)，切向速度最大跳跃约
+\(4.89\times10^{-5}\)。下表给出 IV80
+恢复格点密度误差平方积分的区域份额；拼接带是切换线两侧宽 0.5
+的区域。区域可能互相重叠，表中百分数不应求和。
+
+\begin{longtable}[]{@{}lrrr@{}}
+\toprule\noalign{}
+通量 & 涡核 \(r<3\) & 周期拼接带 & 物理周期边界附近 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+完整 Roe & 98.90\% & 0.0051\% & 0.484\% \\
+零耗散 & 90.78\% & 1.19\% & 0.421\% \\
+\end{longtable}
+
+Roe 修正降低了拼接带的局部误差，但显著增大涡核误差。零耗散后仍有
+\(3.4081\times10^{-5}\) 的 IV80
+密度均值误差，其中大部分仍位于涡核。周期拼接存在局部影响，却不能解释当前主要的密度精度损失。
+
+\hypertarget{ux7ed3ux8bbaux8ba1ux7b97ux95eeux9898ux53caux9002ux7528ux8303ux56f4}{%
+\section{结论、计算问题及适用范围}\label{ux7ed3ux8bbaux8ba1ux7b97ux95eeux9898ux53caux9002ux7528ux8303ux56f4}}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{格式具备三维约三阶能力。} 在相同的 LS13、高效积分、Roe 和
+  SSPRK3 设置下，严格周期的三维熵波与涡量波在 IV40→IV80
+  的密度均值观测阶分别为 2.981 和
+  2.965；涡量波的三维速度和压力分量也接近三阶。因此不存在使所有三维光滑解统一降至约
+  2.7 阶的模板或 ghost 缺陷证据。
+\item
+  \textbf{等熵涡误差主要来自 Roe 修正与涡核流场的相互作用。}
+  等熵涡的同段密度均值阶为 2.740；去掉 Roe 修正后，IV80 误差下降
+  87.4\%。这反映的是当前光滑等熵涡的误差常数与有限网格观测阶，不能据此判定
+  Roe 公式本身实现错误。
+\item
+  \textbf{周期拼接是次要因素。} 解析延拓不完全光滑，但在完整 Roe
+  计算中，拼接带只占 IV80 格点密度误差平方积分的
+  0.0051\%。零耗散后占比上升至 1.19\%，剩余误差仍主要集中在涡核。
+\item
+  \textbf{并行诊断输出曾发生目录竞争。} LS13 等熵涡 IV80 的首次 32
+  进程诊断运行在并发创建输出目录时退出；隔离并预先创建诊断目录后，同一数值设置完整复算。最终精度表只使用成功复算的数据。
+\item
+  \textbf{结果范围。} 160/320
+  网格尚无完整同口径的三类算例结果，本报告只对 IV10--IV80
+  的有限网格观测阶负责。时间误差、中心物理通量积分与重构误差在零耗散剩余项中尚未完全分离；无耗散中心通量也未用于激波稳定性验证。
+\end{enumerate}
+
+本报告的数据取自仓库 \texttt{docs/dev} 目录中的等熵涡精度、Roe
+与周期拼接、三维精确波三份单项记录及对应诊断
+JSON。数值试验没有修改生产求解器的通量、重构或时间推进代码。
+
+\end{document}

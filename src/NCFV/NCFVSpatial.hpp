@@ -134,6 +134,9 @@ namespace DNDS::NCFV
         const NodeHalo &_nodeHalo;
         real _maximumStep = veryLargeReal;
         bool _detailedFluxTiming = false;
+        State _interiorInviscidCorrectionScales = State::Ones();
+        bool _scaleInteriorInviscidCorrection = false;
+        int _singleZeroInviscidCorrectionComponent = -1;
 
         NodeMatrixPair _stateGradients;
         NodeMatrixPair _physicalFluxGradients;
@@ -162,6 +165,10 @@ namespace DNDS::NCFV
         State PreservePhysical(const State &candidate, const State &anchor) const;
 
         State PhysicalFlux(const State &state, const SpatialVector &normal) const;
+        real PhysicalFluxComponent(
+            const State &state,
+            const SpatialVector &normal,
+            int component) const;
         State NumericalFlux(
             const State &left,
             const State &right,
@@ -260,6 +267,29 @@ namespace DNDS::NCFV
         void SetMaximumStep(real step) { _maximumStep = step; }
         /** Enable intrusive per-kernel interface-flux timing for diagnostics. */
         void EnableDetailedFluxTiming(bool enabled) { _detailedFluxTiming = enabled; }
+        /** Scale the interior numerical-minus-central flux by conserved component. */
+        void SetInteriorInviscidCorrectionScalesForDiagnostics(const State &scales)
+        {
+            DNDS_check_throw_info(scales.allFinite() &&
+                                      (scales.array() >= 0).all() &&
+                                      (scales.array() <= 1).all(),
+                                  "Invalid interior inviscid correction scales");
+            _interiorInviscidCorrectionScales = scales;
+            _scaleInteriorInviscidCorrection =
+                (scales.array() != 1).any();
+            _singleZeroInviscidCorrectionComponent = -1;
+            for (int component = 0; component < dimension + 2; component++)
+            {
+                if (scales(component) == 0 &&
+                    _singleZeroInviscidCorrectionComponent == -1)
+                    _singleZeroInviscidCorrectionComponent = component;
+                else if (scales(component) != 1)
+                {
+                    _singleZeroInviscidCorrectionComponent = -1;
+                    break;
+                }
+            }
+        }
 
         /**
          * @brief Evaluate d(dual mean)/dt; performs all node and edge halo pulls.
@@ -304,6 +334,7 @@ namespace DNDS::NCFV
         }
         [[nodiscard]] const NodeMatrixPair &Coefficients() const { return _coefficients; }
         [[nodiscard]] const NodeStatePair &PointValues() const { return _pointValues; }
+        [[nodiscard]] const NodeStatePair &EdgeFluxes() const { return _edgeFlux; }
         [[nodiscard]] const NodeStatePair &LimiterFactors() const { return _limiterFactors; }
         [[nodiscard]] const NodeStatePair &LocalTimeSteps() const { return _localTimeSteps; }
     };

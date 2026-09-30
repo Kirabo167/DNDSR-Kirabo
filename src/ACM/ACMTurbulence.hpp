@@ -136,6 +136,9 @@ namespace DNDS::ACM
      */
     const char *TurbulenceModelName(TurbulenceModel model);
 
+    /** @brief Return the VTK-HDF field name for an active turbulence variable. */
+    const char *TurbulenceVariableName(TurbulenceModel model, int variable);
+
     /**
      * @brief Apply configured finite bounds and clear entries unused by the selected model.
      * @param state Candidate primitive turbulence state.

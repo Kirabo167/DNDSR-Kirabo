@@ -18,11 +18,11 @@ namespace DNDS::NCFV
     /**
      * @brief Builds the exact runtime node halo independently of the mesh halo.
      *
-     * The mesh keeps one point-complete cell layer for dual-geometry assembly.
+     * The mesh keeps the cell layers needed for dual-geometry assembly.
      * This object first exposes complete owner-side node adjacency rows, expands
      * them through sparse owner/ghost pulls during initialization, and finally
-     * retains only nodes referenced by accepted reconstruction and integration
-     * stencils. Runtime state arrays borrow this final mapping.
+     * retains nodes referenced by reconstruction and integration.
+     * Runtime state arrays borrow this final mapping.
      */
     class NodeHalo
     {
@@ -60,7 +60,7 @@ namespace DNDS::NCFV
             int maximumRings,
             const std::vector<index> &integrationDependencies);
 
-        /** Replace the temporary layout by the exact accepted runtime dependency set. */
+        /** Replace the temporary layout by the runtime dependency set. */
         void Finalize(
             const DualGeometry &geometry,
             std::vector<index> runtimeDependencies);

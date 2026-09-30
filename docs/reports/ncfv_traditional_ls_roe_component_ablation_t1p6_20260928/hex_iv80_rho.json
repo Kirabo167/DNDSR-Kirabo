@@ -1,0 +1,25 @@
+{
+  "mesh": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/cases/NCFV/generated_periodic_meshes/periodic_hex_iv80.cgns",
+  "mode": "Traditional",
+  "method": "LeastSquares",
+  "stencil": 0,
+  "nodes": 512000,
+  "mpi_ranks": 16,
+  "dt": 0.025,
+  "steps": 64,
+  "final_time": 1.6,
+  "roe_scale": 1.0,
+  "diagnostics": "point_only",
+  "ablated_component": "rho",
+  "component_rhs_validation_max_mismatch_t0": 7.837480664463214e-15,
+  "transient": {
+    "time": 1.6,
+    "volume": 399.99999999977314,
+    "rho_point_L1V": 0.00015287283839978758,
+    "rho_point_L2V": 0.00041875029327939167,
+    "rho_point_Linf": 0.0030564773397097067,
+    "pressure_point_L1V": 0.00014182172727834566,
+    "pressure_point_L2V": 0.000423335387451275,
+    "mass_drift": 2.7114310796605423e-11
+  }
+}

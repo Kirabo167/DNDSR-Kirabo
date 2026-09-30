@@ -1,0 +1,37 @@
+{
+  "mesh": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/cases/NCFV/iv80_3d_1_dnds.cgns",
+  "mode": "Efficient",
+  "method": "Variational",
+  "nodes": 239968,
+  "cells": 479936,
+  "mpi_ranks": 16,
+  "dt": 0.025,
+  "steps": 64,
+  "end_time": 1.6,
+  "variational_weight": 5.0,
+  "variational_iterations": 3,
+  "initialization_seconds": 21.237712405,
+  "march_seconds": 52.317110685,
+  "last_step_core_seconds": 0.7913374350000026,
+  "initialization_peak_rss_sum_mib": 10429.94921875,
+  "final_peak_rss_sum_mib": 10429.94921875,
+  "initial": {
+    "time": 0.0,
+    "volume": 399.99999999995487,
+    "rho_point_L1V": 1.1520227779368738e-07,
+    "rho_point_L2V": 4.1928614923061896e-07,
+    "rho_point_Linf": 6.0509015403775734e-06,
+    "mass": 392.9669734778426,
+    "entropy_L1V": 9.168626700351586e-08
+  },
+  "final": {
+    "time": 1.5999999999999983,
+    "volume": 399.99999999995487,
+    "rho_point_L1V": 5.0030090437169743e-05,
+    "rho_point_L2V": 0.00012437109381747966,
+    "rho_point_Linf": 0.0009223091298525832,
+    "mass": 392.9669734778504,
+    "entropy_L1V": 4.0370845579615646e-05,
+    "mass_drift": 7.787548383930698e-12
+  }
+}

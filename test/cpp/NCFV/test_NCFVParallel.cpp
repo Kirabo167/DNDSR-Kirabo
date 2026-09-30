@@ -835,6 +835,75 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
     }
 }
 
+TEST_CASE("NCFV Roe SSPRK3 has third-order temporal self-convergence")
+{
+    for (const auto mode : {IntegrationMode::TraditionalQuadrature,
+                            IntegrationMode::EfficientDifferential})
+        for (const auto method : {ReconstructionMethod::LeastSquares,
+                                  ReconstructionMethod::Variational})
+        {
+            std::vector<Eigen::MatrixXd> states;
+            std::vector<DNDS::real> volumes;
+            Eigen::MatrixXd coordinates;
+            for (int refinement = 0; refinement < 3; refinement++)
+            {
+                auto configuration = MakeExactPeriodicConfiguration(mode);
+                configuration.reconstruction.method = method;
+                configuration.reconstruction.variationalWeight = 5;
+                configuration.reconstruction.variationalIterations = 3;
+                configuration.physics.initialPrimitive = {1, 1, 1, 0, 1};
+                configuration.initialField.expressions = {{{
+                    "inRegion := 1;",
+                    "UPrim[0] := 1 + 0.1 * sin(2*pi*x[0]/10) * cos(2*pi*x[1]/10);",
+                    "UPrim[1] := 1 + 0.05 * cos(2*pi*x[1]/10);",
+                    "UPrim[4] := 1 + 0.05 * sin(2*pi*x[0]/10);",
+                    "0;"}}};
+                configuration.time.useCFLTimeStep = false;
+                configuration.time.timeStep = 0.05 / (1 << refinement);
+                configuration.time.maximumTimeStep = 1;
+                configuration.time.endTime = 0.2;
+                configuration.time.iterations = 4 * (1 << refinement);
+                configuration.io.writeResolvedConfiguration = false;
+                Solver<3> solver(gMPI, configuration);
+                solver.Initialize();
+                const auto count = solver.Mesh()->NumNode();
+                if (refinement == 0)
+                {
+                    volumes.resize(count);
+                    coordinates.resize(count, 3);
+                    for (DNDS::index i = 0; i < count; i++)
+                    {
+                        volumes[i] = solver.Geometry().NodeVolume(i).moments.measure;
+                        coordinates.row(i) = solver.Mesh()->coords[i].transpose();
+                    }
+                }
+                REQUIRE(count == coordinates.rows());
+                for (DNDS::index i = 0; i < count; i++)
+                    REQUIRE((coordinates.row(i).transpose() - solver.Mesh()->coords[i]).norm() < 1e-13);
+                solver.Run();
+                CHECK(solver.SimulationTime() == doctest::Approx(0.2));
+                Eigen::MatrixXd state(count, 5);
+                for (DNDS::index i = 0; i < count; i++)
+                    state.row(i) = solver.StateField()[i].transpose();
+                states.push_back(std::move(state));
+            }
+            DNDS::real local[2]{}, global[2]{};
+            for (DNDS::index i = 0; i < coordinates.rows(); i++)
+                for (int pair = 0; pair < 2; pair++)
+                    local[pair] += volumes[i] *
+                        (states[pair].row(i) - states[pair + 1].row(i)).squaredNorm();
+            MPI_Allreduce(local, global, 2, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+            REQUIRE(global[1] > 1e-24);
+            const DNDS::real order = 0.5 * std::log2(global[0] / global[1]);
+            if (gMPI.rank == 0)
+                std::cout << "NCFV temporal order mode=" << static_cast<int>(mode)
+                          << " method=" << static_cast<int>(method)
+                          << " order=" << order << std::endl;
+            CHECK(order > 2.8);
+            CHECK(order < 3.3);
+        }
+}
+
 TEST_CASE("NCFV directional normalization survives stretching, ghost exchange and geometry disposal")
 {
     const Vector3 stretch{0.05, 2, 5};
@@ -859,25 +928,38 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
     {
         return (linear + hessian * x.cwiseQuotient(stretch)).cwiseQuotient(stretch);
     };
+    struct ReconstructionCase
+    {
+        IntegrationMode mode;
+        ReconstructionMethod method;
+        DNDS::real weight;
+    };
 
-    for (const auto &[mode, method] :
+    for (const auto &[mode, method, weight] :
          std::array{
-             std::pair{IntegrationMode::EfficientDifferential,
-                       ReconstructionMethod::SVDLeastSquares},
-             std::pair{IntegrationMode::EfficientDifferential,
-                       ReconstructionMethod::LeastSquares},
-             std::pair{IntegrationMode::TraditionalQuadrature,
-                       ReconstructionMethod::SVDLeastSquares},
-             std::pair{IntegrationMode::TraditionalQuadrature,
-                       ReconstructionMethod::LeastSquares}})
+             ReconstructionCase{IntegrationMode::EfficientDifferential,
+                                ReconstructionMethod::SVDLeastSquares, 1.0},
+             ReconstructionCase{IntegrationMode::EfficientDifferential,
+                                ReconstructionMethod::LeastSquares, 1.0},
+             ReconstructionCase{IntegrationMode::EfficientDifferential,
+                                ReconstructionMethod::Variational, 0.5},
+             ReconstructionCase{IntegrationMode::TraditionalQuadrature,
+                                ReconstructionMethod::SVDLeastSquares, 1.0},
+             ReconstructionCase{IntegrationMode::TraditionalQuadrature,
+                                ReconstructionMethod::LeastSquares, 1.0},
+             ReconstructionCase{IntegrationMode::TraditionalQuadrature,
+                                ReconstructionMethod::Variational, 0.5}})
     {
         configuration.algorithm.mode = mode;
         configuration.reconstruction.method = method;
+        configuration.reconstruction.variationalWeight = weight;
         configuration.algorithm.retainMicroGeometry = true;
-        DualGeometry retained(gMPI, mesh, topology, configuration.algorithm);
+        DualGeometry retained(gMPI, mesh, topology, configuration.algorithm,
+                              false);
         retained.Build();
         configuration.algorithm.retainMicroGeometry = false;
-        DualGeometry geometry(gMPI, mesh, topology, configuration.algorithm);
+        DualGeometry geometry(gMPI, mesh, topology, configuration.algorithm,
+                              false);
         geometry.Build();
         const std::vector<DNDS::index> integrationDependencies =
             geometry.CollectNodeDependencies();
