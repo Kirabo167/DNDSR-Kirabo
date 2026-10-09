@@ -105,7 +105,7 @@ set(DNDS_Euler_Models_List
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/DNDS)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/Geom)
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/CFV)
-# Constant-density ACM module integration. Modifier: Runzhi Ma.
+# Constant-density ACM flow, runtime RANS closures, and physical BDF2 integration.
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ACM)
 # Separate variable-density equation module; original solvers remain unchanged. Runzhi Ma.
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/ACMVariable)
@@ -120,6 +120,13 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/NCFV)
 
 # 7. C++ unit tests (doctest) + Python pytest registration
 include(cmake/DndsTests.cmake)
+
+# Build the executables used by the focused ACM RANS/BDF2 CTest label.
+# Run them with: ctest --test-dir build -L '^acm_rans_bdf2$' --output-on-failure
+if(DNDS_BUILD_TESTS)
+    add_custom_target(acm_rans_bdf2_tests
+        DEPENDS acm_test_time acm_test_turbulence acm_test_self_periodic)
+endif()
 
 # 8. Application executables (euler, test apps, etc.)
 include(cmake/DndsApps.cmake)

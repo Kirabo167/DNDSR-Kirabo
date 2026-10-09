@@ -26,7 +26,8 @@ Implemented now:
   distributed ACM LU-SGS or left-preconditioned GMRES inner solves;
 - CGNS mesh reading, METIS partitioning, ghost construction, and periodic translation reuse;
 - direct second-order Green-Gauss reconstruction;
-- arbitrary-order CFV variational reconstruction selected by `vfvSettings.maxOrder`;
+- CFV variational reconstruction with polynomial degrees 1--3 selected by `vfvSettings.maxOrder`;
+  degree zero selects piecewise-constant reconstruction;
 - selectable local-extrema, WBAP, and CWBAP limiting;
 - ACM-specific general-`alpha` 4x4 characteristic transforms for WBAP/CWBAP, dimension-aware
   two-/three-dimensional polynomial norms, and a dedicated 3-D four-variable CFV instantiation;
@@ -156,7 +157,11 @@ counts physical-time steps, `physicalTimeStep` is the uniform physical step, and
 `maxImplicitIterations` limits the pseudo-time corrections inside each physical step. The first
 physical step uses backward Euler; every later step uses constant-step BDF2. The physical-time
 mass matrix is `diag(1,1,1,0)`, so BDF differentiates velocity but never artificial-compressibility
-pressure. CFL controls continue to set only the inner pseudo-time step.
+pressure. All four RANS closures transport their active primitive variables with matching
+completed-step physical histories: SA `nuTilde`, Wilcox/SST `[k,omega]`, and realizable
+`[k,epsilon]`. Inactive storage is zeroed and excluded from positivity checks and BDF defects.
+Their spatial-minus-BDF defects are relaxed at each flow inner iteration.
+CFL controls continue to set only the inner pseudo-time step.
 
 The new setting is available to JSON configuration and command-line JSON-pointer overrides. Case
 files created before this option remain loadable: when `physicalTimeStep` is absent, the loader
@@ -179,16 +184,37 @@ existing case file):
 See `docs/solver-guide/acm_bdf2_dual_time_zh.md` for the governing defect, implicit matrix, source
 mapping, and usage details.
 
+## Build and focused RANS/BDF2 regression tests
+
+From the project root:
+
+```bash
+cmake -S . -B build -DDNDS_USE_CANTERA=OFF -DDNDS_BUILD_TESTS=ON
+cmake --build build --target euler acm_rans_bdf2_tests -j8
+ctest --test-dir build -L '^acm_rans_bdf2$' --output-on-failure
+```
+
+The `acm_rans_bdf2_tests` build target is available when `DNDS_BUILD_TESTS=ON`.
+The CTest label selects the RANS closure tests, BDF2 kernels and active-variable histories,
+and physical-time regressions for Wilcox, SA, and realizable k-epsilon. The latter include
+independent BE/BDF2 discrete solutions and time-step refinement for SA and k-epsilon.
+These tests set `HWLOC_COMPONENTS=-gl` to avoid GL/X11 probing on headless compute nodes.
+All flow and turbulence models are selected at runtime through the unified `euler` executable.
+
 Current initial-version limits:
 
 - periodic translations are configurable, while rotational periodic setup is not exposed yet;
 - WBAP/CWBAP requires `Variational` reconstruction;
+- the independent turbulence field uses first-order or limited second-order Green-Gauss
+  reconstruction, controlled by `turbulenceSettings.secondOrderReconstruction`, with every
+  supported flow reconstruction and time integrator;
 - LU-SGS/GMRES uses a first-order frozen face linearization as the implicit operator while the
   nonlinear residual retains the selected high-order reconstruction;
 - turbulence transport is segregated and explicit even when the four-variable flow integrator is
   implicit; no coupled turbulence Jacobian or implicit turbulence source linearization is present;
-- BDF2 physical dual-time marching currently accepts `Laminar` only; turbulence physical-time
-  histories and a coupled/segregated unsteady update have not yet been implemented;
+- BDF2 physical dual-time marching accepts laminar flow and all four RANS models; turbulence remains segregated
+  and pseudo-time explicit, so physical-time accuracy requires converging both the flow and
+  turbulence defects within each physical step;
 - the supplied SA model is baseline RANS; DES, transition, and rotation/curvature corrections are
   not enabled;
 - restart output and BDF2-history serialization are not connected yet; flow-field output currently

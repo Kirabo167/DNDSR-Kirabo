@@ -74,6 +74,76 @@ namespace DNDS::ACM
         _flowLimiter.setConstant(1.0);
         _initialized = true;
         _prepared = false;
+        _physicalHistory = BDF2TurbulenceHistory{};
+    }
+
+    template <int gDim>
+    void ACMTurbulenceTransport<gDim>::InitializePhysicalHistory()
+    {
+        DNDS_check_throw_info(_initialized && SupportsBDF2TurbulenceModel(_turbulenceSettings.model),
+                              "ACM physical turbulence history requires initialized RANS transport");
+        TurbulenceStateField initial(static_cast<std::size_t>(_mesh->NumCell()));
+        for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
+            initial[static_cast<std::size_t>(iCell)] = _state[iCell];
+        _physicalHistory.Initialize(initial, ActiveVariableCount());
+    }
+
+    template <int gDim>
+    void ACMTurbulenceTransport<gDim>::CommitPhysicalStep()
+    {
+        TurbulenceStateField completed(static_cast<std::size_t>(_mesh->NumCell()));
+        for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
+            completed[static_cast<std::size_t>(iCell)] = _state[iCell];
+        _physicalHistory.Commit(completed);
+    }
+
+    template <int gDim>
+    void ACMTurbulenceTransport<gDim>::ApplyPhysicalBDF2Defect(
+        TTurbulenceDof &rhs,
+        const BDF2Coefficients &coefficients,
+        real physicalTimeStep) const
+    {
+        DNDS_check_throw_info(_physicalHistory.IsInitialized(),
+                              "ACM RANS physical history is not initialized");
+        const int activeVariableCount = ActiveVariableCount();
+        const auto &previous = _physicalHistory.Previous();
+        const auto &previousPrevious = _physicalHistory.PreviousPrevious();
+        DNDS_check_throw_info(coefficients.order == _physicalHistory.Coefficients().order,
+                              "ACM flow and turbulence physical histories are out of sync");
+#if defined(DNDS_DIST_MT_USE_OMP)
+#    pragma omp parallel for schedule(runtime)
+#endif
+        for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
+        {
+            const std::size_t ii = static_cast<std::size_t>(iCell);
+            TurbulenceState defect = TurbulenceState(rhs[iCell]) - EvaluateBDF2TurbulenceDerivative(
+                TurbulenceState(_state[iCell]),
+                previous[ii],
+                previousPrevious[ii],
+                coefficients,
+                physicalTimeStep,
+                activeVariableCount);
+            defect.tail(nStoredVariables - activeVariableCount).setZero();
+            rhs[iCell] = defect;
+            DNDS_check_throw_info(rhs[iCell].allFinite(),
+                                  "ACM RANS physical defect is non-finite");
+        }
+    }
+
+    template <int gDim>
+    real ACMTurbulenceTransport<gDim>::EvaluatePhysicalBDF2DefectNorm(
+        TFlowDof &flow,
+        const BDF2Coefficients &coefficients,
+        real physicalTimeStep,
+        real time)
+    {
+        EvaluateRHS(_rhs, flow, time);
+        ApplyPhysicalBDF2Defect(_rhs, coefficients, physicalTimeStep);
+        const real normalizer = std::sqrt(std::max<real>(
+            1.0,
+            static_cast<real>(_mesh->NumCellGlobal()) *
+                static_cast<real>(ActiveVariableCount())));
+        return _rhs.norm2() / normalizer;
     }
 
     template <int gDim>
@@ -854,6 +924,33 @@ namespace DNDS::ACM
         const ScalarField &flowPseudoTimeStep,
         real time)
     {
+        return AdvanceImpl(flow, flowPseudoTimeStep, time, nullptr, 0);
+    }
+
+    template <int gDim>
+    real ACMTurbulenceTransport<gDim>::AdvancePhysicalBDF2(
+        TFlowDof &flow,
+        const ScalarField &flowPseudoTimeStep,
+        const BDF2Coefficients &coefficients,
+        real physicalTimeStep,
+        real time)
+    {
+        DNDS_check_throw_info(SupportsBDF2TurbulenceModel(_turbulenceSettings.model) &&
+                                  _physicalHistory.IsInitialized(),
+                              "ACM physical BDF2 turbulence advance requires initialized RANS history");
+        DNDS_check_throw_info(std::isfinite(physicalTimeStep) && physicalTimeStep > 0,
+                              "ACM RANS physical time step must be positive and finite");
+        return AdvanceImpl(flow, flowPseudoTimeStep, time, &coefficients, physicalTimeStep);
+    }
+
+    template <int gDim>
+    real ACMTurbulenceTransport<gDim>::AdvanceImpl(
+        TFlowDof &flow,
+        const ScalarField &flowPseudoTimeStep,
+        real time,
+        const BDF2Coefficients *coefficients,
+        real physicalTimeStep)
+    {
         DNDS_check_throw_info(
             flowPseudoTimeStep.size() ==
                 static_cast<std::size_t>(_mesh->NumCell()),
@@ -913,6 +1010,8 @@ namespace DNDS::ACM
                     ClampTurbulenceState(_state[iCell], _turbulenceSettings);
 
             EvaluateRHS(_rhs, flow, time);
+            if (coefficients != nullptr)
+                ApplyPhysicalBDF2Defect(_rhs, *coefficients, physicalTimeStep);
             lastResidualNorm = _rhs.norm2();
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
@@ -932,6 +1031,8 @@ namespace DNDS::ACM
             }
 
             EvaluateRHS(_rhs, flow, time);
+            if (coefficients != nullptr)
+                ApplyPhysicalBDF2Defect(_rhs, *coefficients, physicalTimeStep);
             lastResidualNorm = _rhs.norm2();
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
@@ -952,6 +1053,8 @@ namespace DNDS::ACM
             }
 
             EvaluateRHS(_rhs, flow, time);
+            if (coefficients != nullptr)
+                ApplyPhysicalBDF2Defect(_rhs, *coefficients, physicalTimeStep);
             lastResidualNorm = _rhs.norm2();
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
@@ -975,6 +1078,9 @@ namespace DNDS::ACM
         _state.trans.startPersistentPull();
         _state.trans.waitPersistentPull();
         _prepared = false;
+        if (coefficients != nullptr)
+            return EvaluatePhysicalBDF2DefectNorm(
+                flow, *coefficients, physicalTimeStep, time);
         const real normalizer = std::sqrt(std::max<real>(
             1.0,
             static_cast<real>(_mesh->NumCellGlobal()) *

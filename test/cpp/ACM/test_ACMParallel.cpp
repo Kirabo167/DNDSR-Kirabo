@@ -39,6 +39,47 @@ using namespace DNDS::ACM;
 using ACMConvergence2D = std::integral_constant<ACMModel, ACMModel::ConstantDensity2D>;
 using ACMConvergence3D = std::integral_constant<ACMModel, ACMModel::ConstantDensity3D>;
 
+/// @test Degree-zero VR must retain the first-order residual on nonuniform MPI flow fields.
+TEST_CASE_TEMPLATE("ACM Wilcox degree-zero reconstruction matches first order", TModel, ACMConvergence2D, ACMConvergence3D)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    KernelConfiguration cfg;
+    cfg.meshSettings.meshFile = (root / (TModel::value == ACMModel::ConstantDensity2D
+                                           ? "data/mesh/ACMVariable_verify2D.cgns"
+                                           : "data/mesh/ACMVariable_verify3D.cgns")).string();
+    cfg.acmSettings.enableViscousFlux = true;
+    cfg.acmSettings.dynamicViscosity = 0.001;
+    cfg.turbulenceSettings.model = TurbulenceModel::KOmegaWilcox;
+    cfg.turbulenceSettings.initialValue = {0.001, 10.0};
+    cfg.reconstructionSettings.type = ReconstructionType::Variational;
+    cfg.reconstructionSettings.limiterType = LimiterType::CWBAP;
+    cfg.vfvSettings.maxOrder = 0;
+    using TSolver = ACMSolver<TModel::value>;
+    TSolver constant(mpi, cfg);
+    constant.ReadMeshAndInitialize();
+    cfg.reconstructionSettings.type = ReconstructionType::FirstOrder;
+    cfg.reconstructionSettings.limiterType = LimiterType::LocalExtrema;
+    cfg.vfvSettings.maxOrder = 1;
+    TSolver firstOrder(mpi, cfg);
+    firstOrder.ReadMeshAndInitialize();
+    for (TSolver *solver : {&constant, &firstOrder})
+        for (DNDS::index i = 0; i < solver->GetMesh()->NumCell(); i++)
+        {
+            const auto x = solver->GetReconstruction()->GetCellBary(i);
+            solver->GetState()[i] << 0.4 + 0.08 * std::sin(x(0) + x(1)),
+                -0.2 + 0.08 * std::cos(2 * x(0)), 0.0, 0.1 + 0.08 * std::sin(x(1));
+        }
+    typename TSolver::TDof constantRhs, referenceRhs;
+    constant.GetReconstruction()->BuildUDof(constantRhs, 4);
+    firstOrder.GetReconstruction()->BuildUDof(referenceRhs, 4);
+    constant.GetEvaluator()->EvaluateRHS(constantRhs, constant.GetState());
+    firstOrder.GetEvaluator()->EvaluateRHS(referenceRhs, firstOrder.GetState());
+    constantRhs.addTo(referenceRhs, -1);
+    CHECK(constantRhs.norm2() < 1e-13);
+}
+
 /// @test Check warm-start independence, fixed-state repeatability and collective cap failure in 2D/3D.
 TEST_CASE_TEMPLATE("ACM converged reconstruction defines a repeatable residual", TModel, ACMConvergence2D, ACMConvergence3D)
 {

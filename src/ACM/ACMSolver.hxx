@@ -116,7 +116,11 @@ namespace DNDS::ACM
             _mesh->BuildVTKConnectivity();
 
         DNDS_MAKE_SSP(_vfv, _mpi, _mesh);
-        _vfv->parseSettings(_configuration.vfvSettings);
+        // CFV's metric/limiter setup needs a nonempty polynomial basis even when
+        // the requested variational reconstruction is piecewise constant.
+        auto metricSettings = _configuration.vfvSettings;
+        metricSettings.maxOrder = std::max(1, metricSettings.maxOrder);
+        _vfv->parseSettings(metricSettings);
         TEvaluator::InitializeFV(
             _mesh,
             _vfv,
@@ -131,12 +135,19 @@ namespace DNDS::ACM
         _linearRhs.setConstant(0.0);
         _linearIncrement.setConstant(0.0);
 
+        auto flowReconstructionSettings = _configuration.reconstructionSettings;
+        if (_configuration.vfvSettings.maxOrder == 0 &&
+            flowReconstructionSettings.type == ReconstructionType::Variational)
+        {
+            flowReconstructionSettings.type = ReconstructionType::FirstOrder;
+            flowReconstructionSettings.variationalTolerance = 0;
+        }
         DNDS_MAKE_SSP(
             _evaluator,
             _mesh,
             _vfv,
             _configuration.acmSettings,
-            _configuration.reconstructionSettings,
+            flowReconstructionSettings,
             _boundaryHandler);
 
         if (TurbulenceVariableCount(_configuration.turbulenceSettings.model) > 0)
@@ -596,11 +607,15 @@ namespace DNDS::ACM
 
         report.initialDefectNorm = evaluateDefect();
         report.finalDefectNorm = report.initialDefectNorm;
+        if (_turbulence)
+            report.turbulenceDefectNorm = _turbulence->EvaluatePhysicalBDF2DefectNorm(
+                _u, coefficients, physicalTimeStep, physicalTime);
         for (int iteration = 0;
              iteration < _configuration.timeMarchSettings.maxImplicitIterations;
              iteration++)
         {
-            if (report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance)
+            if (report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance &&
+                report.turbulenceDefectNorm <= _configuration.timeMarchSettings.implicitTolerance)
             {
                 report.converged = true;
                 break;
@@ -626,11 +641,18 @@ namespace DNDS::ACM
                     _configuration.timeMarchSettings.implicitRelaxation *
                     State(_linearIncrement[iCell]);
 
+            if (_turbulence)
+            {
+                CopyStateFieldToOwned(states, _u);
+                report.turbulenceDefectNorm = _turbulence->AdvancePhysicalBDF2(
+                    _u, pseudoTimeStep, coefficients, physicalTimeStep, physicalTime);
+            }
             report.iterations = iteration + 1;
             report.finalDefectNorm = evaluateDefect();
         }
         report.converged =
-            report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance;
+            report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance &&
+            report.turbulenceDefectNorm <= _configuration.timeMarchSettings.implicitTolerance;
         return report;
     }
 
@@ -647,13 +669,17 @@ namespace DNDS::ACM
         const TimeIntegratorType integrator = _configuration.timeMarchSettings.integrator;
         const bool useBDF2 = IsBDF2DualTimeIntegrator(integrator);
         DNDS_check_throw_info(
-            !useBDF2 || _turbulence == nullptr,
-            "ACM BDF2 dual-time marching currently supports Laminar flow only; "
-            "segregated turbulence equations do not yet have physical-time history");
+            !useBDF2 || _turbulence == nullptr ||
+                SupportsBDF2TurbulenceModel(_turbulence->GetModel()),
+            "ACM BDF2 dual-time marching requires a supported turbulence model");
 
         BDF2History bdf2History;
         if (useBDF2)
+        {
             bdf2History.Initialize(states);
+            if (_turbulence)
+                _turbulence->InitializePhysicalHistory();
+        }
         real physicalTime = 0;
         real currentCFL = _configuration.timeMarchSettings.cfl;
         real residualTime = 0;
@@ -715,6 +741,8 @@ namespace DNDS::ACM
                 // inner limit completes the physical step, while report.converged
                 // records whether the requested defect tolerance was also reached.
                 bdf2History.Commit(states);
+                if (_turbulence)
+                    _turbulence->CommitPhysicalStep();
                 physicalTime = residualTime;
             }
             else if (useDistributedImplicit)
@@ -729,7 +757,7 @@ namespace DNDS::ACM
                     diagonalJacobianEvaluator,
                     &_mpi);
             real turbulenceResidual = 0;
-            if (_turbulence)
+            if (_turbulence && !useBDF2)
             {
                 CopyStateFieldToOwned(states, _u);
                 turbulenceResidual = _turbulence->Advance(
@@ -737,6 +765,8 @@ namespace DNDS::ACM
                     pseudoTimeStep,
                     residualTime);
             }
+            else if (_turbulence)
+                turbulenceResidual = report.turbulenceDefectNorm;
             const bool steadyControls = _configuration.timeMarchSettings.steadyAdaptiveCFL ||
                                         _configuration.timeMarchSettings.steadyRelativeTolerance > 0;
             real steadyResidual = 0;

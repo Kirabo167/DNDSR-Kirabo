@@ -13,6 +13,26 @@ set(CPPS
     acm3D.cpp
 )
 
+set(HPPS
+    ACM.hpp
+    ACMBC.hpp
+    ACMBDF2.hpp
+    ACMConfig.hpp
+    ACMEvaluator.hpp
+    ACMEvaluator.hxx
+    ACMFlux.hpp
+    ACMParallel.hpp
+    ACMSettings.hpp
+    ACMSolver.hpp
+    ACMSolver.hxx
+    ACMState.hpp
+    ACMTime.hpp
+    ACMTurbulence.hpp
+    ACMTurbulenceTransport.hpp
+    ACMTurbulenceTransport.hxx
+    SingleBlockApp.hpp
+)
+
 set(LINKS
     cfv
     geom
@@ -22,3 +42,4 @@ set(LINKS
 
 dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     OFF ON ON)
+target_sources(${LIBNAME} PRIVATE ${HPPS})

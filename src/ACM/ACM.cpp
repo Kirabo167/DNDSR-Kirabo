@@ -979,9 +979,8 @@ namespace DNDS::ACM
         turbulenceSettings.Validate();
         DNDS_check_throw_info(
             !IsBDF2DualTimeIntegrator(timeMarchSettings.integrator) ||
-                TurbulenceVariableCount(turbulenceSettings.model) == 0,
-            "ACM BDF2 dual-time marching currently supports Laminar flow only; "
-            "segregated turbulence transport has no physical-time history");
+                SupportsBDF2TurbulenceModel(turbulenceSettings.model),
+            "ACM BDF2 dual-time marching requires a supported turbulence model");
         if (TurbulenceVariableCount(turbulenceSettings.model) > 0)
         {
             DNDS_check_throw_info(
@@ -1037,6 +1036,9 @@ namespace DNDS::ACM
             reconstructionSettings.variationalTolerance == 0 ||
                 !(vfvSettings.maxOrder == 1 && vfvSettings.subs2ndOrder != 0),
             "ACM reconstruction equation convergence requires the variational operator, not substituted second-order reconstruction");
+        DNDS_check_throw_info(
+            vfvSettings.maxOrder >= 0 && vfvSettings.maxOrder <= 3,
+            "ACM CFV reconstruction supports polynomial degrees 0 through 3");
         DNDS_check_throw_info(
             !reconstructionSettings.enableLimiter ||
                 reconstructionSettings.limiterType == LimiterType::LocalExtrema ||

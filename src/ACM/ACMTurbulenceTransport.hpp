@@ -14,6 +14,7 @@
 #pragma once
 
 #include "ACMBC.hpp"
+#include "ACMBDF2.hpp"
 #include "ACMTime.hpp"
 #include "ACMTurbulence.hpp"
 
@@ -96,6 +97,27 @@ namespace DNDS::ACM
             const ScalarField &flowPseudoTimeStep,
             real time = 0);
 
+        /** @brief Capture active primitive RANS variables as both completed physical-time levels. */
+        void InitializePhysicalHistory();
+
+        /** @brief Validate active RANS entries and shift histories after a completed physical step. */
+        void CommitPhysicalStep();
+
+        /** @brief Evaluate the MPI-global RMS active RANS spatial-minus-BDF physical defect. */
+        real EvaluatePhysicalBDF2DefectNorm(
+            TFlowDof &flow,
+            const BDF2Coefficients &coefficients,
+            real physicalTimeStep,
+            real time);
+
+        /** @brief Relax active RANS variables in pseudo-time while holding physical histories fixed. */
+        real AdvancePhysicalBDF2(
+            TFlowDof &flow,
+            const ScalarField &flowPseudoTimeStep,
+            const BDF2Coefficients &coefficients,
+            real physicalTimeStep,
+            real time);
+
         /**
          * @brief Return frozen turbulent dynamic viscosity on a face quadrature point.
          * @param iFace Process-local face index.
@@ -136,6 +158,21 @@ namespace DNDS::ACM
         std::vector<std::vector<real>> _faceEddyViscosity; ///< Frozen values at face quadrature points.
         bool _initialized = false;                   ///< Wall-distance/state initialization guard.
         bool _prepared = false;                      ///< Frozen-viscosity cache validity guard.
+        BDF2TurbulenceHistory _physicalHistory;       ///< Active-variable-aware completed physical levels.
+
+        /** @brief Apply the active RANS BDF derivative and zero inactive residual entries. */
+        void ApplyPhysicalBDF2Defect(
+            TTurbulenceDof &rhs,
+            const BDF2Coefficients &coefficients,
+            real physicalTimeStep) const;
+
+        /** @brief Shared SSPRK3 pseudo-time kernel for steady and physical BDF2 defects. */
+        real AdvanceImpl(
+            TFlowDof &flow,
+            const ScalarField &flowPseudoTimeStep,
+            real time,
+            const BDF2Coefficients *coefficients,
+            real physicalTimeStep);
 
         /**
          * @brief Compute cell/face wall distances through the existing Geom implementation.

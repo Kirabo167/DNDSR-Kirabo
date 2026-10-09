@@ -11,6 +11,7 @@
 #include "DNDS/OMP.hpp"
 
 #include <cmath>
+#include <utility>
 
 namespace DNDS::ACM
 {
@@ -40,6 +41,31 @@ namespace DNDS::ACM
             DNDS_check_throw_info(!field.empty(), message);
             for (const State &state : field)
                 DNDS_check_throw_info(state.allFinite(), message);
+        }
+
+        void ValidateActiveVariableCount(int count)
+        {
+            DNDS_check_throw_info(count > 0 && count <= TurbulenceState::RowsAtCompileTime,
+                                  "ACM BDF2 turbulence requires one or two active variables");
+        }
+
+        TurbulenceStateField SanitizeTurbulenceHistory(
+            const TurbulenceStateField &field, int activeVariableCount)
+        {
+            ValidateActiveVariableCount(activeVariableCount);
+            DNDS_check_throw_info(!field.empty(), "ACM BDF2 turbulence history is empty");
+            TurbulenceStateField sanitized;
+            sanitized.reserve(field.size());
+            for (const TurbulenceState &state : field)
+            {
+                DNDS_check_throw_info(state.head(activeVariableCount).allFinite() &&
+                                          (state.head(activeVariableCount).array() > 0).all(),
+                                      "ACM BDF2 active turbulence history must be finite and positive");
+                TurbulenceState clean = TurbulenceState::Zero();
+                clean.head(activeVariableCount) = state.head(activeVariableCount);
+                sanitized.push_back(clean);
+            }
+            return sanitized;
         }
     }
 
@@ -77,6 +103,32 @@ namespace DNDS::ACM
                 coefficients.previous * previous +
                 coefficients.previousPrevious * previousPrevious) /
                physicalTimeStep;
+    }
+
+    /** @copydoc EvaluateBDF2TurbulenceDerivative */
+    TurbulenceState EvaluateBDF2TurbulenceDerivative(
+        const TurbulenceState &current,
+        const TurbulenceState &previous,
+        const TurbulenceState &previousPrevious,
+        const BDF2Coefficients &coefficients,
+        real physicalTimeStep,
+        int activeVariableCount)
+    {
+        ValidateActiveVariableCount(activeVariableCount);
+        DNDS_check_throw_info(
+            current.head(activeVariableCount).allFinite() &&
+                previous.head(activeVariableCount).allFinite() &&
+                previousPrevious.head(activeVariableCount).allFinite(),
+            "ACM BDF2 turbulence history contains a non-finite state");
+        ValidateCoefficients(coefficients);
+        ValidatePhysicalTimeStep(physicalTimeStep);
+        TurbulenceState derivative = TurbulenceState::Zero();
+        derivative.head(activeVariableCount) =
+            (coefficients.current * current.head(activeVariableCount) +
+             coefficients.previous * previous.head(activeVariableCount) +
+             coefficients.previousPrevious * previousPrevious.head(activeVariableCount)) /
+            physicalTimeStep;
+        return derivative;
     }
 
     /** @copydoc FormBDF2PhysicalDefect */
@@ -145,6 +197,21 @@ namespace DNDS::ACM
                integrator == TimeIntegratorType::BDF2DualTimeGMRES;
     }
 
+    /** @copydoc SupportsBDF2TurbulenceModel */
+    bool SupportsBDF2TurbulenceModel(TurbulenceModel model)
+    {
+        switch (model)
+        {
+        case TurbulenceModel::Laminar:
+        case TurbulenceModel::SpalartAllmaras:
+        case TurbulenceModel::KOmegaWilcox:
+        case TurbulenceModel::KOmegaSST:
+        case TurbulenceModel::RealizableKEpsilon:
+            return true;
+        }
+        return false;
+    }
+
     /** @copydoc BDF2UsesLUSGS */
     bool BDF2UsesLUSGS(TimeIntegratorType integrator)
     {
@@ -152,6 +219,46 @@ namespace DNDS::ACM
             IsBDF2DualTimeIntegrator(integrator),
             "ACM BDF2 linear-solver query requires a BDF2 integrator");
         return integrator == TimeIntegratorType::BDF2DualTimeLUSGS;
+    }
+
+    void BDF2TurbulenceHistory::Initialize(
+        const TurbulenceStateField &initialState, int activeVariableCount)
+    {
+        TurbulenceStateField sanitized = SanitizeTurbulenceHistory(initialState, activeVariableCount);
+        _previous = sanitized;
+        _previousPrevious = std::move(sanitized);
+        _activeVariableCount = activeVariableCount;
+        _completedPhysicalSteps = 0;
+        _initialized = true;
+    }
+
+    void BDF2TurbulenceHistory::Commit(const TurbulenceStateField &completedState)
+    {
+        DNDS_check_throw_info(_initialized, "ACM BDF2 turbulence history is not initialized");
+        DNDS_check_throw_info(completedState.size() == _previous.size(),
+                              "ACM BDF2 completed turbulence field has an incompatible size");
+        TurbulenceStateField sanitized = SanitizeTurbulenceHistory(completedState, _activeVariableCount);
+        _previousPrevious = _previous;
+        _previous = std::move(sanitized);
+        ++_completedPhysicalSteps;
+    }
+
+    const TurbulenceStateField &BDF2TurbulenceHistory::Previous() const
+    {
+        DNDS_check_throw_info(_initialized, "ACM BDF2 turbulence history is not initialized");
+        return _previous;
+    }
+
+    const TurbulenceStateField &BDF2TurbulenceHistory::PreviousPrevious() const
+    {
+        DNDS_check_throw_info(_initialized, "ACM BDF2 turbulence history is not initialized");
+        return _previousPrevious;
+    }
+
+    BDF2Coefficients BDF2TurbulenceHistory::Coefficients() const
+    {
+        DNDS_check_throw_info(_initialized, "ACM BDF2 turbulence history is not initialized");
+        return GetBDF2Coefficients(_completedPhysicalSteps);
     }
 
     /** @copydoc BDF2History::Initialize */

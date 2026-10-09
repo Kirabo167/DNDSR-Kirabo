@@ -213,6 +213,7 @@ namespace DNDS::ACM
         real finalDefectNorm = 0;   ///< Global RMS derivative/defect after updating.
         bool converged = false;     ///< True when the configured defect tolerance was reached.
         real defectTolerance = 0;   ///< Actual absolute or combined steady inner target.
+        real turbulenceDefectNorm = 0; ///< Active RANS physical-time defect during BDF2 marching.
     };
 
     /**

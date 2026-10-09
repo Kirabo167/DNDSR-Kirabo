@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run short ACM cylinder smoke tests for every steady RANS closure.
+"""Run short ACM cylinder smoke tests for all steady RANS and physical BDF2 modes.
 
 The default Re=20 2-D case checks solver integration and field output. It is
 not a turbulence-model validation case. Use --case with a suitable 3-D case
@@ -32,7 +32,8 @@ MODELS = {
     "RealizableKEpsilon": (["TurbulenceK", "TurbulenceEpsilon"], [0.001, 0.0009]),
 }
 STEP_PATTERN = re.compile(
-    r"ACM step\s+(\d+) residual\s+([\d.eE+-]+)\s+->\s+([\d.eE+-]+)"
+    r"ACM (?:physical )?step\s+(\d+)(?: time=[\d.eE+-]+ BDF[12])? residual\s+"
+    r"([\d.eE+-]+)\s+->\s+([\d.eE+-]+)"
     r"\s+dtauMin=([\d.eE+-]+)\s+turbResidual=([\d.eE+-]+)"
 )
 
@@ -40,12 +41,25 @@ STEP_PATTERN = re.compile(
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", type=Path, default=ROOT / "cases/acm2D/acm2D.json")
+    parser.add_argument("--mesh", type=Path, help="Override the case mesh without rewriting its JSON")
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument(
-        "--integrator", choices=("ExplicitSSPRK3", "ImplicitEulerGMRES", "ImplicitEulerLUSGS"),
+        "--integrator", choices=(
+            "ExplicitSSPRK3", "ImplicitEulerBlockJacobi", "ImplicitEulerGMRES", "ImplicitEulerLUSGS",
+            "BDF2DualTimeGMRES", "BDF2DualTimeLUSGS",
+        ),
         default="ExplicitSSPRK3",
     )
+    parser.add_argument("--physical-time-step", type=float)
+    parser.add_argument("--max-implicit-iterations", type=int)
+    parser.add_argument("--reconstruction", choices=("FirstOrder", "GreenGauss", "Variational"))
+    parser.add_argument("--limiter", choices=("LocalExtrema", "WBAP", "CWBAP"))
+    parser.add_argument("--order", type=int, choices=(0, 1, 2, 3), help="CFV polynomial degree")
+    parser.add_argument("--disable-limiter", action="store_true")
+    parser.add_argument("--turbulence-second-order", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--reconstruction-tolerance", type=float)
+    parser.add_argument("--reconstruction-use-gmres", action="store_true")
     parser.add_argument("--cfl", type=float, default=0.2)
     parser.add_argument("--viscosity", type=float, help="Override molecular viscosity")
     parser.add_argument("--np", type=int, default=1, help="MPI ranks; 1 runs the executable directly")
@@ -64,6 +78,16 @@ def arguments() -> argparse.Namespace:
         parser.error("cfl must be finite and positive")
     if args.viscosity is not None and (not math.isfinite(args.viscosity) or args.viscosity <= 0):
         parser.error("viscosity must be finite and positive")
+    if args.physical_time_step is not None and (
+        not math.isfinite(args.physical_time_step) or args.physical_time_step <= 0
+    ):
+        parser.error("physical-time-step must be finite and positive")
+    if args.max_implicit_iterations is not None and args.max_implicit_iterations < 1:
+        parser.error("max-implicit-iterations must be positive")
+    if args.reconstruction_tolerance is not None and (
+        not math.isfinite(args.reconstruction_tolerance) or args.reconstruction_tolerance < 0
+    ):
+        parser.error("reconstruction-tolerance must be finite and non-negative")
     return args
 
 
@@ -83,8 +107,29 @@ def command(args: argparse.Namespace, model: str, model_dir: Path) -> list[str]:
     if MODELS[model][1] is not None:
         overrides["/turbulenceSettings/initialValue"] = MODELS[model][1]
         overrides["/turbulenceSettings/farFieldValue"] = MODELS[model][1]
+        overrides["/acmSettings/enableViscousFlux"] = True
+    if args.mesh is not None:
+        overrides["/meshSettings/meshFile"] = str(args.mesh.resolve())
     if args.viscosity is not None:
         overrides["/acmSettings/dynamicViscosity"] = args.viscosity
+    if args.physical_time_step is not None:
+        overrides["/timeMarchSettings/physicalTimeStep"] = args.physical_time_step
+    if args.max_implicit_iterations is not None:
+        overrides["/timeMarchSettings/maxImplicitIterations"] = args.max_implicit_iterations
+    if args.reconstruction is not None:
+        overrides["/reconstructionSettings/type"] = args.reconstruction
+    if args.limiter is not None:
+        overrides["/reconstructionSettings/limiterType"] = args.limiter
+    if args.order is not None:
+        overrides["/vfvSettings/maxOrder"] = args.order
+    if args.disable_limiter:
+        overrides["/reconstructionSettings/enableLimiter"] = False
+    if args.turbulence_second_order is not None:
+        overrides["/turbulenceSettings/secondOrderReconstruction"] = args.turbulence_second_order
+    if args.reconstruction_tolerance is not None:
+        overrides["/reconstructionSettings/variationalTolerance"] = args.reconstruction_tolerance
+    if args.reconstruction_use_gmres:
+        overrides["/reconstructionSettings/variationalUseGMRES"] = True
     for key, value in overrides.items():
         invocation.extend(["-k", key, "-v", json.dumps(value)])
     if args.np > 1:
@@ -135,6 +180,20 @@ def run_one(args: argparse.Namespace, model: str) -> dict[str, object]:
         steps = [match.groups() for match in STEP_PATTERN.finditer(log_text)]
         if not steps or int(steps[-1][0]) != args.steps:
             raise ValueError(f"expected step {args.steps}, found {steps[-1][0] if steps else 'none'}")
+        if args.integrator.startswith("BDF2"):
+            orders = [int(value) for value in re.findall(
+                r"ACM physical step\s+\d+ time=[\d.eE+-]+ BDF([12]) residual", log_text
+            )]
+            expected_orders = [1, *([2] * (args.steps - 1))]
+            if orders != expected_orders:
+                raise ValueError(f"BDF order sequence {orders} differs from {expected_orders}")
+            result["bdf_orders"] = orders
+            convergence = [bool(int(value)) for value in re.findall(
+                r"ACM physical step[^\n]*\bconverged=([01])", log_text
+            )]
+            if len(convergence) != args.steps:
+                raise ValueError("BDF physical-step convergence flags are missing")
+            result["inner_converged"] = convergence
         last = steps[-1]
         residuals = [float(value) for value in last[1:]]
         if not all(math.isfinite(value) for value in residuals):
@@ -184,7 +243,11 @@ def main() -> int:
         print(f"Running {model}...", flush=True)
         result = run_one(args, model)
         results.append(result)
-        print(f"  {result['status']}: {result.get('error', 'step and fields verified')}", flush=True)
+        detail = result.get("error", "step and fields verified")
+        if result["status"] == "pass" and result.get("inner_converged") is not None:
+            if not all(result["inner_converged"]):
+                detail += "; physical inner solve did not converge"
+        print(f"  {result['status']}: {detail}", flush=True)
     report = {"case": str(args.case.resolve()), "steps": args.steps, "results": results}
     report_path = args.output / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")

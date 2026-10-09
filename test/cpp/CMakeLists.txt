@@ -525,6 +525,20 @@ add_dependencies(acm_unit_tests
     acm_test_self_periodic
     acm_test_parallel)
 
+# Reuse the existing doctest executables for focused RANS/BDF2 regressions.
+add_test(NAME acm_rans_bdf2_kernel
+    COMMAND acm_test_time "--test-case=*BDF2*,*RANS physical history*")
+add_test(NAME acm_rans_bdf2_physical_time
+    COMMAND acm_test_self_periodic
+        "--test-case=*physical marching*,*second-order physical accuracy*")
+foreach(TEST_NAME acm_rans_bdf2_kernel acm_rans_bdf2_physical_time)
+    _dnds_maybe_set_timeout(${TEST_NAME} ${DNDS_TEST_TIMEOUT})
+endforeach()
+set_tests_properties(acm_turbulence acm_rans_bdf2_kernel acm_rans_bdf2_physical_time
+    PROPERTIES
+        LABELS "acm;rans;acm_rans_bdf2"
+        ENVIRONMENT "OMP_NUM_THREADS=${DNDS_TEST_OMP_THREADS};HWLOC_COMPONENTS=-gl")
+
 # ===================================================================
 # Solver tests (ODE, Linear, Direct, Scalar)
 # ===================================================================

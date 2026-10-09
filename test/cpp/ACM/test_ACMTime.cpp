@@ -17,6 +17,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 using namespace DNDS;
 using namespace DNDS::ACM;
@@ -455,6 +456,28 @@ TEST_CASE("ACM BDF2 physical defect and implicit diagonal use matching coefficie
     CHECK(diagonal[0](3, 3) == doctest::Approx(2.0));
 }
 
+/// @test Both k-omega closures use the same BE-started primitive-variable derivative.
+TEST_CASE("ACM k-omega BDF2 derivative uses completed physical states")
+{
+    TurbulenceState current;
+    TurbulenceState previous;
+    TurbulenceState previousPrevious;
+    current << 0.45, 13.0;
+    previous << 0.3, 10.0;
+    previousPrevious << 0.2, 8.0;
+
+    const TurbulenceState startup = EvaluateBDF2TurbulenceDerivative(
+        current, previous, previousPrevious, GetBDF2Coefficients(0), 0.1);
+    const TurbulenceState secondOrder = EvaluateBDF2TurbulenceDerivative(
+        current, previous, previousPrevious, GetBDF2Coefficients(1), 0.1);
+    CHECK(startup(0) == doctest::Approx(1.5));
+    CHECK(startup(1) == doctest::Approx(30.0));
+    CHECK(secondOrder(0) == doctest::Approx(1.75));
+    CHECK(secondOrder(1) == doctest::Approx(35.0));
+    CHECK_THROWS(EvaluateBDF2TurbulenceDerivative(
+        current, previous, previousPrevious, GetBDF2Coefficients(1), 0));
+}
+
 /// @test Ensure both BDF2 linear solvers are selectable through JSON enum conversion.
 TEST_CASE("ACM BDF2 integrators round trip through JSON names")
 {
@@ -530,11 +553,113 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     CHECK(loaded.resolvedJson.at("timeMarchSettings").contains("physicalTimeStep"));
 }
 
-/// @test Prevent BDF2 from silently treating segregated turbulence as physically second order.
-TEST_CASE("ACM BDF2 configuration rejects turbulence without physical-time history")
+/// @test All current primitive RANS layouts can select either BDF2 linear solver.
+TEST_CASE("ACM BDF2 configuration accepts every turbulence model")
 {
     KernelConfiguration configuration;
-    configuration.timeMarchSettings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
-    configuration.turbulenceSettings.model = TurbulenceModel::KOmegaSST;
+    configuration.acmSettings.enableViscousFlux = true;
+    configuration.acmSettings.dynamicViscosity = 0.001;
+    for (const TimeIntegratorType integrator : {
+             TimeIntegratorType::BDF2DualTimeLUSGS,
+             TimeIntegratorType::BDF2DualTimeGMRES})
+    {
+        configuration.timeMarchSettings.integrator = integrator;
+        for (const TurbulenceModel model : {
+                 TurbulenceModel::Laminar,
+                 TurbulenceModel::SpalartAllmaras,
+                 TurbulenceModel::KOmegaWilcox,
+                 TurbulenceModel::KOmegaSST,
+                 TurbulenceModel::RealizableKEpsilon})
+        {
+            configuration.turbulenceSettings.model = model;
+            CHECK_NOTHROW(configuration.Validate());
+        }
+    }
+    CHECK_FALSE(SupportsBDF2TurbulenceModel(static_cast<TurbulenceModel>(-1)));
+}
+
+/// @test SA's unused storage cannot contaminate its physical derivative or its residual norm.
+TEST_CASE("ACM BDF2 turbulence derivative ignores inactive entries")
+{
+    TurbulenceState current, previous, older;
+    current << 0.45, std::numeric_limits<DNDS::real>::quiet_NaN();
+    previous << 0.3, std::numeric_limits<DNDS::real>::infinity();
+    older << 0.2, -100.0;
+    const auto startup = EvaluateBDF2TurbulenceDerivative(current, previous, older,
+                                                        GetBDF2Coefficients(0), 0.1, 1);
+    const auto secondOrder = EvaluateBDF2TurbulenceDerivative(current, previous, older,
+                                                            GetBDF2Coefficients(1), 0.1, 1);
+    CHECK(startup(0) == doctest::Approx(1.5));
+    CHECK(secondOrder(0) == doctest::Approx(1.75));
+    CHECK(startup(1) == 0);
+    CHECK(secondOrder(1) == 0);
+    CHECK_THROWS(EvaluateBDF2TurbulenceDerivative(current, previous, older,
+                                                GetBDF2Coefficients(1), 0.1, 0));
+    CHECK_THROWS(EvaluateBDF2TurbulenceDerivative(current, previous, older,
+                                                GetBDF2Coefficients(1), 0.1, 3));
+    CHECK_THROWS(EvaluateBDF2TurbulenceDerivative(current, previous, older,
+                                                GetBDF2Coefficients(1), 0.1, 2));
+}
+
+/// @test Validate all active entries before a commit and preserve both completed levels on failure.
+TEST_CASE("ACM RANS physical history tracks active variables and commits atomically")
+{
+    BDF2TurbulenceHistory history;
+    CHECK_FALSE(history.IsInitialized());
+    CHECK_THROWS(history.Coefficients());
+    CHECK_THROWS(history.Previous());
+    CHECK_THROWS(history.Commit({}));
+    TurbulenceState initial, completed;
+    initial << 0.2, std::numeric_limits<DNDS::real>::quiet_NaN();
+    completed << 0.25, -100.0;
+    CHECK_THROWS(history.Initialize({initial}, 0));
+    CHECK_THROWS(history.Initialize({initial}, 3));
+    CHECK_THROWS(history.Initialize({}, 1));
+    history.Initialize({initial, initial}, 1);
+    CHECK(history.IsInitialized());
+    CHECK(history.ActiveVariableCount() == 1);
+    CHECK(history.Coefficients().order == 1);
+    CHECK(history.Previous()[0](1) == 0);
+    history.Commit({completed, completed});
+    CHECK(history.CompletedPhysicalSteps() == 1);
+    CHECK(history.Coefficients().order == 2);
+    CHECK(history.Previous()[0](0) == doctest::Approx(0.25));
+    CHECK(history.PreviousPrevious()[0](0) == doctest::Approx(0.2));
+    CHECK(history.Previous()[0](1) == 0);
+    const auto before = history.Previous();
+    const auto older = history.PreviousPrevious();
+    TurbulenceState invalid = completed;
+    invalid(0) = 0;
+    CHECK_THROWS(history.Commit({completed, invalid}));
+    CHECK_THROWS(history.Commit({completed}));
+    CHECK(history.CompletedPhysicalSteps() == 1);
+    for (std::size_t i = 0; i < before.size(); i++)
+    {
+        CHECK((history.Previous()[i] - before[i]).norm() == 0);
+        CHECK((history.PreviousPrevious()[i] - older[i]).norm() == 0);
+    }
+    completed(0) = 0.3;
+    history.Commit({completed, completed});
+    CHECK(history.CompletedPhysicalSteps() == 2);
+    CHECK(history.PreviousPrevious()[0](0) == doctest::Approx(0.25));
+
+    initial << 0.4, 0.08;
+    history.Initialize({initial}, 2);
+    CHECK(history.ActiveVariableCount() == 2);
+    CHECK(history.CompletedPhysicalSteps() == 0);
+    CHECK(history.Coefficients().order == 1);
+    invalid << 0.35, -0.01;
+    CHECK_THROWS(history.Commit({invalid}));
+    CHECK((history.Previous()[0] - initial).norm() == 0);
+    CHECK((history.PreviousPrevious()[0] - initial).norm() == 0);
+}
+
+/// @test Reject degrees unsupported by the shared polynomial basis before mesh setup aborts.
+TEST_CASE("ACM configuration rejects unsupported CFV polynomial degrees")
+{
+    KernelConfiguration configuration;
+    configuration.vfvSettings.maxOrder = 4;
+    CHECK_THROWS(configuration.Validate());
+    configuration.vfvSettings.maxOrder = -1;
     CHECK_THROWS(configuration.Validate());
 }

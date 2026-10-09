@@ -13,8 +13,10 @@
 #pragma once
 
 #include "ACMTime.hpp"
+#include "ACMTurbulence.hpp"
 
 #include <cstddef>
+#include <vector>
 
 namespace DNDS::ACM
 {
@@ -56,6 +58,15 @@ namespace DNDS::ACM
         const BDF2Coefficients &coefficients,
         real physicalTimeStep);
 
+    /** @brief Form the physical BDF derivative of active primitive RANS variables; clear inactive entries. */
+    TurbulenceState EvaluateBDF2TurbulenceDerivative(
+        const TurbulenceState &current,
+        const TurbulenceState &previous,
+        const TurbulenceState &previousPrevious,
+        const BDF2Coefficients &coefficients,
+        real physicalTimeStep,
+        int activeVariableCount = TurbulenceState::RowsAtCompileTime);
+
     /**
      * @brief Form `R(U)-dQ/dt` for every rank-local state.
      * @param current Current nonlinear iterate.
@@ -89,8 +100,38 @@ namespace DNDS::ACM
     /** @brief Return whether an integrator selects physical BDF2 dual-time marching. */
     bool IsBDF2DualTimeIntegrator(TimeIntegratorType integrator);
 
+    /** @brief Return whether a closure has the physical-time transport required by BDF2. */
+    bool SupportsBDF2TurbulenceModel(TurbulenceModel model);
+
     /** @brief Return whether a selected BDF2 integrator uses LU-SGS as its linear solver. */
     bool BDF2UsesLUSGS(TimeIntegratorType integrator);
+
+    using TurbulenceStateField = std::vector<TurbulenceState>;
+
+    /**
+     * @brief Completed physical histories for one- or two-equation primitive RANS models.
+     * @details Only active entries must be finite and positive. Inactive storage is zeroed.
+     * Invalid commits leave both completed levels and the startup counter unchanged.
+     */
+    class BDF2TurbulenceHistory
+    {
+    public:
+        void Initialize(const TurbulenceStateField &initialState, int activeVariableCount);
+        void Commit(const TurbulenceStateField &completedState);
+        const TurbulenceStateField &Previous() const;
+        const TurbulenceStateField &PreviousPrevious() const;
+        BDF2Coefficients Coefficients() const;
+        int ActiveVariableCount() const { return _activeVariableCount; }
+        std::size_t CompletedPhysicalSteps() const { return _completedPhysicalSteps; }
+        bool IsInitialized() const { return _initialized; }
+
+    private:
+        TurbulenceStateField _previous;
+        TurbulenceStateField _previousPrevious;
+        int _activeVariableCount = 0;
+        std::size_t _completedPhysicalSteps = 0;
+        bool _initialized = false;
+    };
 
     /**
      * @brief Two-level completed-step history with automatic backward-Euler startup.
