@@ -74,7 +74,7 @@ app/Euler/euler*.cpp
 ```
 
 尽管字段和入口函数仍带有 `Implicit`，它们也被显式推进复用。已有示例可见
-`cases/euler3D/euler3D_config_Box.json`。
+`cases/euler/3D/euler3D_config_Box.json`。
 
 几个容易混淆的配置项：
 

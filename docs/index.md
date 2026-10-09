@@ -20,6 +20,11 @@ multi-species thermodynamics, transport, and chemistry.
 | **ACMVariable** | `src/ACMVariable` | Variable-density artificial-compressibility solver |
 | **NCFV** | `src/NCFV` | Third-order node-centred finite-volume solver |
 
+CPU solvers use separate Euler/CFV, ACM and NCFV Euler executables, each
+with 2D/3D variants. Cases and schemas follow the same grouping. See
+[the solver migration and upstream comparison guide](guides/solver_split_zh.md)
+for target names, configuration precedence and validation scope.
+
 ## Quick Start
 
 ```sh
@@ -35,7 +40,8 @@ bash scripts/install_python_deps.sh
 
 # 2. Build C++ solvers
 cmake --preset release-test
-cmake --build build -t euler -j32
+cmake --build build --target euler --parallel 4
+# All families: cmake --build --preset solvers --parallel 4
 
 # 3. Install Python package (editable)
 CC=mpicc CXX=mpicxx CMAKE_BUILD_PARALLEL_LEVEL=32 \
@@ -43,7 +49,8 @@ CC=mpicc CXX=mpicxx CMAKE_BUILD_PARALLEL_LEVEL=32 \
 
 # 4. Run tests
 # Fetch the pinned cfd_meshes fixtures from the v0.3.1 guide first.
-cmake --build --preset tests -j32
+cmake --build --preset solvers --parallel 4
+cmake --build --preset tests --parallel 4
 ctest --preset unit
 cmake --build --preset python -j32
 cmake --install build --component py

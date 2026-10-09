@@ -45,7 +45,7 @@ DNDSR/
 │   ├── Euler/                  Euler/RANS/reactive solvers and state tools
 │   ├── ACM/                    Constant-density ACM applications
 │   ├── ACMVariable/            Variable-density ACM applications
-│   ├── NCFV/                   NCFV application
+│   ├── NCFV/                   ncfv_euler2D / ncfv_euler3D entry points
 │   ├── DNDS/                   Old standalone test apps
 │   ├── Geom/                   Mesh tool apps
 │   └── CFV/                    FV test apps
@@ -85,7 +85,10 @@ DNDSR/
 │   ├── dev/                    Development notes and design proposals
 │   └── index.md                Documentation root page
 │
-├── cases/                      JSON configuration files for solver runs
+├── cases/                      JSON/JSONC cases and per-model schemas
+│   ├── euler/                  2D/, 3D/; SA/, 2EQ/, EX/ variants; defaults/
+│   ├── acm/                    2D/, 3D/; variable_density/ variants
+│   └── ncfv_euler/             2D/, 3D/; meshes and diagnostics in 3D/
 ├── scripts/                    Utility scripts
 │   └── generate-stubs.sh       Type stub generator (pybind11-stubgen)
 ├── stubs/                      Generated .pyi stubs (intermediate output)
@@ -192,7 +195,11 @@ ACM, ACMVariable, NCFV, and EulerP.
 | `canteraConstVolTrajectory` | Constant-volume chemistry trajectory tool (Cantera only) |
 | `ACM` / `acm2D` / `acm3D` | Constant-density ACM applications       |
 | `acmVariable2D` / `acmVariable3D` | Variable-density ACM applications |
-| `NCFV`              | Third-order node-centred FV application     |
+| `ncfv_euler2D` / `ncfv_euler3D` | Independent 2D/3D node-centred Euler solvers |
+| `all_euler` | All retained Euler models and associated state/chemistry tools |
+| `all_acm` | Constant-/variable-density ACM variants and the ACM compatibility target |
+| `all_ncfv_euler` | Both NCFV Euler dimensions |
+| `all_solvers` | All three solver families |
 | `dnds_pybind11`     | DNDS Python binding module                  |
 | `geom_pybind11`     | Geom Python binding module                  |
 | `cfv_pybind11`      | CFV Python binding module                   |
@@ -209,6 +216,11 @@ ACM, ACMVariable, NCFV, and EulerP.
 | `docs`              | Build all documentation (Doxygen + Sphinx)  |
 | `sphinx`            | Build Sphinx documentation only             |
 | `doxygen`           | Build Doxygen XML + HTML only               |
+
+Only `euler` is part of the default solver build. The `acm` and `acmVariable`
+module targets aggregate both dimensions for tests; executable targets link
+only their dimension-specific libraries. Shared infrastructure is reused.
+See @ref solver_split_zh for the dependency and case migration details.
 
 > **See also:** @ref building for full build instructions, CMake preset
 > descriptions, and troubleshooting.

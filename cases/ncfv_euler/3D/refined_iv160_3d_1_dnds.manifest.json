@@ -1,0 +1,23 @@
+{
+  "source_mesh": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/cases/ncfv_euler/3D/iv80_3d_1_dnds.cgns",
+  "generation": "shared-edge 2D midpoint refinement and z bisection",
+  "size": 160,
+  "plane_nodes": 30317,
+  "plane_triangles": 59992,
+  "z_slabs": 64,
+  "nodes": 1970605,
+  "prism_cells": 3839488,
+  "boundary_faces": {
+    "bc-2": 10240,
+    "bc-2-1": 10240,
+    "bc-3": 10240,
+    "bc-3-1": 10240,
+    "bc-4": 59992,
+    "bc-4-1": 59992
+  },
+  "domain_lengths": [
+    10.0,
+    10.0,
+    4.0
+  ]
+}

@@ -1025,13 +1025,19 @@ namespace DNDS::Euler
          * @param overwriteValues Values corresponding to overwriteKeys.
          */
         void ConfigureFromJson(const std::string &jsonName, bool read = false, const std::string &jsonMergeName = "",
-                               const std::vector<std::string> &overwriteKeys = {}, const std::vector<std::string> &overwriteValues = {})
+                               const std::vector<std::string> &overwriteKeys = {}, const std::vector<std::string> &overwriteValues = {},
+                               bool configOnly = false)
         {
             if (read)
             {
                 auto fIn = std::ifstream(jsonName);
-                DNDS_assert_info(fIn, "config file not existent");
-                gSetting = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
+                if (jsonName.empty())
+                    config.ReadWriteJson(gSetting, nVars, false);
+                else
+                {
+                    DNDS_check_throw_info(fIn.good(), "config file not existent: " + jsonName);
+                    gSetting = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
+                }
 
                 if (read && !jsonMergeName.empty())
                 {
@@ -1103,7 +1109,8 @@ namespace DNDS::Euler
                 pBCHandler = std::make_shared<BoundaryHandler<model>>(nVars);
                 from_json(config.bcSettings, *pBCHandler);
                 gSetting["bcSettings"] = *pBCHandler;
-                PrintConfig(true);
+                if (!configOnly)
+                    PrintConfig(true);
                 if (mpi.rank == 0)
                     log() << "JSON: read value:" << std::endl
                           << std::setw(4) << gSetting << std::endl;

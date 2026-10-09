@@ -342,7 +342,7 @@ jobs:
         run: cmake --build build -t all_unit_tests -j$(nproc)
 
       - name: Build solver applications
-        run: cmake --build build -t euler euler2D euler3D eulerSA eulerSA3D euler2EQ euler2EQ3D eulerEX eulerEX3D canteraConstVolTrajectory eulerState ACM acm2D acm3D acmVariable2D acmVariable3D NCFV -j$(nproc)
+        run: cmake --build build --target all_solvers --parallel "$(nproc)"
 
       # ------------------------------------------------------------------
       # 11. Build pybind11 targets

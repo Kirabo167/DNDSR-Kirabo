@@ -1,0 +1,774 @@
+{
+    "type": "object",
+    "description": "DNDSR NCFV (Node Center Finite Volume Method) configuration",
+    "properties": {
+        "solver": {
+            "type": "object",
+            "description": "Unified executable dispatch settings",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "default": "ncfv_euler",
+                    "description": "Governing-equation family",
+                    "enum": [
+                        "Euler",
+                        "ACM",
+                        "ACMVariable",
+                        "ncfv_euler"
+                    ],
+                    "const": "ncfv_euler"
+                },
+                "discretization": {
+                    "type": "string",
+                    "default": "NCFV",
+                    "description": "Spatial discretization",
+                    "enum": [
+                        "CFV",
+                        "NCFV"
+                    ],
+                    "const": "NCFV"
+                },
+                "model": {
+                    "type": "string",
+                    "default": "IdealGas",
+                    "description": "Compiled equation/model specialization",
+                    "const": "IdealGas"
+                },
+                "fieldNVariables": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Runtime state size for dynamic Euler models NS_EX and NS_EX_3D",
+                    "minimum": 1.0,
+                    "const": 4
+                }
+            }
+        },
+        "dimension": {
+            "type": "integer",
+            "default": 2,
+            "description": "Spatial dimension",
+            "minimum": 2.0,
+            "maximum": 3.0,
+            "const": 2
+        },
+        "mesh": {
+            "type": "object",
+            "description": "Primal mesh input",
+            "properties": {
+                "meshFile": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Input O1 CGNS mesh file"
+                },
+                "reorderCells": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Reorder local primal cells",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "periodicTolerance": {
+                    "type": "number",
+                    "default": 1e-09,
+                    "description": "Periodic-node matching tolerance",
+                    "minimum": 0.0
+                },
+                "periodicLengths": {
+                    "type": "array",
+                    "default": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "description": "Translational periodic box lengths [Lx,Ly,Lz]; zeros disable"
+                },
+                "periodicBoundaryPairs": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Flat [main1,donor1,...] CGNS zone names; empty infers pairs from Periodic boundaryZones order"
+                },
+                "partitionOptions": {
+                    "type": "object",
+                    "description": "Existing DNDSR partition options",
+                    "properties": {
+                        "metisType": {
+                            "type": "string",
+                            "default": "KWAY",
+                            "description": "METIS partitioning method",
+                            "enum": [
+                                "KWAY",
+                                "RB"
+                            ]
+                        },
+                        "metisUfactor": {
+                            "type": "integer",
+                            "default": 20,
+                            "description": "METIS imbalance factor (ufactor)",
+                            "minimum": 1.0
+                        },
+                        "metisSeed": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "METIS random seed"
+                        },
+                        "edgeWeightMethod": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Edge weight method (0: none, 1: face size)",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "metisNcuts": {
+                            "type": "integer",
+                            "default": 3,
+                            "description": "Number of cuts for METIS to try",
+                            "minimum": 1.0
+                        }
+                    }
+                }
+            }
+        },
+        "algorithm": {
+            "type": "object",
+            "description": "Dual-grid integration implementation",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "default": "EfficientDifferential",
+                    "description": "NCFV integration implementation",
+                    "enum": [
+                        "EfficientDifferential",
+                        "TraditionalQuadrature"
+                    ]
+                },
+                "quadratureOrder": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Traditional volume Gauss/Hammer integration order",
+                    "minimum": 2.0,
+                    "maximum": 6.0
+                },
+                "surfaceQuadratureOrder": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Traditional interface/boundary integration order; order 3 is exact for quadratic traces",
+                    "minimum": 3.0,
+                    "maximum": 7.0
+                },
+                "retainMicroGeometry": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Retain construction-simplex geometry for diagnostics"
+                },
+                "checkGeometryClosure": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Reject a dual grid that fails vector-area closure"
+                },
+                "closureTolerance": {
+                    "type": "number",
+                    "default": 2e-10,
+                    "description": "Relative dual-area closure tolerance",
+                    "minimum": 0.0
+                }
+            }
+        },
+        "reconstruction": {
+            "type": "object",
+            "description": "Third-order reconstruction controls",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "default": "SVDLeastSquares",
+                    "description": "LeastSquares, SVDLeastSquares, or Variational; efficient Variational fluxes use the reconstructed first derivatives",
+                    "enum": [
+                        "LeastSquares",
+                        "SVDLeastSquares",
+                        "Variational",
+                        "\u6700\u5c0f\u4e8c\u4e58\u91cd\u6784",
+                        "SVD\u6700\u5c0f\u4e8c\u4e58\u91cd\u6784",
+                        "\u53d8\u5206\u91cd\u6784"
+                    ]
+                },
+                "stencilSizeFactor": {
+                    "type": "number",
+                    "default": 1.7,
+                    "description": "Stencil size divided by quadratic basis size",
+                    "minimum": 1.0,
+                    "maximum": 8.0
+                },
+                "maximumStencilRings": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Maximum breadth-first node rings",
+                    "minimum": 1.0,
+                    "maximum": 8.0
+                },
+                "distanceWeightPower": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Inverse-distance least-squares exponent",
+                    "minimum": 0.0,
+                    "maximum": 8.0
+                },
+                "distanceWeightFloor": {
+                    "type": "number",
+                    "default": 0.15,
+                    "description": "Minimum normalized stencil distance",
+                    "minimum": 1e-08,
+                    "maximum": 1.0
+                },
+                "svdTolerance": {
+                    "type": "number",
+                    "default": 1e-11,
+                    "description": "Relative rank cutoff on singular values, also applied through squared normal-matrix eigenvalues",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "maximumConditionNumber": {
+                    "type": "number",
+                    "default": 1000000000000.0,
+                    "description": "Maximum accepted reconstruction condition estimate",
+                    "minimum": 1.0
+                },
+                "variationalIterations": {
+                    "type": "integer",
+                    "default": 30,
+                    "description": "Traditional variational outer neighbour sweeps",
+                    "minimum": 1.0,
+                    "maximum": 10000.0
+                },
+                "variationalRelaxation": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Relaxation for the traditional midpoint variational sweeps",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "variationalWeight": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Variational w: shared weight on squared value and first-derivative jumps, relative to the Hessian jump",
+                    "minimum": 0.0
+                },
+                "enableLimiter": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable one-coefficient Barth--Jespersen limiting"
+                }
+            }
+        },
+        "physics": {
+            "type": "object",
+            "description": "Ideal-gas Euler/Navier--Stokes model",
+            "properties": {
+                "gamma": {
+                    "type": "number",
+                    "default": 1.4,
+                    "description": "Ideal-gas heat-capacity ratio",
+                    "minimum": 1.0
+                },
+                "riemannSolver": {
+                    "type": "string",
+                    "default": "Roe",
+                    "description": "NCFV inviscid Riemann solver; Roe uses Harten--Yee H2 entropy fixing",
+                    "enum": [
+                        "Roe",
+                        "HLLC",
+                        "HLLEP",
+                        "HLLEP_V1",
+                        "Roe_M1",
+                        "Roe_M3",
+                        "Roe_M4",
+                        "Roe_M5",
+                        "Roe_M6",
+                        "Roe_M7",
+                        "Roe_M8"
+                    ]
+                },
+                "boundaryMode": {
+                    "type": "string",
+                    "default": "FarField",
+                    "description": "Boundary model applied to all external zones",
+                    "enum": [
+                        "FarField",
+                        "SlipWall",
+                        "Symmetry",
+                        "NoSlipAdiabaticWall",
+                        "NoSlipIsothermalWall",
+                        "SupersonicInlet",
+                        "SupersonicOutlet",
+                        "PressureOutlet",
+                        "Periodic"
+                    ]
+                },
+                "initialPrimitive": {
+                    "type": "array",
+                    "default": [
+                        1.0,
+                        0.1,
+                        0.0,
+                        1.0
+                    ],
+                    "description": "Uniform primitive state [rho,u,(v,w),p]"
+                },
+                "farFieldPrimitive": {
+                    "type": "array",
+                    "default": [
+                        1.0,
+                        0.1,
+                        0.0,
+                        1.0
+                    ],
+                    "description": "Far-field primitive state [rho,u,(v,w),p]"
+                },
+                "requireBoundaryZoneCoverage": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require every CGNS external zone to have an explicit boundaryZones entry"
+                },
+                "boundaryZones": {
+                    "type": "array",
+                    "description": "Per-CGNS-zone boundary conditions",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "default": "",
+                                "description": "CGNS boundary-zone name (case-sensitive)"
+                            },
+                            "mode": {
+                                "type": "string",
+                                "default": "FarField",
+                                "description": "Boundary-condition model",
+                                "enum": [
+                                    "FarField",
+                                    "SlipWall",
+                                    "Symmetry",
+                                    "NoSlipAdiabaticWall",
+                                    "NoSlipIsothermalWall",
+                                    "SupersonicInlet",
+                                    "SupersonicOutlet",
+                                    "PressureOutlet",
+                                    "Periodic"
+                                ]
+                            },
+                            "primitive": {
+                                "type": "array",
+                                "default": [],
+                                "description": "Prescribed primitive state [rho,u,(v,w),p]; empty uses far field"
+                            },
+                            "wallVelocity": {
+                                "type": "array",
+                                "default": [],
+                                "description": "Wall velocity [u,v,(w)]; empty means a stationary wall"
+                            },
+                            "wallTemperature": {
+                                "type": "number",
+                                "default": 1.0,
+                                "description": "Isothermal-wall temperature",
+                                "minimum": 0.0
+                            },
+                            "staticPressure": {
+                                "type": "number",
+                                "default": 1.0,
+                                "description": "Pressure-outlet static pressure",
+                                "minimum": 0.0
+                            },
+                            "strongState": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Strongly impose inlet/wall nodal state after every RK stage"
+                            }
+                        }
+                    }
+                },
+                "viscous": {
+                    "type": "object",
+                    "description": "Laminar viscous and heat-flux model",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Enable laminar Navier--Stokes viscous and heat fluxes"
+                        },
+                        "model": {
+                            "type": "string",
+                            "default": "Sutherland",
+                            "description": "Molecular viscosity law",
+                            "enum": [
+                                "Constant",
+                                "Sutherland",
+                                "DensityProportional"
+                            ]
+                        },
+                        "dynamicViscosity": {
+                            "type": "number",
+                            "default": 1e-05,
+                            "description": "Constant/reference dynamic viscosity",
+                            "minimum": 0.0
+                        },
+                        "gasConstant": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Ideal-gas specific gas constant",
+                            "minimum": 0.0
+                        },
+                        "prandtlNumber": {
+                            "type": "number",
+                            "default": 0.72,
+                            "description": "Laminar Prandtl number",
+                            "minimum": 0.0
+                        },
+                        "referenceTemperature": {
+                            "type": "number",
+                            "default": 273.15,
+                            "description": "Sutherland reference temperature",
+                            "minimum": 0.0
+                        },
+                        "sutherlandConstant": {
+                            "type": "number",
+                            "default": 110.4,
+                            "description": "Sutherland constant"
+                        },
+                        "spectralRadiusFactor": {
+                            "type": "number",
+                            "default": 4.0,
+                            "description": "Explicit viscous spectral-radius multiplier",
+                            "minimum": 0.0
+                        }
+                    }
+                }
+            }
+        },
+        "initialField": {
+            "type": "object",
+            "description": "Fresh-start field input and overrides",
+            "properties": {
+                "nodeFile": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional CSV/text field: globalNode,rho,u,(v,w),p-or-rhoE"
+                },
+                "isentropicVortex": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Initialize dual means using the analytic isentropic vortex"
+                },
+                "vortexStrength": {
+                    "type": "number",
+                    "default": 5.0,
+                    "description": "Isentropic vortex beta"
+                },
+                "vortexCenter": {
+                    "type": "array",
+                    "default": [
+                        5.0,
+                        5.0,
+                        0.0
+                    ],
+                    "description": "Initial vortex center [x,y,z]"
+                },
+                "nodeFileVariables": {
+                    "type": "string",
+                    "default": "Primitive",
+                    "description": "Variables stored by nodeFile",
+                    "enum": [
+                        "Primitive",
+                        "Conservative"
+                    ]
+                },
+                "nodeFileIndexBase": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Global node-index base used by nodeFile"
+                },
+                "requireCompleteNodeFile": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Require nodeFile to contain every locally-owned global node"
+                },
+                "boxes": {
+                    "type": "array",
+                    "description": "Axis-aligned primitive-state initializers",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "xMin": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Box x minimum"
+                            },
+                            "xMax": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Box x maximum"
+                            },
+                            "yMin": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Box y minimum"
+                            },
+                            "yMax": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Box y maximum"
+                            },
+                            "zMin": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Box z minimum"
+                            },
+                            "zMax": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Box z maximum"
+                            },
+                            "primitive": {
+                                "type": "array",
+                                "default": [],
+                                "description": "Primitive state assigned inside the box"
+                            }
+                        }
+                    }
+                },
+                "planes": {
+                    "type": "array",
+                    "description": "Half-space primitive-state initializers",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "a": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Plane normal x coefficient"
+                            },
+                            "b": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Plane normal y coefficient"
+                            },
+                            "c": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Plane normal z coefficient"
+                            },
+                            "h": {
+                                "type": "number",
+                                "default": 0.0,
+                                "description": "Half-space offset in a*x+b*y+c*z+h >= 0"
+                            },
+                            "primitive": {
+                                "type": "array",
+                                "default": [],
+                                "description": "Primitive state assigned in the selected half-space"
+                            }
+                        }
+                    }
+                },
+                "expressions": {
+                    "type": "array",
+                    "description": "ExprTk primitive-state initializers",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "program": {
+                                "type": "array",
+                                "default": [],
+                                "description": "ExprTk program using inRegion, globalNode, x[3], and UPrim[dimension+2]"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "time": {
+            "type": "object",
+            "description": "Explicit time integration",
+            "properties": {
+                "iterations": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Number of explicit SSPRK3 steps",
+                    "minimum": 0.0
+                },
+                "timeStep": {
+                    "type": "number",
+                    "default": 0.0001,
+                    "description": "Fixed physical/pseudo time step",
+                    "minimum": 0.0
+                },
+                "useCFLTimeStep": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Derive the explicit step from convective/viscous spectra"
+                },
+                "useLocalTimeStep": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use one CFL step per dual control volume"
+                },
+                "cfl": {
+                    "type": "number",
+                    "default": 0.5,
+                    "description": "Explicit CFL number",
+                    "minimum": 0.0
+                },
+                "minimumTimeStep": {
+                    "type": "number",
+                    "default": 1e-12,
+                    "description": "Lower time-step clamp",
+                    "minimum": 0.0
+                },
+                "maximumTimeStep": {
+                    "type": "number",
+                    "default": 10000000000.0,
+                    "description": "Upper time-step clamp",
+                    "minimum": 0.0
+                },
+                "endTime": {
+                    "type": "number",
+                    "default": -1.0,
+                    "description": "Stop at this physical time; negative disables time-based stopping"
+                },
+                "reportInterval": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Residual reporting interval",
+                    "minimum": 1.0
+                }
+            }
+        },
+        "io": {
+            "type": "object",
+            "description": "VTK result and DNDS restart I/O",
+            "properties": {
+                "writeVTK": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable distributed VTU/PVTU result output"
+                },
+                "writeInitial": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Write the initialized/restarted state"
+                },
+                "writeFinal": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Write the state after the requested iterations"
+                },
+                "outputInterval": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "VTK output interval; zero disables periodic output",
+                    "minimum": 0.0
+                },
+                "outputPrefix": {
+                    "type": "string",
+                    "default": "../data/out/NCFV/solution",
+                    "description": "VTK output path prefix"
+                },
+                "vtkSeriesName": {
+                    "type": "string",
+                    "default": "../data/out/NCFV/solution_series",
+                    "description": "PVTU series path prefix; empty disables series"
+                },
+                "vtkFloatEncoding": {
+                    "type": "string",
+                    "default": "binary",
+                    "description": "VTU float encoding",
+                    "enum": [
+                        "binary",
+                        "ascii"
+                    ]
+                },
+                "asciiPrecision": {
+                    "type": "integer",
+                    "default": 12,
+                    "description": "VTU ASCII precision",
+                    "minimum": 1.0,
+                    "maximum": 17.0
+                },
+                "restartInput": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Restart input base path without .dnds.h5/.dir suffix; empty starts fresh"
+                },
+                "restartInterval": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Restart-write interval; zero disables periodic checkpoints",
+                    "minimum": 0.0
+                },
+                "writeFinalRestart": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Write a restart after the requested iterations"
+                },
+                "restartPrefix": {
+                    "type": "string",
+                    "default": "../data/out/NCFV/restart",
+                    "description": "Restart output path prefix"
+                },
+                "restartSerializer": {
+                    "type": "object",
+                    "description": "DNDS JSON/HDF5 restart backend",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "default": "H5",
+                            "description": "Serializer backend: \"JSON\" or \"H5\"",
+                            "enum": [
+                                "JSON",
+                                "H5"
+                            ]
+                        },
+                        "hdfDeflateLevel": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "HDF5 deflate compression level",
+                            "minimum": 0.0,
+                            "maximum": 9.0
+                        },
+                        "hdfChunkSize": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "HDF5 chunk size",
+                            "minimum": 0.0
+                        },
+                        "hdfCollOnData": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HDF5 collective I/O on data arrays"
+                        },
+                        "hdfCollOnMeta": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "HDF5 collective I/O on metadata"
+                        },
+                        "jsonBinaryDeflateLevel": {
+                            "type": "integer",
+                            "default": 5,
+                            "description": "JSON binary deflate level",
+                            "minimum": 0.0,
+                            "maximum": 9.0
+                        },
+                        "jsonUseCodecOnUInt8": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Apply codec on uint8 arrays in JSON"
+                        }
+                    }
+                },
+                "writeResolvedConfiguration": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Write the resolved NCFV JSON next to result output"
+                }
+            }
+        }
+    },
+    "$schema": "http://json-schema.org/draft-07/schema#"
+}

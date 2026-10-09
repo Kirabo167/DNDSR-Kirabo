@@ -33,7 +33,7 @@ Compact Finite Volume methods with MPI parallelism and optional CUDA GPU support
   - `cpp/` — C++ unit tests (doctest, registered with CTest)
   - `DNDS/`, `Geom/`, `CFV/`, `Euler/`, `EulerP/` — Python tests
     (pytest + pytest-timeout; use `mpirun` explicitly)
-- `cases/` — JSON configuration files for solver runs
+- `cases/` — JSON/JSONC configurations grouped by `euler`, `acm`, `ncfv_euler`, then `2D`/`3D`
 - `external/` — Git submodule (`cfd_externals`) and header-only libraries
 
 ## Build Commands
@@ -59,7 +59,9 @@ cmake --preset cuda           # Release with CUDA and tests
 cmake --build build -t euler -j 8
 # Solver targets: euler, euler2D, euler3D, eulerSA, eulerSA3D, euler2EQ, euler2EQ3D,
 # eulerEX, eulerEX3D, ACM, acm2D, acm3D, acmVariable2D,
-# acmVariable3D, NCFV
+# acmVariable3D, ncfv_euler2D, ncfv_euler3D
+# Solver groups: all_euler, all_acm, all_ncfv_euler, all_solvers
+# Build presets: solvers, acm, ncfv_euler (release-test configuration)
 # Tools: eulerState; with Cantera: canteraConstVolTrajectory, cantera_Test
 # Python modules: dnds_pybind11, geom_pybind11, cfv_pybind11, eulerP_pybind11
 ```
@@ -192,11 +194,23 @@ mechanism) are relative to the CWD at invocation time** — typically
 `build/`.  Use `../` to reach the project root:
 
 ```bash
-# From build/ — typical invocation
-(cd build && \
+# From the Cantera-enabled build directory
+(cd build-reactive && \
   DNDS_MECH_PATH=../external/cfd_externals/install/data \
-  ./app/eulerEX.exe 14 ../cases/eulerEX/react_test.json)
+  ./app/eulerEX.exe 14 ../cases/euler/2D/EX/react_test.json)
 ```
+
+Cases live under `cases/{euler,acm,ncfv_euler}/{2D,3D}`; Euler RANS/EX
+variants and variable-density ACM have their own subdirectories. Schemas are
+stored beside their model's cases. `euler` is the upstream five-variable NS
+model on 2D geometry; `euler2D` is the four-variable NS_2D model.
+
+Euler reads an existing case-adjacent `<target>_default_config.json` and does
+not overwrite it; absent files use compiled defaults. Match final merged
+parameters when comparing to upstream. ACM loads complete single-file cases;
+NCFV merges typed defaults. `--check-config` performs parameter/selection
+checks without reading meshes or writing simulation results. See
+`docs/guides/solver_split_zh.md` for the pinned upstream comparison and limits.
 
 **Path conventions in configs:**
 - `meshFile`: relative to CWD (e.g. `../data/mesh/IV10_10.cgns`)
@@ -249,8 +263,8 @@ cmake .. -DDNDS_BUILD_TESTS=ON -DDNDS_USE_CANTERA=OFF
 DNDS_TEST_OMP_THREADS=4 cmake .. \
   -DDNDS_BUILD_TESTS=ON -DDNDS_USE_CANTERA=OFF
 
-# Build all C++ unit tests (all categories)
-cmake --build . -t all_unit_tests -j8
+# Build solver entry points needed by solver_config CTests, plus all unit tests
+cmake --build . -t all_solvers all_unit_tests -j8
 
 # Build only specific category
 cmake --build . -t dnds_unit_tests -j8   # DNDS/ tests only
@@ -268,6 +282,9 @@ ctest --test-dir . -LE python --output-on-failure
 # Run with aggregated doctest summary (shows total test cases + assertions)
 python ../scripts/ctest_summary.py --output-on-failure
 python ../scripts/ctest_summary.py -R "^dnds_"   # filter by category
+
+# Configuration and wrong-model/dimension checks
+ctest --test-dir . -L solver_config --output-on-failure
 
 # Run tests by category prefix
 ctest --test-dir . -R "^dnds_" --output-on-failure   # DNDS tests

@@ -2,7 +2,7 @@
 """Generate the Chinese ACM2D cylinder-case presentation.
 
 The presentation documents the single-file case configuration in
-``cases/acm2D/acm2D.json`` and uses the real ``CylinderA1.cgns`` connectivity
+``cases/acm/2D/acm2D.json`` and uses the real ``CylinderA1.cgns`` connectivity
 to render the mesh figures.  All diagrams other than the mesh images are
 native PowerPoint shapes so that the deck remains easy to edit.
 
@@ -32,7 +32,7 @@ from pptx.util import Inches, Pt
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CASE_FILE = ROOT / "cases" / "acm2D" / "acm2D.json"
+CASE_FILE = ROOT / "cases" / "acm" / "2D" / "acm2D.json"
 MESH_FILE = ROOT / "data" / "mesh" / "CylinderA1.cgns"
 OUT_DIR = ROOT / "docs" / "presentations"
 ASSET_DIR = OUT_DIR / "assets" / "acm2d_cylinder_case"
@@ -700,7 +700,7 @@ def build_presentation(config: dict) -> None:
     add_text(slide, "实际分区由单元邻接图决定，并非规则块状切分", 3.06, 4.91, 3.1, 0.30, size=10.5, color=MUTED)
     add_card(slide, 6.98, 1.68, 5.63, 1.68, fill=NAVY_3, line=CYAN)
     add_text(slide, "启动命令", 7.27, 1.96, 1.1, 0.28, size=12, color=CYAN_2, bold=True)
-    command = "OMP_NUM_THREADS=1 mpirun -np 32 \\\n  ./app/euler.exe ../cases/acm2D/acm2D.json"
+    command = "OMP_NUM_THREADS=1 mpirun -np 32 \\\n  ./app/acm2D.exe ../cases/acm/2D/acm2D.json"
     add_text(slide, command, 7.27, 2.37, 4.92, 0.66, size=10.6, color=WHITE, font=FONT_MONO)
     add_card(slide, 6.98, 3.65, 5.63, 1.81, fill=NAVY_3, line=GRID)
     add_rich_lines(
@@ -778,7 +778,7 @@ def build_presentation(config: dict) -> None:
     add_table(slide, rows, 0.55, 1.69, 8.58, 4.86, widths=[2.05, 3.15, 3.38], font_size=10.7)
     add_card(slide, 9.45, 1.69, 3.15, 2.12, fill=NAVY_3, line=CYAN)
     add_text(slide, "唯一算例文件", 9.74, 1.99, 2.58, 0.34, size=15, color=CYAN_2, bold=True, align=PP_ALIGN.CENTER)
-    add_text(slide, "cases/acm2D/\nacm2D.json", 9.74, 2.53, 2.58, 0.72, size=17, color=WHITE, bold=True, align=PP_ALIGN.CENTER, font=FONT_MONO)
+    add_text(slide, "cases/acm/2D/\nacm2D.json", 9.74, 2.53, 2.58, 0.72, size=17, color=WHITE, bold=True, align=PP_ALIGN.CENTER, font=FONT_MONO)
     add_card(slide, 9.45, 4.13, 3.15, 2.42, fill=NAVY_3, line=ORANGE)
     add_text(slide, "推荐调整顺序", 9.74, 4.43, 2.58, 0.34, size=15, color=ORANGE, bold=True, align=PP_ALIGN.CENTER)
     add_text(slide, "① 先跑一阶/小CFL\n② 再启用二次+CWBAP\n③ 最后提高CFL并检查阻力", 9.76, 5.00, 2.54, 1.08, size=12.3, color=WHITE, align=PP_ALIGN.CENTER)

@@ -1,0 +1,82 @@
+{
+    "solver": {
+        "type": "ncfv_euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
+    "$schema": "ncfv_euler3D_schema.json",
+    "dimension": 3,
+    "mesh": {
+        "meshFile": "../data/mesh/taylor_green/tgv_hex_8.cgns",
+        "periodicTolerance": 1e-8,
+        "periodicLengths": [6.283185307179586, 6.283185307179586, 6.283185307179586],
+        "periodicBoundaryPairs": ["bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"]
+    },
+    "algorithm": {
+        "mode": "EfficientDifferential",
+        "quadratureOrder": 4,
+        "retainMicroGeometry": false
+    },
+    "reconstruction": {
+        "enableLimiter": false,
+        "stencilSizeFactor": 1.7,
+        "maximumStencilRings": 4
+    },
+    "physics": {
+        "gamma": 1.4,
+        "riemannSolver": "Roe",
+        "initialPrimitive": [1, 0, 0, 0, 71.42857142857143],
+        "farFieldPrimitive": [1, 0, 0, 0, 71.42857142857143],
+        "requireBoundaryZoneCoverage": true,
+        "boundaryZones": [
+            {"name": "bc-2", "mode": "Periodic"},
+            {"name": "bc-2-1", "mode": "Periodic"},
+            {"name": "bc-3", "mode": "Periodic"},
+            {"name": "bc-3-1", "mode": "Periodic"},
+            {"name": "bc-4", "mode": "Periodic"},
+            {"name": "bc-4-1", "mode": "Periodic"}
+        ],
+        "viscous": {
+            "enabled": true,
+            "model": "Constant",
+            "dynamicViscosity": 0.000625,
+            "gasConstant": 1,
+            "prandtlNumber": 0.71
+        }
+    },
+    "initialField": {
+        "expressions": [
+            {
+                "program": [
+                    "inRegion := 1;",
+                    "UPrim[1] := sin(x[0]) * cos(x[1]) * cos(x[2]);",
+                    "UPrim[2] := -cos(x[0]) * sin(x[1]) * cos(x[2]);",
+                    "UPrim[3] := 0;",
+                    "UPrim[4] := 71.42857142857143 + (cos(2*x[0]) + cos(2*x[1])) * (cos(2*x[2]) + 2) / 16;",
+                    "UPrim[0] := UPrim[4] / 71.42857142857143;",
+                    "0;"
+                ]
+            }
+        ]
+    },
+    "time": {
+        "iterations": 800,
+        "timeStep": 0.01,
+        "useCFLTimeStep": false,
+        "useLocalTimeStep": false,
+        "endTime": 8.0,
+        "reportInterval": 100
+    },
+    "io": {
+        "writeVTK": true,
+        "writeInitial": false,
+        "writeFinal": true,
+        "outputInterval": 0,
+        "outputPrefix": "../data/out/NCFV/taylor_green/solution",
+        "vtkSeriesName": "../data/out/NCFV/taylor_green/solution",
+        "restartInterval": 0,
+        "writeFinalRestart": false,
+        "writeResolvedConfiguration": true
+    }
+}

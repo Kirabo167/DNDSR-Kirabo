@@ -91,6 +91,6 @@ cmake --build build -t euler acm_test_turbulence -j4
 venv/bin/python scripts/check_acm_rans_cylinder.py --steps 5 --np 1
 ```
 
-检查脚本默认使用 `cases/acm2D/acm2D.json` 的 Re=20 网格和物性，用相同的显式 SSPRK3、CFL 与步数运行层流基线和四种 RANS 模式，分别检查完整步数、有限残差、VTK-HDF 字段名、有限场值及湍流变量正值。结果写到 `/tmp/acm-rans-cylinder-<时间>/report.json`，原始求解日志保存在各模型子目录。该短算例是求解链路测试；Re=20 不用于判断 RANS 的物理准确性。可通过 `--case`、`--np`、`--steps` 和 `--viscosity` 改用合适的高 Reynolds 数算例；物理验证还需足够长的稳态收敛、壁面量和网格敏感性检查。
+检查脚本默认使用 `cases/acm/2D/acm2D.json` 的 Re=20 网格和物性，用相同的显式 SSPRK3、CFL 与步数运行层流基线和四种 RANS 模式，分别检查完整步数、有限残差、VTK-HDF 字段名、有限场值及湍流变量正值。结果写到 `/tmp/acm-rans-cylinder-<时间>/report.json`，原始求解日志保存在各模型子目录。该短算例是求解链路测试；Re=20 不用于判断 RANS 的物理准确性。可通过 `--case`、`--np`、`--steps` 和 `--viscosity` 改用合适的高 Reynolds 数算例；物理验证还需足够长的稳态收敛、壁面量和网格敏感性检查。
 
 在无图形会话的计算节点上，脚本默认设置 `HWLOC_COMPONENTS=-gl`，避免 OpenMPI 的 hwloc GL 插件反复尝试连接 X11 显示并打印授权提示；旧运行日志表明这些提示有时不会阻止后续计算。直接运行求解器时也可设置同一环境变量。脚本的本机套接字预检查用于区分执行沙箱阻断与求解器失败；若系统禁止创建套接字，MPI 算例必须转到允许本机通信的执行环境。

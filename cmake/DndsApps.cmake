@@ -139,31 +139,28 @@ ADD_EXE_APP("${DNDS_APPS_Geom}" "app/Geom" "geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_CFV}" "app/CFV" "cfv;geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Euler}" "app/Euler" "cfv;geom;dnds;" ON cpp)
 
-set(DNDS_UNIFIED_SOLVER_LIBS acm acmVariable ncfv cfv geom dnds)
+set(DNDS_APPS_Euler_Models)
 foreach(item IN LISTS DNDS_Euler_Models_List)
     string(REPLACE "=" ";" keyval ${item})
     list(GET keyval 0 key)
-    list(APPEND DNDS_UNIFIED_SOLVER_LIBS
-        euler_library_${key}
-        euler_library_fast_${key})
+    list(GET keyval 1 value)
+    set(EXE_NAME "euler${value}")
+    list(APPEND DNDS_APPS_Euler_Models ${EXE_NAME})
+    ADD_EXE_APP("${EXE_NAME}" "app/Euler"
+        "euler_library_${key};euler_library_fast_${key};cfv;geom;dnds;" ON cpp)
 endforeach()
 
-# One run-time-dispatched solver executable replaces all former model-specific
-# Euler, ACM, ACMVariable and NCFV launchers.
-ADD_EXE_APP("euler" "app/Euler" "${DNDS_UNIFIED_SOLVER_LIBS};" OFF cpp)
-target_sources(euler PRIVATE
-    app/Euler/UnifiedSolver_NS.cpp
-    app/Euler/UnifiedSolver_NS_2D.cpp
-    app/Euler/UnifiedSolver_NS_3D.cpp
-    app/Euler/UnifiedSolver_NS_SA.cpp
-    app/Euler/UnifiedSolver_NS_SA_3D.cpp
-    app/Euler/UnifiedSolver_NS_2EQ.cpp
-    app/Euler/UnifiedSolver_NS_2EQ_3D.cpp
-    app/Euler/UnifiedSolver_NS_EX.cpp
-    app/Euler/UnifiedSolver_NS_EX_3D.cpp
-    app/Euler/UnifiedSolver_ACM.cpp
-    app/Euler/UnifiedSolver_ACMVariable.cpp
-    app/Euler/UnifiedSolver_NCFV.cpp)
+# Keep the upstream default executable; every other solver is opt-in.
+set_target_properties(euler PROPERTIES EXCLUDE_FROM_ALL OFF)
+foreach(dimension 2 3)
+    ADD_EXE_APP("acm${dimension}D" "app/ACM"
+        "acm_${dimension}D;cfv;geom;dnds;" ON cpp)
+    ADD_EXE_APP("acmVariable${dimension}D" "app/ACMVariable"
+        "acmVariable_${dimension}D;cfv;geom;dnds;" ON cpp)
+    ADD_EXE_APP("ncfv_euler${dimension}D" "app/NCFV"
+        "ncfv_${dimension}D;cfv;geom;dnds;" ON cpp)
+endforeach()
+ADD_EXE_APP("ACM" "app/ACM" "acm_3D;cfv;geom;dnds;" ON cpp)
 
 ADD_EXE_APP("eulerState" "app/Euler" "euler_library_NS_EX;euler_library_fast_NS_EX;cfv;geom;dnds;" ON cpp)
 set(DNDS_EULER_EXTRA_APPS eulerState)
@@ -181,4 +178,22 @@ endif()
 # -------------------------------------------------------------------
 
 add_custom_target(all_euler)
-add_dependencies(all_euler euler)
+add_dependencies(all_euler ${DNDS_APPS_Euler_Models} ${DNDS_EULER_EXTRA_APPS})
+add_custom_target(all_acm)
+add_dependencies(all_acm ACM acm2D acm3D acmVariable2D acmVariable3D)
+add_custom_target(all_ncfv_euler)
+add_dependencies(all_ncfv_euler ncfv_euler2D ncfv_euler3D)
+add_custom_target(all_solvers)
+add_dependencies(all_solvers all_euler all_acm all_ncfv_euler)
+
+if(DNDS_BUILD_TESTS AND Python_EXECUTABLE)
+    add_test(NAME solver_case_configurations
+        COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_solver_cases.py
+            --build-dir ${CMAKE_BINARY_DIR})
+    add_test(NAME solver_executable_selection
+        COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_solver_cases.py
+            --build-dir ${CMAKE_BINARY_DIR} --negative-only)
+    set_tests_properties(solver_case_configurations solver_executable_selection PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        TIMEOUT 300 LABELS "solver_config" ENVIRONMENT "OMP_NUM_THREADS=1")
+endif()

@@ -691,7 +691,7 @@ ctest --test-dir build \
 
 ### 7.3 建议算例
 
-[euler_config_IV.json](../../cases/euler/euler_config_IV.json) 是等熵涡配置，适合理解初始化、误差评估和高阶重构。它的现有执行路径使用普通 <code>NS</code>，因此状态包含三维速度分量；不要在调试时错误地按四变量 <code>NS_2D</code> 解释数组。
+[euler_config_IV.json](../../cases/euler/2D/euler_config_IV.json) 是等熵涡配置，适合理解初始化、误差评估和高阶重构。它的现有执行路径使用普通 <code>NS</code>，因此状态包含三维速度分量；不要在调试时错误地按四变量 <code>NS_2D</code> 解释数组。
 
 ## 8. 第一遍主动跳过的内容
 

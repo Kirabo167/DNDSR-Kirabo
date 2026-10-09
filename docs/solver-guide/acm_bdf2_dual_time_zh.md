@@ -176,7 +176,7 @@ HWLOC_COMPONENTS=-gl OMP_NUM_THREADS=1 venv/bin/python scripts/check_acm_rans_cy
 ```
 
 三维检查在上述命令中再加入
-`--case cases/acm3D/acm3D_cylinder_Re3900_coarse_SST.json --limiter LocalExtrema`，
+`--case cases/acm/3D/acm3D_cylinder_Re3900_coarse_SST.json --limiter LocalExtrema`，
 并将 `--np 2` 改为 `--np 4`。脚本从 `build/` 调用已编译的 `app/euler.exe`，
 通过命令行覆盖模型和推进参数，并逐步核查 BE/BDF2 阶数及最终输出字段。
 

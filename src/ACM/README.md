@@ -1,7 +1,7 @@
 <!--
 File description: implementation status and integration boundary of the initial ACM module.
 Modifier: Runzhi Ma
-Last modified: 2026-09-02
+Last modified: 2026-10-09
 -->
 
 # ACM high-order initial solver
@@ -43,22 +43,34 @@ Implemented now:
   positivity-bounded SSPRK3 substeps, and frozen eddy-viscosity coupling to the flow equations;
 - DNDS configuration registration, self-contained single-case JSON loading, CLI overrides, and schema output.
 
-Application organization uses the project-wide unified entry point:
+Applications use independent dimension-specific entry points:
 
-- `app/Euler/euler.cpp`: runtime dispatch from the case JSON `solver` object;
-- `SingleBlockApp.hpp`: ACM CLI and configuration workflow selected by that dispatcher;
+- `app/ACM/acm2D.cpp` and `app/ACM/acm3D.cpp`: select the compiled ACM dimension;
+- `app/ACM/ACM.cpp`: compatibility entry for the 3D model;
+- `SingleBlockApp.hpp`: ACM CLI, configuration checks and solve workflow;
 - `ACMSolver.*`: mesh/reconstruction/time-loop assembly;
 - `ACMEvaluator.*`: high-order spatial residual and frozen-reconstruction Jacobian;
 - `ACMTurbulence.*`: model-local viscosity, diffusion, source, and boundary kernels;
 - `ACMTurbulenceTransport.*`: dimension-generic finite-volume transport and flow coupling;
 - `acm2D.cpp` and `acm3D.cpp`: explicit template instantiations for four ACM variables.
 
-Case configuration uses one file per case. `cases/acm2D/acm2D.json` and
-`cases/acm3D/acm3D.json` each contain the complete physical, numerical, mesh, reconstruction,
+Case configuration uses one file per case. `cases/acm/2D/acm2D.json` and
+`cases/acm/3D/acm3D.json` each contain the complete physical, numerical, mesh, reconstruction,
 boundary, and initial-state configuration. The application does not search for or merge an
-adjacent base file. A user-supplied positional JSON path completely selects the case and
-ACM dimension/model; `-k/-v` overrides remain available for short parameter studies. Build
-and run it as `./app/euler.exe ../cases/acm2D/acm2D.json`.
+adjacent base file. The executable fixes the dimension; the case's `solver.type="ACM"` and
+`solver.model` must match it. `-k/-v` overrides remain available for short studies.
+From the repository root:
+
+```bash
+cmake --build build --target acm2D acm3D --parallel 4
+(cd build && ./app/acm2D.exe ../cases/acm/2D/acm2D.json --check-config)
+(cd build && ./app/acm2D.exe ../cases/acm/2D/acm2D.json)
+(cd build && ./app/acm3D.exe --emit-schema)
+```
+
+`acm_core` contains shared kernels; `acm_2D` and `acm_3D` contain separate
+instantiations. The `acm` module target aggregates both for tests; `all_acm`
+builds constant-/variable-density variants and the compatibility executable.
 
 Turbulence is modular and does not enlarge the ACM flow state. The flow solver always stores
 `[u,v,w,p]`; a separate distributed two-entry field stores only the active turbulence variables:
@@ -190,7 +202,7 @@ From the project root:
 
 ```bash
 cmake -S . -B build -DDNDS_USE_CANTERA=OFF -DDNDS_BUILD_TESTS=ON
-cmake --build build --target euler acm_rans_bdf2_tests -j8
+cmake --build build --target all_acm acm_rans_bdf2_tests --parallel 4
 ctest --test-dir build -L '^acm_rans_bdf2$' --output-on-failure
 ```
 
@@ -199,7 +211,10 @@ The CTest label selects the RANS closure tests, BDF2 kernels and active-variable
 and physical-time regressions for Wilcox, SA, and realizable k-epsilon. The latter include
 independent BE/BDF2 discrete solutions and time-step refinement for SA and k-epsilon.
 These tests set `HWLOC_COMPONENTS=-gl` to avoid GL/X11 probing on headless compute nodes.
-All flow and turbulence models are selected at runtime through the unified `euler` executable.
+The executable selects dimension/density family; flow and turbulence settings
+are selected at runtime through that ACM variant's JSON. See
+[the migration guide](../../docs/guides/solver_split_zh.md) for the upstream
+comparison and verification scope.
 
 Current initial-version limits:
 

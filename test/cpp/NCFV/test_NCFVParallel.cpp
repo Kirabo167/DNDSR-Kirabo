@@ -92,7 +92,7 @@ namespace
     {
         Configuration configuration = MakeConfiguration(mode);
         configuration.mesh.meshFile =
-            (ProjectRoot() / "cases/NCFV/generated_periodic_meshes/periodic_hex_iv10.cgns").string();
+            (ProjectRoot() / "cases/ncfv_euler/3D/generated_periodic_meshes/periodic_hex_iv10.cgns").string();
         configuration.mesh.periodicLengths = {10, 10, 4};
         configuration.mesh.periodicBoundaryPairs = {
             "bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"};

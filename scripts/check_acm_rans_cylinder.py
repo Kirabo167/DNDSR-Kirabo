@@ -40,7 +40,7 @@ STEP_PATTERN = re.compile(
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", type=Path, default=ROOT / "cases/acm2D/acm2D.json")
+    parser.add_argument("--case", type=Path, default=ROOT / "cases/acm/2D/acm2D.json")
     parser.add_argument("--mesh", type=Path, help="Override the case mesh without rewriting its JSON")
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
     parser.add_argument("--steps", type=int, default=5)
@@ -92,7 +92,7 @@ def arguments() -> argparse.Namespace:
 
 
 def command(args: argparse.Namespace, model: str, model_dir: Path) -> list[str]:
-    executable = (args.build_dir / "app/euler.exe").resolve()
+    executable = (args.build_dir / "app/acm2D.exe").resolve()
     invocation = [str(executable), str(args.case.resolve())]
     overrides = {
         "/turbulenceSettings/model": model,

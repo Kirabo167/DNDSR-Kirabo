@@ -902,6 +902,5 @@ namespace DNDS::NCFV
                 _configuration.io.restartPrefix, _currentIteration));
     }
 
-    template class Solver<2>;
-    template class Solver<3>;
+    template class Solver<DNDS_NCFV_INSTANTIATION_DIM>;
 }

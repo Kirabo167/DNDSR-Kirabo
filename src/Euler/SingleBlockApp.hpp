@@ -48,6 +48,18 @@ namespace DNDS::Euler
         return "_error_app_name_";
     }
 
+    inline std::string getSingleBlockCaseDirectory(EulerModel model)
+    {
+        std::string directory = getGeomDim_Fixed(model) == 2 ? "../cases/euler/2D" : "../cases/euler/3D";
+        if (model == NS_SA || model == NS_SA_3D)
+            directory += "/SA";
+        else if (model == NS_2EQ || model == NS_2EQ_3D)
+            directory += "/2EQ";
+        else if (model == NS_EX || model == NS_EX_3D)
+            directory += "/EX";
+        return directory;
+    }
+
     /**
      * @brief Main entry point for single-block solver console applications.
      *
@@ -82,9 +94,9 @@ namespace DNDS::Euler
         MPIInfo mpi;
         mpi.setWorld();
 
-        std::string defaultConfJson = "../cases/"s + getSingleBlockAppName(model) +
+        std::string defaultConfJson = getSingleBlockCaseDirectory(model) +
                                       "/"s + getSingleBlockAppName(model) + "_default_config.json"s;
-        std::string confJson = "../cases/"s + getSingleBlockAppName(model) +
+        std::string confJson = getSingleBlockCaseDirectory(model) +
                                "/"s + getSingleBlockAppName(model) + "_config.json";
         std::vector<std::string> overwriteKeys, overwriteValues;
 
@@ -104,13 +116,26 @@ namespace DNDS::Euler
             .help("Print JSON Schema for this solver's configuration and exit")
             .flag()
             .default_value(false);
+        mainParser.add_argument("--check-config")
+            .help("Validate configuration without loading meshes or writing results")
+            .flag().default_value(false);
 
         RegisterSignalHandler();
         GetSetVersionName(DNDS_VERSION_STRING);
 
         try
         {
-            mainParser.parse_args(argc, argv);
+            // Preserve the upstream EulerEX/EulerEX3D positional state-size argument.
+            std::vector<char *> launchArguments(argv, argv + argc);
+            if constexpr (getnVarsFixed(model) == DynamicSize)
+            {
+                if (argc > 1 && std::string(argv[1]).find_first_not_of("0123456789") == std::string::npos)
+                {
+                    fieldNVariables = std::stoi(argv[1]);
+                    launchArguments.erase(launchArguments.begin() + 1);
+                }
+            }
+            mainParser.parse_args(static_cast<int>(launchArguments.size()), launchArguments.data());
             if (mainParser.get<bool>("--debug"))
             {
                 Debug::isDebugging = true;
@@ -134,7 +159,7 @@ namespace DNDS::Euler
         {
             std::cerr << err.what() << std::endl;
             std::cerr << mainParser;
-            std::abort();
+            return 1;
         }
 
         // ---- --emit-schema: print JSON Schema and exit (no MPI, no mesh) ----
@@ -153,6 +178,9 @@ namespace DNDS::Euler
                     std::string("DNDSR ") + getSingleBlockAppName(model) + " configuration");
                 schema["$schema"] = "http://json-schema.org/draft-07/schema#";
                 schema["title"] = schema["description"];
+                SolverSelection::ConstrainSchema(schema,
+                    {"Euler", "CFV", GetEulerModelName(model), nVars},
+                    getnVarsFixed(model) == DynamicSize);
                 std::cout << schema.dump(4) << std::endl;
             }
             MPI::Barrier(mpi.comm);
@@ -161,9 +189,32 @@ namespace DNDS::Euler
 
         try
         {
+            std::ifstream selectionInput(confJson);
+            DNDS_check_throw_info(selectionInput.good(), "configuration file not found: " + confJson);
+            auto selectionDocument = nlohmann::ordered_json::parse(selectionInput, nullptr, true, true);
+            for (std::size_t i = 0; i < overwriteKeys.size(); ++i)
+            {
+                const nlohmann::ordered_json::json_pointer key(overwriteKeys[i]);
+                try
+                {
+                    selectionDocument[key] = nlohmann::ordered_json::parse(overwriteValues[i]);
+                }
+                catch (const nlohmann::ordered_json::parse_error &)
+                {
+                    selectionDocument[key] = overwriteValues[i];
+                }
+            }
             int nVars = getnVarsFixed(model);
             if (nVars == DynamicSize)
+            {
                 nVars = fieldNVariables;
+                if (selectionDocument.contains("solver"))
+                    nVars = selectionDocument["solver"].value("fieldNVariables", nVars);
+                DNDS_check_throw_info(nVars >= getDim_Fixed(model) + 2, "Euler dynamic state size is too small");
+            }
+            const SolverSelection expected{"Euler", "CFV", GetEulerModelName(model), nVars};
+            if (selectionDocument.contains("solver"))
+                selectionDocument["solver"].get<SolverSelection>().Require(expected);
             if (mpi.rank == 0)
                 log() << "Current MPI thread level: " << MPI::GetMPIThreadLevel() << std::endl;
             auto strategy = MPI::CommStrategy::Instance().GetArrayStrategy();
@@ -173,8 +224,13 @@ namespace DNDS::Euler
                 log() << "Reading configuration from " << confJson << std::endl;
                 log() << "Using default configuration from " << defaultConfJson << std::endl;
             }
-            solver.ConfigureFromJson(defaultConfJson, false);
-            solver.ConfigureFromJson(defaultConfJson, true, confJson, overwriteKeys, overwriteValues);
+            solver.ConfigureFromJson(
+                std::filesystem::exists(defaultConfJson) ? defaultConfJson : "",
+                true, confJson, overwriteKeys, overwriteValues,
+                mainParser.get<bool>("--check-config"));
+            solver.config.solver.Require(expected);
+            if (mainParser.get<bool>("--check-config"))
+                return 0;
             solver.validateConfigFiles();
             {
                 // Ensure all output directories exist (safe collective mode)
@@ -199,12 +255,12 @@ namespace DNDS::Euler
         catch (const std::exception &e)
         {
             std::cerr << "DNDS top-level exception: " << e.what() << std::endl;
-            std::abort();
+            return 1;
         }
         catch (...)
         {
             std::cerr << "Unknown exception" << std::endl;
-            std::abort();
+            return 1;
         }
         return 0;
     }

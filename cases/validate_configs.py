@@ -87,6 +87,8 @@ def load_json_with_comments(path: str | Path) -> dict:
 # ---------------------------------------------------------------------------
 
 SCHEMA_PREFIX_ORDER = sorted([
+    "acmVariable2D", "acmVariable3D", "acm2D", "acm3D",
+    "ncfv_euler2D", "ncfv_euler3D",
     "euler2EQ3D",
     "euler2EQ",
     "eulerSA3D",
@@ -131,8 +133,8 @@ def resolve_schema(config_path: Path, cases_dir: Path,
         elif stem.startswith(prefix):
             matched = True
         if matched:
-            schema_file = cases_dir / f"{prefix}_schema.json"
-            return schema_file if schema_file.is_file() else None
+            matches = sorted(cases_dir.rglob(f"{prefix}_schema.json"))
+            return matches[0] if len(matches) == 1 else None
 
     return None
 

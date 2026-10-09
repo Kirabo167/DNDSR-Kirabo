@@ -376,8 +376,8 @@ TEST_CASE("0D const-vol — implicit Euler, species-only Newton, T via PhysicsPr
 TEST_CASE("0D const-vol — react_test history tracks Cantera reactor")
 {
     std::ifstream fin;
-    for (const char *path : {"cases/eulerEX/react_test.json", "../cases/eulerEX/react_test.json",
-                             "../../cases/eulerEX/react_test.json", "../../../cases/eulerEX/react_test.json"})
+    for (const char *path : {"cases/euler/2D/EX/react_test.json", "../cases/euler/2D/EX/react_test.json",
+                             "../../cases/euler/2D/EX/react_test.json", "../../../cases/euler/2D/EX/react_test.json"})
     {
         fin.open(path);
         if (fin.good())

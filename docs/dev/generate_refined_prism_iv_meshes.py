@@ -235,8 +235,8 @@ def main() -> None:
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path,
-                        default=root / "cases/NCFV/iv80_3d_1_dnds.cgns")
-    parser.add_argument("--output-dir", type=Path, default=root / "cases/NCFV")
+                        default=root / "cases/ncfv_euler/3D/iv80_3d_1_dnds.cgns")
+    parser.add_argument("--output-dir", type=Path, default=root / "cases/ncfv_euler/3D")
     parser.add_argument("--sizes", type=int, nargs="+", default=[160, 320])
     args = parser.parse_args()
     if any(size not in (160, 320) for size in args.sizes):

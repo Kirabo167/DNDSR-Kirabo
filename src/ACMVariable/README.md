@@ -4,12 +4,29 @@ Author and maintainer: Runzhi Ma (2026-09-04)
 
 This directory is an independent incompressible variable-density artificial-
 compressibility solver. It does not modify `Euler` or constant-density `ACM`.
-It is launched through the unified `build/app/euler.exe`; the case JSON selects
-`solver.type="ACMVariable"` and the 2-D or 3-D model.
+Launch `build/app/acmVariable2D.exe` or `build/app/acmVariable3D.exe`.
+The case uses `solver.type="ACMVariable"`, `solver.discretization="CFV"`
+and the matching `VariableDensity2D` or `VariableDensity3D` model. Cases live
+under `cases/acm/{2D,3D}/variable_density/`.
 The solved flow state is `U=[rho,rho*u,rho*v,rho*w,p]`; a 2-D mesh uses the
 same five-entry storage and keeps the out-of-plane equation for modular 2-D/3-D
 assembly. Physical-time histories contain only density and momentum. Pressure
 is an algebraic Lagrange multiplier for the discrete divergence constraint.
+
+## Build and configuration checks
+
+```bash
+cmake --build build --target acmVariable2D acmVariable3D --parallel 4
+(cd build && ./app/acmVariable2D.exe \
+    ../cases/acm/2D/variable_density/acmVariable2D.json --check-config)
+(cd build && mpirun -np 4 ./app/acmVariable3D.exe \
+    ../cases/acm/3D/variable_density/acmVariable3D.json)
+```
+
+Each case is complete; no adjacent Euler-style default file is merged.
+`acmVariable_core` is shared and `acmVariable_2D` / `acmVariable_3D` hold
+the separate instantiations. `--emit-schema` describes the selected executable.
+See [the solver migration guide](../../docs/guides/solver_split_zh.md).
 
 ## File map
 

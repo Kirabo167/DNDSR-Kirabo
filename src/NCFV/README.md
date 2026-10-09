@@ -220,18 +220,20 @@ NCFV 只保留长期稀疏 MPI 路径：
 
 ## 4. 构建与运行
 
-模块目录为 `src/NCFV/`，C++ 命名空间为 `DNDS::NCFV`，库目标为 `ncfv`。
-NCFV 与 Euler/ACM 共用统一程序目标 `euler`，可执行文件为
-`build/app/euler.exe`；由案例 JSON 的 `solver.discretization="NCFV"` 分派。
+模块目录和命名空间仍为 `src/NCFV/`、`DNDS::NCFV`。独立程序目标为
+`ncfv_euler2D` 和 `ncfv_euler3D`，不再由 `euler` 分派。公共代码放在 `ncfv_core`，
+二维、三维实例化分别放在 `ncfv_2D`、`ncfv_3D`；模块测试用 `ncfv` 聚合两者。
+JSON 中 `solver.type="ncfv_euler"`、`solver.discretization="NCFV"`、
+`solver.model="IdealGas"`；`dimension` 和 `fieldNVariables=dimension+2` 必须匹配程序。
 
 ```bash
-cmake -S . -B build
-cmake --build build -t euler -j8
+cmake --preset release-test
+cmake --build build --target all_ncfv_euler --parallel 4
 
-cd build
-./app/euler.exe ../cases/NCFV/NCFV.json
-./app/euler.exe ../cases/NCFV/NCFV_traditional.json
-mpirun --oversubscribe -np 4 ./app/euler.exe ../cases/NCFV/NCFV.json
+(cd build && ./app/ncfv_euler2D.exe ../cases/ncfv_euler/2D/ncfv_euler2D.json)
+(cd build && ./app/ncfv_euler2D.exe ../cases/ncfv_euler/2D/NCFV_traditional.json)
+(cd build && mpirun -np 4 ./app/ncfv_euler3D.exe \
+    ../cases/ncfv_euler/3D/NCFV_periodic_hex_iv10.json)
 ```
 
 模式只由下列 JSON 字段切换：
@@ -243,29 +245,29 @@ mpirun --oversubscribe -np 4 ./app/euler.exe ../cases/NCFV/NCFV.json
 ```
 
 改为 `"TraditionalQuadrature"` 即进入普通三阶数值积分路径。二维示例为
-`cases/NCFV/NCFV.json` 和 `NCFV_traditional.json`，三维示例为
-`NCFV_3d.json`。命令行也支持 JSON pointer 覆盖及配置 schema 输出：
+`cases/ncfv_euler/2D/ncfv_euler2D.json` 和 `cases/ncfv_euler/2D/NCFV_traditional.json`，三维示例为
+`cases/ncfv_euler/3D/ncfv_euler3D.json`。命令行也支持 JSON pointer 覆盖及配置 schema 输出：
 
 ```bash
-./app/euler.exe ../cases/NCFV/NCFV.json --emit-schema
-./app/euler.exe ../cases/NCFV/NCFV.json \
+./app/ncfv_euler2D.exe ../cases/ncfv_euler/2D/ncfv_euler2D.json --emit-schema
+./app/ncfv_euler2D.exe ../cases/ncfv_euler/2D/ncfv_euler2D.json \
   -k /algorithm/mode -v TraditionalQuadrature
 ```
 
 传统变分重构的三棱柱等熵涡示例为
-`cases/NCFV/NCFV_traditional_variational_vortex.json`，默认 IV10、
+`cases/ncfv_euler/3D/NCFV_traditional_variational_vortex.json`，默认 IV10、
 固定步长 0.2，推进至 `t=1.6`：
 
 ```bash
 cd build
-mpirun -np 1 ./app/euler.exe ../cases/NCFV/NCFV_traditional_variational_vortex.json
+mpirun -np 1 ./app/ncfv_euler3D.exe ../cases/ncfv_euler/3D/NCFV_traditional_variational_vortex.json
 ```
 
 在同一网格、变分参数和时间步长下，仅切换通量积分实现可运行
 “变分重构一次导数 + 高效通量积分”：
 
 ```bash
-mpirun -np 1 ./app/euler.exe ../cases/NCFV/NCFV_traditional_variational_vortex.json \
+mpirun -np 1 ./app/ncfv_euler3D.exe ../cases/ncfv_euler/3D/NCFV_traditional_variational_vortex.json \
   -k /algorithm/mode -v EfficientDifferential \
   -k /io/outputPrefix -v ../data/out/NCFV/efficient_variational/iv10/solution
 ```
@@ -292,6 +294,11 @@ mpirun -np 1 ./app/euler.exe ../cases/NCFV/NCFV_traditional_variational_vortex.j
 通量积分依赖裁剪精确的节点 owner/ghost halo；这两层通信结构均不再由
 JSON 开关选择。
 
+`--check-config` 可检查配置与程序是否匹配，不读取网格，也不运行时间推进。
+schema 位于对应维度目录中；旧版被禁用的 `Roe_M2` 配置已迁移为 `Roe`，历史误差与
+计时数据需重新计算后才能比较。迁移路径、校验命令及上游差异见
+[求解器拆分说明](../../docs/guides/solver_split_zh.md)。
+
 ## 5. 黏性、边界、初场与 I/O
 
 历史更名说明：VertexFV → NCFV 的更名本身不改变高效/传统模式或重启数据结构；
@@ -299,7 +306,7 @@ JSON 开关选择。
 新配置及默认输出使用 `data/out/NCFV/`。更名前已完成的计算、重启和视频仍
 保留在 `data/out/vertexFV/`，已发布报告的文件名也不变。
 历史收敛分析脚本默认继续读取归档结果。重启时可在新配置中将
-`io.restartInput` 指向原重启前缀，网格路径则使用 `cases/NCFV/` 下的新位置。
+`io.restartInput` 指向原重启前缀，网格路径则使用 `cases/ncfv_euler/3D/` 下的新位置。
 旧源码目录、头文件和程序目标不再作为接口保留。
 
 层流 Navier–Stokes 通量复用 `Euler::Gas` 的守恒量梯度转换、牛顿应力与
@@ -364,11 +371,11 @@ H5 重启使用原始节点编号重分配，支持更换 MPI 进程数；JSON �
 存储并校验原始节点次序，要求相同分区。`restartInput` 不含 `.dnds.h5` 或
 `.dir` 后缀。完整运行配置会写入 `outputPrefix.resolved.json`。
 
-可运行的黏性示例为 `cases/NCFV/NCFV_viscous.json`。
+可运行的黏性示例为 `cases/ncfv_euler/2D/NCFV_viscous.json`。
 
 ## 6. 周期等熵涡
 
-`cases/NCFV/NCFV_iv40.json` 使用用户提供的三棱柱网格及论文
+`cases/ncfv_euler/3D/NCFV_iv40.json` 使用用户提供的三棱柱网格及论文
 式 (3-71)、(3-72)。`prepare_iv40.py` 将旧 CGNS ElementRange 边界转换为
 读取器支持的 PointRange/FaceCenter，所有坐标及连接保持原值。
 
@@ -389,7 +396,7 @@ owner/ghost 通信，边通量仍按 edge owner 唯一计算。每个 rank 不�
 
 ```bash
 cd build
-mpirun --oversubscribe -np 4 ./app/euler.exe ../cases/NCFV/NCFV_iv40.json
+mpirun --oversubscribe -np 4 ./app/ncfv_euler3D.exe ../cases/ncfv_euler/3D/NCFV_iv40.json
 ```
 
 ## 7. 测试与当前边界

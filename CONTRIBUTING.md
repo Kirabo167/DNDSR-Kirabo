@@ -69,11 +69,13 @@ pass the non-reactive CPU configuration:
 
 ```bash
 CC=mpicc CXX=mpicxx cmake --preset release-test
-cmake --build --preset tests -j8
+cmake --build --preset solvers --parallel 4
+cmake --build --preset tests --parallel 4
 ctest --preset unit
 ```
 
-`tests` builds `all_unit_tests`; `unit` runs all registered C++ tests while
+`solvers` builds the native entry points used by `solver_config` CTests.
+`tests` builds `all_unit_tests`; `unit` runs the registered native tests while
 excluding the separately managed Python CTest entries.
 The full Geom/CFV/Euler matrix also needs the pinned external meshes described
 in [the migration guide](docs/guides/v0.3.1_new_features_zh.md#72-测试网格).
@@ -85,7 +87,8 @@ or common Gas APIs must also pass the Cantera-enabled configuration:
 
 ```bash
 CC=mpicc CXX=mpicxx cmake --preset reactive-test
-cmake --build --preset reactive -j8
+cmake --build build-reactive --target all_solvers --parallel 4
+cmake --build --preset reactive --parallel 4
 ctest --preset reactive
 ```
 
@@ -146,15 +149,28 @@ See [the test overview](docs/tests/overview.md) for module targets and commands.
    avoid hidden hard-coded fallbacks.
 3. Add default-value, JSON round-trip, and physical-effect tests where
    applicable.
-4. Build all nine schema-producing Euler variants with Cantera enabled and
-   regenerate the full-featured schemas:
+4. Build all 15 schema-producing solver variants. Euler schemas require
+   Cantera; ACM/NCFV can use that build or a separate CPU build. The `schemas`
+   preset builds `all_solvers` in `build-reactive`. Regenerate schemas in their
+   classified case directories:
 
    ```bash
    cmake --preset reactive-test
    cmake --build --preset schemas -j8
-   bash cases/update_schemas.sh build-reactive
+   bash cases/update_schemas.sh build-reactive build
    venv/bin/python cases/validate_configs.py --quiet
    ```
+
+   Native checks additionally validate model/state-size compatibility:
+
+   ```bash
+   python3 scripts/check_solver_cases.py --build-dir build \
+       --reactive-build-dir build-reactive
+   ctest --test-dir build -L solver_config --output-on-failure
+   ```
+
+   JSON tools do not import the Python extension modules. Parameter checks
+   do not read meshes; simulations still require the referenced fixtures.
 
 5. Update the relevant commented example configuration and user documentation.
    Preserve backward-compatible defaults unless the change is explicitly
@@ -204,6 +220,7 @@ software-engineering preferences. Technical discussion is welcome.
 
 - [Building DNDSR](docs/guides/building.md)
 - [v0.3.1 features and migration notes](docs/guides/v0.3.1_new_features_zh.md)
+- [Solver split and upstream comparison (中文)](docs/guides/solver_split_zh.md)
 - [Code style](docs/guides/style_guide.md)
 - [Documentation authoring](docs/guides/doc_authoring.md)
 - [Test-suite overview](docs/tests/overview.md)

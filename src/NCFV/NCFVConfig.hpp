@@ -459,7 +459,7 @@ namespace DNDS::NCFV
 
     struct Configuration
     {
-        SolverSelection solver{"Euler", "NCFV", "IdealGas", 5};
+        SolverSelection solver{"ncfv_euler", "NCFV", "IdealGas", 4};
         int dimension = 2;
         MeshSettings mesh;
         AlgorithmSettings algorithm;

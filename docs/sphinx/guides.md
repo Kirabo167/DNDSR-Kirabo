@@ -7,6 +7,7 @@ Developer guides for building, configuring, and using DNDSR.
 :maxdepth: 2
 
 /guides/building
+/guides/solver_split_zh
 /guides/v0.3.1_new_features_zh
 /guides/project_structure
 /guides/style_guide

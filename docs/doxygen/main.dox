@@ -41,14 +41,16 @@
  *
  * # 2. Build C++ solvers
  * cmake --preset release-test
- * cmake --build build -t euler -j32
+ * cmake --build build --target euler --parallel 4
+ * # All three families: cmake --build --preset solvers --parallel 4
  *
  * # 3. Install Python package (editable)
  * CC=mpicc CXX=mpicxx CMAKE_BUILD_PARALLEL_LEVEL=32 pip install -e . --no-build-isolation
  *
  * # 4. Run tests
  * # Fetch the pinned cfd_meshes fixtures described in the v0.3.1 guide first.
- * cmake --build --preset tests -j32
+ * cmake --build --preset solvers --parallel 4
+ * cmake --build --preset tests --parallel 4
  * ctest --preset unit
  * cmake --build --preset python -j32 && cmake --install build --component py
  * PYTHONPATH="$PWD/python" venv/bin/python -m pytest test/
@@ -66,6 +68,7 @@
  * Developer guides for building, configuring, and using DNDSR.
  *
  * - @subpage building
+ * - @subpage solver_split_zh
  * - @subpage project_structure
  * - @subpage style_guide
  * - @subpage doc_authoring

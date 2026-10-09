@@ -1230,6 +1230,5 @@ namespace DNDS::NCFV
         return residualNorm;
     }
 
-    template class SpatialOperator<2>;
-    template class SpatialOperator<3>;
+    template class SpatialOperator<DNDS_NCFV_INSTANTIATION_DIM>;
 }

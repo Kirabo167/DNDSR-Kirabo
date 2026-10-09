@@ -10,11 +10,14 @@
 
 namespace DNDS::NCFV
 {
-    inline int RunConsoleApp(int argc, char *argv[])
+    template <int dimension>
+    int RunConsoleApp(int argc, char *argv[])
     {
+        static_assert(dimension == 2 || dimension == 3);
+        const std::string appName = "ncfv_euler" + std::to_string(dimension) + "D";
         MPIInfo mpi;
         mpi.setWorld();
-        argparse::ArgumentParser parser("NCFV", DNDS_VERSION_STRING);
+        argparse::ArgumentParser parser(appName, DNDS_VERSION_STRING);
         parser.add_description(std::string("NCFV: ") + MethodName);
         parser.add_argument("config").default_value("");
         parser.add_argument("-k", "--overwrite_key")
@@ -24,6 +27,7 @@ namespace DNDS::NCFV
             .append()
             .default_value<std::vector<std::string>>({});
         parser.add_argument("--emit-schema").flag().default_value(false);
+        parser.add_argument("--check-config").flag().default_value(false);
 
         try
         {
@@ -35,13 +39,18 @@ namespace DNDS::NCFV
                     auto schema = Configuration::schema(
                         std::string("DNDSR NCFV (") + MethodName + ") configuration");
                     schema["$schema"] = "http://json-schema.org/draft-07/schema#";
+                    SolverSelection::ConstrainSchema(schema,
+                        {"ncfv_euler", "NCFV", "IdealGas", dimension + 2});
+                    schema["properties"]["dimension"]["const"] = dimension;
+                    schema["properties"]["dimension"]["default"] = dimension;
                     std::cout << schema.dump(4) << std::endl;
                 }
                 return 0;
             }
 
             std::filesystem::path configurationPath =
-                std::filesystem::path("../cases/NCFV/NCFV.json");
+                std::filesystem::path("../cases/ncfv_euler") /
+                (std::to_string(dimension) + "D") / (appName + ".json");
             const std::string requested = parser.get<std::string>("config");
             if (!requested.empty())
                 configurationPath = requested;
@@ -50,18 +59,15 @@ namespace DNDS::NCFV
                 parser.get<std::vector<std::string>>("--overwrite_key"),
                 parser.get<std::vector<std::string>>("--overwrite_value"));
 
-            if (loaded.configuration.dimension == 2)
-            {
-                Solver<2> solver(mpi, loaded.configuration);
-                solver.Initialize();
-                solver.Run();
-            }
-            else
-            {
-                Solver<3> solver(mpi, loaded.configuration);
-                solver.Initialize();
-                solver.Run();
-            }
+            loaded.configuration.solver.Require(
+                {"ncfv_euler", "NCFV", "IdealGas", dimension + 2});
+            DNDS_check_throw_info(loaded.configuration.dimension == dimension,
+                                  "NCFV configuration dimension does not match " + appName);
+            if (parser.get<bool>("--check-config"))
+                return 0;
+            Solver<dimension> solver(mpi, loaded.configuration);
+            solver.Initialize();
+            solver.Run();
         }
         catch (const std::exception &exception)
         {

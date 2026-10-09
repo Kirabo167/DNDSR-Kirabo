@@ -36,7 +36,7 @@ ARCHIVE = Path(
     "/mnt/ssd-SATARAID5/home/mrz/.local/share/Trash/files/"
     "acm2D_CylinderRe3900_BDF2_LUSGS"
 )
-CASE = ROOT / "cases/acm2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json"
+CASE = ROOT / "cases/acm/2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json"
 PPTX = OUT / "ACM_Modules_Derivation_Results_Simple_CN.pptx"
 FONT = "Noto Sans CJK SC"
 BLACK = RGBColor(0, 0, 0)
@@ -297,7 +297,7 @@ def build_deck(config, audit):
     slide = add_slide(
         prs, "推导 2：Turkel 耦合与双时间方程", sources(
             "src/ACM/ACM.cpp:163", "src/ACM/ACM.cpp:175", "src/ACM/ACMBDF2.cpp:55",
-            "cases/acm2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json:17",
+            "cases/acm/2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json:17",
         ), "依据：GammaLocal / GammaInvLocal / BDF2PhysicalMassMatrix",
     )
     add_text(slide, "将压力伪时间导数耦合到动量方程：γₜ=1+α。",
@@ -376,7 +376,7 @@ def build_deck(config, audit):
     o = config["outputSettings"]
     slide = add_slide(
         prs, "二维圆柱 Re=3900：算例参数与运行版本", sources(
-            "cases/acm2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json",
+            "cases/acm/2D/acm2D_cylinder_Re3900_laminar_BDF2_LUSGS.json",
             "data/mesh/CylinderA1.cgns",
         ) + "\n已完成结果来源：" + str(ARCHIVE) + "\n当前配置可能由用户运行中；本PPT没有启动或重跑求解器。",
         "当前 JSON 与归档 4000 步结果分列；后两页视频只使用归档结果",

@@ -1,3 +1,25 @@
+# Unreleased: independent solver executables (2026-10-09)
+
+- Restore the upstream Euler model targets and split ACM/NCFV Euler into
+  independent 2D/3D executables. Keep `ACM`, variable-density ACM variants and
+  the existing Euler state/Cantera tools.
+- Name node-centred executables `ncfv_euler2D` / `ncfv_euler3D`; group cases
+  and schemas under `cases/{euler,acm,ncfv_euler}/{2D,3D}` with model subfolders.
+- Reuse common libraries while separating ACM/NCFV dimension instantiations;
+  add `all_euler`, `all_acm`, `all_ncfv_euler`, `all_solvers` and family presets.
+- Add native `--check-config`, executable/model/state-size checks and the
+  `solver_config` CTest group. Euler reads existing adjacent defaults rather
+  than overwriting them; missing defaults are built in memory.
+- Refresh schemas, configuration defaults and CLI examples. Migrate 11 retired
+  NCFV `Roe_M2` cases to `Roe`; archived comparisons require recomputation.
+- Local validation passed 29 CPU module tests, 15 Cantera Euler tests,
+  142 configuration checks, 11 mismatch checks and nine two-rank short runs.
+  This is not a complete engineering-case convergence or upstream field-solution
+  equivalence claim; pre-existing Wilcox/WBAP/periodic-mesh differences remain.
+
+See [the migration and upstream comparison guide](docs/guides/solver_split_zh.md)
+for the pinned reference, exact target/case mapping and test limits.
+
 # Kirabo167 fork: v0.3.1 integration
 
 The fork integrated the official v0.3.1 commit into its existing v0.2.1-based

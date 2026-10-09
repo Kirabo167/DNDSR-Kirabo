@@ -6,10 +6,10 @@ discretizations, distributed-memory MPI parallelism, optional CUDA execution,
 and optional Cantera-based multi-species reacting-flow models.
 
 This repository is the Kirabo fork of the
-[upstream DNDSR project](https://github.com/harryzhou2000/DNDSR). It tracks the
-upstream v0.3.1 code line while maintaining three additional solver families:
-the constant-density ACM solver, the variable-density ACM solver, and the
-third-order **Node Center Finite Volume Method (NCFV)** solver. Project target,
+[upstream DNDSR project](https://github.com/CFDLAB-THU/DNDSR). It tracks the
+upstream v0.3.1 code line and organizes CPU solvers into Euler/CFV, ACM
+(constant and variable density), and NCFV Euler. The latter implements the
+third-order **Node Center Finite Volume Method (NCFV)**. Project target,
 namespace, and Python-package names remain `DNDSR`.
 
 See the [v0.3.1 feature and migration guide](docs/guides/v0.3.1_new_features_zh.md)
@@ -48,21 +48,45 @@ API reference remain available at
 - JSON/JSONC runtime configuration, generated JSON schemas, restart files,
   VTKHDF output, and pybind11 modules for core, mesh, CFV, and EulerP access.
 
-### Unified solver executable
+### Independent solver executables
 
-All CPU flow solvers are linked into the single CMake target `euler`, which
-produces `build/app/euler.exe`. The top-level `solver` object in each case JSON
-selects the equation family, CFV/NCFV discretization, dimension/model
-specialization, and the runtime state size needed by reactive models. The old
-model-specific solver targets (`euler3D`, `eulerSA`, `acm2D`, `NCFV`, and so on)
-are no longer generated.
+Build each solver family and dimension independently. Common mesh, MPI and
+numerical infrastructure is shared; a selected target does not link other
+solver families or the other dimension's template instantiations.
 
-| `solver.type` | `solver.discretization` | `solver.model` values |
+| Family | 2D executables | 3D executables |
 |---|---|---|
-| `Euler` | `CFV` | `NS`, `NS_2D`, `NS_3D`, `NS_SA`, `NS_SA_3D`, `NS_2EQ`, `NS_2EQ_3D`, `NS_EX`, `NS_EX_3D` |
-| `Euler` | `NCFV` | `IdealGas` (2-D/3-D remains selected by `dimension`) |
-| `ACM` | `CFV` | `ConstantDensity2D`, `ConstantDensity3D` |
-| `ACMVariable` | `CFV` | `VariableDensity2D`, `VariableDensity3D` |
+| Euler / CFV | `euler`, `euler2D`, `eulerSA`, `euler2EQ`, `eulerEX` | `euler3D`, `eulerSA3D`, `euler2EQ3D`, `eulerEX3D` |
+| ACM | `acm2D`, `acmVariable2D` | `acm3D`, `acmVariable3D`, `ACM` (compatibility name) |
+| NCFV Euler | `ncfv_euler2D` | `ncfv_euler3D` |
+
+The original upstream Euler executables remain available. `euler` uses the
+upstream NS model (2D geometry, five variables); `euler2D` uses NS_2D (four
+variables). Each case's top-level `solver` metadata must match its executable.
+NCFV uses `solver.type="ncfv_euler"`, `discretization="NCFV"`,
+`model="IdealGas"` and `fieldNVariables=dimension+2`.
+
+Cases and their schemas are grouped under `cases/euler/{2D,3D}`,
+`cases/acm/{2D,3D}` and `cases/ncfv_euler/{2D,3D}`. See
+[the case guide](cases/README.md) for variant subdirectories and configuration checks.
+
+### Euler compatibility and validation scope
+
+The executable split preserves Euler's evaluator, residual and time-integration
+implementation files. Launch/configuration behavior changes: existing adjacent
+default JSON files are read instead of overwritten, and solver metadata is
+checked against the selected executable. The final merged parameters must be
+matched when comparing runs.
+
+The local branch already differed from upstream in the Wilcox production cap,
+3D polynomial WBAP limiting, and some shared periodic-mesh handling. Those
+differences predate this split. The 2026-10-09 checks passed 29 CPU module tests,
+15 Cantera Euler tests, 142 native configuration checks, 11 selection-rejection
+checks and nine two-rank short runs. They do not establish identical upstream
+field solutions or convergence of every engineering case; some external mesh
+fixtures are unavailable locally. See the
+[solver migration and upstream comparison guide (中文)](docs/guides/solver_split_zh.md)
+for the pinned upstream revision, test scope and reproduction commands.
 
 Supporting tools include `eulerState` for state conversion/inspection and,
 when Cantera is enabled, `canteraConstVolTrajectory` for constant-volume
@@ -133,9 +157,9 @@ arrays:
 - `ACM` advances the constant-density state `[u,v,w,p]`. It includes direct
   Green-Gauss or arbitrary-order variational reconstruction, Roe/Rusanov
   fluxes, laminar viscosity, SSPRK3 pseudo-time marching, implicit backward
-  Euler, and laminar BDF2 dual-time operation with block-Jacobi, LU-SGS, or
+  Euler, and laminar/RANS BDF2 dual-time operation with block-Jacobi, LU-SGS, or
   GMRES solution paths. Laminar, SA, Wilcox k-omega, SST, and realizable
-  k-epsilon selections are available for steady calculations.
+  k-epsilon selections are available for steady and BDF2 dual-time calculations.
 - `ACMVariable` advances `[rho,rho*u,rho*v,rho*w,p]` with pressure treated as
   the algebraic component of a DAE mass matrix. It supplies explicit and
   implicit pseudo-/physical-time adapters, conservative variable-density
@@ -196,22 +220,29 @@ bash scripts/install_python_deps.sh
 ```bash
 # Baseline Release CPU build with all unit-test targets available
 cmake --preset release-test
-cmake --build build -t euler -j32
+cmake --build build --target euler --parallel 4
+
+# Other solver families and all model variants
+cmake --build --preset acm --parallel 4
+cmake --build --preset ncfv_euler --parallel 4
+cmake --build --preset solvers --parallel 4
 
 # Equivalent manual configuration
 CC=mpicc CXX=mpicxx cmake -S . -B build \
     -DDNDS_BUILD_TESTS=ON -DDNDS_USE_CANTERA=OFF
-cmake --build build -t euler -j32
+cmake --build build --target euler --parallel 4
 ```
 
-The unified solver is the only flow-solver executable in the default build;
-diagnostic and conversion utilities remain opt-in targets. The baseline
-`release-test` preset disables Cantera and CUDA. To build and test the unified
-solver with reactive-flow support enabled:
+The default build includes the upstream `euler` executable. Other solvers
+and diagnostic tools are opt-in targets. Build `all_euler`, `all_acm`,
+`all_ncfv_euler`, or `all_solvers` when needed. Limit `--parallel` according
+to available memory; splitting executables does not limit concurrent jobs.
+The baseline `release-test` preset disables Cantera and CUDA. For reactive flow:
 
 ```bash
 cmake --preset reactive-test
-cmake --build --preset reactive -j32
+cmake --build build-reactive --target all_solvers --parallel 4
+cmake --build --preset reactive --parallel 4
 ctest --preset reactive
 # Or rerun only the focused chemistry tests
 ctest --preset reactive-focused
@@ -221,7 +252,8 @@ For the CUDA/EulerP configuration:
 
 ```bash
 cmake --preset cuda
-cmake --build --preset cuda -j32
+cmake --build build-cuda --target all_solvers --parallel 4
+cmake --build --preset cuda --parallel 4
 ctest --preset cuda
 ```
 
@@ -236,27 +268,28 @@ directory. The maintained examples therefore normally run from `build/`:
 
 ```bash
 # Compressible Euler, serial and MPI
-(cd build && ./app/euler.exe ../cases/euler/euler_config_IV.json)
-(cd build && mpirun -np 4 ./app/euler.exe ../cases/euler/euler_config_IV.json)
+(cd build && ./app/euler.exe ../cases/euler/2D/euler_config_IV.json)
+(cd build && mpirun -np 4 ./app/euler.exe ../cases/euler/2D/euler_config_IV.json)
 
 # NCFV efficient differential mode on the included 3-D periodic mesh
-(cd build && ./app/euler.exe ../cases/NCFV/NCFV_periodic_hex_iv10.json)
-(cd build && mpirun -np 4 ./app/euler.exe \
-    ../cases/NCFV/NCFV_periodic_hex_iv10.json)
+(cd build && ./app/ncfv_euler3D.exe ../cases/ncfv_euler/3D/NCFV_periodic_hex_iv10.json)
+(cd build && mpirun -np 4 ./app/ncfv_euler3D.exe \
+    ../cases/ncfv_euler/3D/NCFV_periodic_hex_iv10.json)
 
 # Use the same NCFV case with traditional quadrature
-(cd build && ./app/euler.exe \
-    ../cases/NCFV/NCFV_periodic_hex_iv10.json \
+(cd build && ./app/ncfv_euler3D.exe \
+    ../cases/ncfv_euler/3D/NCFV_periodic_hex_iv10.json \
     -k /algorithm/mode -v TraditionalQuadrature)
 
 # Artificial-compressibility examples
-(cd build && ./app/euler.exe ../cases/acm2D/acm2D.json)
-(cd build && ./app/euler.exe \
-    ../cases/acmVariable2D/acmVariable2D.json)
+(cd build && ./app/acm2D.exe ../cases/acm/2D/acm2D.json)
+(cd build && ./app/acmVariable2D.exe \
+    ../cases/acm/2D/variable_density/acmVariable2D.json)
 ```
 
-The generated periodic NCFV meshes are stored in this repository. Several
-Euler, ACM, and legacy NCFV cases instead require the separately versioned
+The smaller generated periodic NCFV meshes are stored in this repository.
+The largest Tet4 fixture is generated locally; see [large mesh generation](cases/README.md#large-mesh-generation).
+Several Euler, ACM, and legacy NCFV cases require the separately versioned
 `cfd_meshes`/`data/mesh` fixtures described in the migration guide.
 
 ### 6. Configure a solver
@@ -275,13 +308,13 @@ with a selector such as:
 }
 ```
 
-`fieldNVariables` is used at dispatch time only for `NS_EX` and `NS_EX_3D`;
-the fixed-size models retain the value for a uniform schema. Use
-`./app/euler.exe --list-solvers` to print the accepted combinations.
+`fieldNVariables` sets the dynamic state size for `NS_EX` and `NS_EX_3D`;
+for fixed-size models it must match the compiled state size. Use the table
+above to select an executable, then `--check-config` to validate a case.
 
 Start with
-[the commented Euler defaults](cases/euler_default_config_commented.json) and
-the generated `cases/*_schema.json` file for the selected solver variant;
+[the commented Euler defaults](cases/euler/defaults/euler_default_config_commented.json) and
+the schema stored beside the selected solver's cases;
 EulerEX reactive and model-specific RANS fields are documented by their own
 schemas. After changing configuration types, regenerate them from the
 Cantera-enabled `schemas` build preset and validate them with
@@ -302,10 +335,27 @@ integration path. NCFV also supports JSON-pointer command-line overrides and
 can emit its current schema directly:
 
 ```bash
-(cd build && ./app/euler.exe ../cases/NCFV/NCFV.json --emit-schema)
-(cd build && ./app/euler.exe ../cases/NCFV/NCFV.json \
+(cd build && ./app/ncfv_euler2D.exe --emit-schema)
+(cd build && ./app/ncfv_euler2D.exe ../cases/ncfv_euler/2D/ncfv_euler2D.json \
     -k /algorithm/mode -v TraditionalQuadrature)
 ```
+
+Validate native configuration parameters without loading a mesh:
+
+```bash
+(cd build && ./app/euler2D.exe ../cases/euler/2D/euler2D_config.json --check-config)
+python3 cases/validate_configs.py --quiet
+python3 scripts/check_solver_cases.py --build-dir build \
+    --reactive-build-dir build-reactive
+```
+
+Build the required executables first. The audit reports reactive cases as
+requiring another build when Cantera support is unavailable. Neither schema
+nor parameter checks prove that external meshes are present or a simulation
+has converged. Euler reads a case-adjacent `<target>_default_config.json` when
+available, otherwise starts from compiled defaults; ACM uses a complete case,
+and NCFV merges its typed defaults. See the
+[configuration guide](docs/solver-guide/solver_config.md).
 
 Reactive runs may also use `DNDS_MECH_PATH` and `CANTERA_DATA` to locate
 Cantera mechanism/data files.
@@ -334,9 +384,12 @@ Some Geom/CFV/Euler regressions require the separately versioned
 [migration guide](docs/guides/v0.3.1_new_features_zh.md#72-测试网格).
 
 ```bash
-# All C++ unit tests (doctest, via CTest)
-cmake --build --preset tests -j32
+# Build solver entry points required by configuration CTests, then unit tests
+cmake --build --preset solvers --parallel 4
+cmake --build --preset tests --parallel 4
 ctest --preset unit
+# Configuration/model/dimension regressions only
+ctest --test-dir build -L solver_config --output-on-failure
 
 # One module only (examples)
 cmake --build build -t ncfv_unit_tests -j32
@@ -386,7 +439,7 @@ DNDSR/
 │   ├── ACM/              # Constant-density artificial compressibility
 │   ├── ACMVariable/      # Variable-density artificial compressibility
 │   └── NCFV/             # Node Center Finite Volume Method
-├── cases/               # JSON/JSONC cases, schemas, and NCFV validation cases
+├── cases/               # euler/, acm/, ncfv_euler/; each has 2D/ and 3D/ cases
 ├── test/                # C++ doctest and Python pytest suites
 ├── python/DNDSR/        # Python package and installed native extensions
 ├── docs/                # Guides, architecture notes, theory, and research reports
@@ -403,6 +456,7 @@ Fork-specific material is maintained in the local [`docs/`](docs) tree.
 ### Guides
 
 - [Build and dependency guide](docs/guides/building.md)
+- [Solver split, configuration migration and upstream comparison (中文)](docs/guides/solver_split_zh.md)
 - [Project structure and target map](docs/guides/project_structure.md)
 - [Python Geom API guide](docs/guides/python_geom_guide.md)
 - [Geometry and CFV usage](docs/guides/geom_usage.md)

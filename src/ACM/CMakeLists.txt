@@ -9,8 +9,6 @@ set(CPPS
     ACMBDF2.cpp
     ACMTime.cpp
     ACMTurbulence.cpp
-    acm2D.cpp
-    acm3D.cpp
 )
 
 set(HPPS
@@ -40,6 +38,13 @@ set(LINKS
     ${DNDS_EXTERNAL_LIBS}
 )
 
-dnds_add_lib(${LIBNAME} "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
+dnds_add_lib(${LIBNAME}_core "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     OFF ON ON)
-target_sources(${LIBNAME} PRIVATE ${HPPS})
+target_sources(${LIBNAME}_core PRIVATE ${HPPS})
+foreach(dimension 2 3)
+    dnds_add_lib(${LIBNAME}_${dimension}D "acm${dimension}D.cpp"
+        "${LIBNAME}_core;${LINKS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
+endforeach()
+# Existing module tests can still exercise both dimensions through this target.
+add_library(${LIBNAME} INTERFACE)
+target_link_libraries(${LIBNAME} INTERFACE ${LIBNAME}_2D ${LIBNAME}_3D)

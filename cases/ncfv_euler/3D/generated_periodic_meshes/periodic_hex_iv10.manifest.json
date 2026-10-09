@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "mesh_file": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/cases/ncfv_euler/3D/generated_periodic_meshes/periodic_hex_iv10.cgns",
+  "topology": "Hex8",
+  "structured_cells_per_direction": 10,
+  "domain_lengths": [
+    10.0,
+    10.0,
+    4.0
+  ],
+  "nodes": 1331,
+  "volume_cells": 1000,
+  "boundary_faces": 600,
+  "boundary_element_type": "Quad4",
+  "boundary_zones": {
+    "bc-2": "x-min periodic side",
+    "bc-2-1": "x-max periodic side",
+    "bc-3": "y-min periodic side",
+    "bc-3-1": "y-max periodic side",
+    "bc-4": "z-min periodic side",
+    "bc-4-1": "z-max periodic side"
+  },
+  "periodicity": {
+    "kind": "NCFV translational quotient",
+    "lengths": [
+      10.0,
+      10.0,
+      4.0
+    ],
+    "directions": [
+      "x",
+      "y",
+      "z"
+    ]
+  }
+}

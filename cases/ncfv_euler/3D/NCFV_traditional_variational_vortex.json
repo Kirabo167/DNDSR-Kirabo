@@ -1,0 +1,63 @@
+{
+    "solver": {
+        "type": "ncfv_euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
+    "$schema": "ncfv_euler3D_schema.json",
+    "dimension": 3,
+    "mesh": {
+        "meshFile": "../cases/ncfv_euler/3D/iv10_3d_1_dnds.cgns",
+        "periodicTolerance": 1e-8,
+        "periodicLengths": [10, 10, 4],
+        "periodicBoundaryPairs": [
+            "bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"
+        ]
+    },
+    "algorithm": {
+        "mode": "TraditionalQuadrature",
+        "retainMicroGeometry": false
+    },
+    "reconstruction": {
+        "method": "Variational",
+        "variationalWeight": 5.0,
+        "variationalIterations": 3,
+        "enableLimiter": false
+    },
+    "physics": {
+        "riemannSolver": "Roe",
+        "initialPrimitive": [1, 1, 1, 0, 1],
+        "farFieldPrimitive": [1, 1, 1, 0, 1],
+        "requireBoundaryZoneCoverage": true,
+        "boundaryZones": [
+            {"name": "bc-2", "mode": "Periodic"},
+            {"name": "bc-2-1", "mode": "Periodic"},
+            {"name": "bc-3", "mode": "Periodic"},
+            {"name": "bc-3-1", "mode": "Periodic"},
+            {"name": "bc-4", "mode": "Periodic"},
+            {"name": "bc-4-1", "mode": "Periodic"}
+        ]
+    },
+    "initialField": {
+        "isentropicVortex": true,
+        "vortexStrength": 5,
+        "vortexCenter": [5, 5, 0]
+    },
+    "time": {
+        "iterations": 8,
+        "endTime": 1.6,
+        "timeStep": 0.2,
+        "useCFLTimeStep": false,
+        "useLocalTimeStep": false,
+        "reportInterval": 1
+    },
+    "io": {
+        "outputPrefix": "../data/out/NCFV/traditional_variational/iv10/solution",
+        "writeVTK": false,
+        "writeInitial": false,
+        "writeFinal": false,
+        "writeFinalRestart": false,
+        "writeResolvedConfiguration": false
+    }
+}

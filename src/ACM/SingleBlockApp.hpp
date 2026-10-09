@@ -52,6 +52,7 @@ namespace DNDS::ACM
             .append()
             .default_value<std::vector<std::string>>({});
         parser.add_argument("--emit-schema").flag().default_value(false);
+        parser.add_argument("--check-config").flag().default_value(false);
 
         try
         {
@@ -63,6 +64,8 @@ namespace DNDS::ACM
                     auto schema = KernelConfiguration::schema(
                         std::string("DNDSR ") + GetSingleBlockAppName(model) + " configuration");
                     schema["$schema"] = "http://json-schema.org/draft-07/schema#";
+                    SolverSelection::ConstrainSchema(schema,
+                        {"ACM", "CFV", model == ACMModel::ConstantDensity2D ? "ConstantDensity2D" : "ConstantDensity3D", 4});
                     std::cout << schema.dump(4) << std::endl;
                 }
                 return 0;
@@ -70,8 +73,8 @@ namespace DNDS::ACM
 
             const std::string requestedConfiguration = parser.get<std::string>("config");
             std::filesystem::path caseConfiguration =
-                std::filesystem::path("../cases") /
-                GetSingleBlockAppName(model) /
+                std::filesystem::path("../cases/acm") /
+                (model == ACMModel::ConstantDensity2D ? "2D" : "3D") /
                 (std::string(GetSingleBlockAppName(model)) + ".json");
             if (!requestedConfiguration.empty())
                 caseConfiguration = requestedConfiguration;
@@ -84,6 +87,10 @@ namespace DNDS::ACM
                 caseConfiguration.string(),
                 parser.get<std::vector<std::string>>("--overwrite_key"),
                 parser.get<std::vector<std::string>>("--overwrite_value"));
+            loaded.configuration.solver.Require(
+                {"ACM", "CFV", model == ACMModel::ConstantDensity2D ? "ConstantDensity2D" : "ConstantDensity3D", 4});
+            if (parser.get<bool>("--check-config"))
+                return 0;
             ACMSolver<model> solver(mpi, loaded.configuration);
             solver.ReadMeshAndInitialize();
             solver.Run();

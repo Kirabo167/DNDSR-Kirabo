@@ -257,7 +257,7 @@ TEST_CASE("EulerEvaluator pipeline: IV (NS, P1, 2D)")
 {
     std::string root = projectRoot();
     std::string cfgPath = writeTempConfig<NS>(
-        root + "/cases/euler/euler_config_IV.json", "iv_test",
+        root + "/cases/euler/2D/euler_config_IV.json", "iv_test",
         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
          {"dataIOControl", {{"meshDirectBisect", 0},
                             {"meshFile", root + "/data/mesh/IV10_10.cgns"}}}});
@@ -293,7 +293,7 @@ TEST_CASE("EulerEvaluator pipeline: NACA0012 (NS_SA, P1)")
 {
     std::string root = projectRoot();
     std::string cfgPath = writeTempConfig<NS_SA>(
-        root + "/cases/eulerSA/eulerSA_config.json", "naca_test",
+        root + "/cases/euler/2D/SA/eulerSA_config.json", "naca_test",
         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}}},
          {"restartState", {{"iStep", 0}, {"iStepInternal", 0}}},
          {"dataIOControl", {{"meshFile", root + "/data/mesh/NACA0012_H2.cgns"}}}});
@@ -328,7 +328,7 @@ TEST_CASE("EulerEvaluator pipeline: Box (NS_3D, P1)")
 {
     std::string root = projectRoot();
     std::string cfgPath = writeTempConfig<NS_3D>(
-        root + "/cases/euler3D/euler3D_config_Box.json", "box3d_test",
+        root + "/cases/euler/3D/euler3D_config_Box.json", "box3d_test",
         {{"vfvSettings", {{"maxOrder", 1}, {"intOrder", 3}, {"cacheDiffBase", false}}},
          {"dataIOControl", {{"meshFile", root + "/data/mesh/Uniform32_3D_Periodic.cgns"}}}});
 

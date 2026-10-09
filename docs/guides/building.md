@@ -39,15 +39,21 @@ bash scripts/install_python_deps.sh
 **4. Build solvers**
 ```bash
 cmake --preset release-test
-cmake --build build -t euler -j32
+cmake --build build --target euler --parallel 4
 ```
+
+The default build contains `euler`. Build `all_euler`, `all_acm`,
+`all_ncfv_euler`, or `all_solvers` for the corresponding executable groups.
+The `solvers`, `acm` and `ncfv_euler` build presets select these groups.
+Choose `--parallel` for the available memory; independent targets do not
+limit the number of concurrent compiler processes.
 
 **5. Run a case**
 ```bash
 # Run from build/ without changing the caller's repository-root directory
-(cd build && ./app/euler.exe ../cases/euler/euler_config_IV.json)
+(cd build && ./app/euler.exe ../cases/euler/2D/euler_config_IV.json)
 # or parallel:
-(cd build && mpirun -np 4 ./app/euler.exe ../cases/euler/euler_config_IV.json)
+(cd build && mpirun -np 4 ./app/euler.exe ../cases/euler/2D/euler_config_IV.json)
 ```
 
 Maintained cases resolve their mesh and output paths from the `build/`
@@ -66,8 +72,10 @@ First fetch the pinned `cfd_meshes` fixtures described under
 [Test meshes](v0.3.1_new_features_zh.md#72-测试网格).
 
 ```bash
+# Solver executables are required by the configuration CTests
+cmake --build --preset solvers --parallel 4
 # C++ tests
-cmake --build --preset tests -j32
+cmake --build --preset tests --parallel 4
 ctest --preset unit
 
 # Python tests (never use missing or stale native modules)
@@ -190,7 +198,8 @@ bash scripts/install_python_deps.sh
 
 ```bash
 cmake --preset release-test        # Baseline CPU, Cantera/CUDA off
-cmake --build --preset tests -j32  # Build every C++ unit-test category
+cmake --build --preset solvers --parallel 4 # Configuration-test entry points
+cmake --build --preset tests --parallel 4   # Every C++ unit-test category
 ctest --preset unit                # Run C++ tests (not pytest entries)
 ```
 
@@ -212,15 +221,19 @@ also disable ccache for reproducibility; enable it in a local
 
 | Purpose | Build command | Test command |
 |---------|---------------|--------------|
-| All baseline C++ tests | `cmake --build --preset tests` | `ctest --preset unit` |
+| All CPU solver entry points | `cmake --build --preset solvers` | `ctest --test-dir build -L solver_config` |
+| ACM / NCFV Euler only | `cmake --build --preset acm` / `--preset ncfv_euler` | build the respective module tests |
+| All baseline C++ tests | build `solvers`, then `cmake --build --preset tests` | `ctest --preset unit` |
 | DNDS core only | `cmake --build --preset dnds-tests` | `ctest --preset dnds` |
-| Full Cantera-enabled C++ matrix | `cmake --build --preset reactive` | `ctest --preset reactive` |
+| Full Cantera-enabled C++ matrix | build `all_solvers` in `build-reactive`, then `cmake --build --preset reactive` | `ctest --preset reactive` |
 | Focused chemistry tests | same reactive build | `ctest --preset reactive-focused` |
 | All pybind11 modules | `cmake --build --preset python` | `ctest --preset python` after install |
 | CUDA modules/tests | `cmake --build --preset cuda` | `ctest --preset cuda` |
 
-`ctest --preset all` includes both C++ and Python CTest entries. Build and
-install the four pybind11 modules before using it. `CMakeUserPresets.json` may
+`ctest --preset all` includes both C++ and Python CTest entries. Build
+`all_solvers` and `all_unit_tests`, then build and install the four pybind11
+modules before using it. CUDA/debug/CI full-suite runs also need
+`all_solvers` in their own build directories for configuration CTests. `CMakeUserPresets.json` may
 be used for machine-specific compilers and paths and is intentionally ignored
 by Git.
 
@@ -229,7 +242,7 @@ by Git.
 ```bash
 CC=mpicc CXX=mpicxx cmake -S . -B build -G Ninja \
   -DDNDS_BUILD_TESTS=ON -DDNDS_USE_CANTERA=OFF
-cmake --build build -t euler -j32           # Build a solver
+cmake --build build --target euler --parallel 4           # Build a solver
 cmake --build build -t dnds_unit_tests -j32 # Build C++ tests
 ctest --test-dir build -R dnds_ --output-on-failure
 ```
@@ -264,7 +277,43 @@ This fork also builds the following independent solver families:
 |-----------|-------|
 | `ACM`, `acm2D`, `acm3D` | Constant-density artificial compressibility |
 | `acmVariable2D`, `acmVariable3D` | Variable-density artificial compressibility |
-| `NCFV` | Third-order node-centred finite volume |
+| `ncfv_euler2D`, `ncfv_euler3D` | Two-/three-dimensional node-centred Euler flow |
+
+The `ACM` compatibility target uses the 3D constant-density model. Source
+module/namespace names remain `NCFV` / `DNDS::NCFV`; executable and case-family
+names are `ncfv_euler`. The old unified `euler` dispatcher is removed.
+
+```bash
+cmake --build build --target acm2D ncfv_euler3D --parallel 4
+cmake --build build --target all_solvers --parallel 4
+```
+
+### Configuration paths and checks
+
+Launch maintained cases from the build directory. Case files are grouped by
+family and dimension; schemas are stored beside the respective model's cases.
+Mesh/output paths are relative to the process working directory, while
+`$schema` is relative to the case file.
+
+```bash
+(cd build && ./app/acm2D.exe ../cases/acm/2D/acm2D.json --check-config)
+(cd build && ./app/ncfv_euler3D.exe \
+    ../cases/ncfv_euler/3D/NCFV_periodic_hex_iv10.json)
+python3 scripts/check_solver_cases.py --build-dir build \
+    --reactive-build-dir build-reactive
+python3 cases/validate_configs.py --quiet
+```
+
+`--check-config` validates typed parameters and executable selection without
+mesh reads or solver result output. The audit needs all required executables;
+reaction cases require Cantera. These tools invoke C++ programs or inspect
+JSON and do not load DNDSR Python bindings.
+
+Euler preserves an existing case-adjacent `<target>_default_config.json`;
+if absent, it uses compiled defaults. Case JSON and `-k/-v` overrides are then
+merged. ACM uses complete single-file cases and NCFV merges its typed defaults.
+See @ref solver_config and @ref solver_split_zh for migration details and
+the limits of the upstream comparison.
 
 ### CMake Cache Options
 
@@ -433,7 +482,8 @@ chemistry/reactive checks:
 
 ```bash
 CC=mpicc CXX=mpicxx cmake --preset reactive-test
-cmake --build --preset reactive -j32
+cmake --build build-reactive --target all_solvers --parallel 4
+cmake --build --preset reactive --parallel 4
 ctest --preset reactive
 # Optional focused rerun:
 ctest --preset reactive-focused
@@ -555,7 +605,7 @@ ctest --preset python
 
 | Mode                     | Command                                               | Build Dir   | Stubs         |
 |--------------------------|-------------------------------------------------------|-------------|---------------|
-| **Pure C++ build**       | `cmake --build build -t euler -j32`                   | `build/`    | N/A           |
+| **Pure C++ build**       | `cmake --build build --target euler --parallel 4`                   | `build/`    | N/A           |
 | **C++ unit tests**       | `cmake --build --preset tests -j32`                    | `build/`    | N/A           |
 | **In-place Python**      | `cmake --install build --component py`                | `build/`    | Auto-generated|
 | **Editable install**     | `pip install -e . --no-build-isolation`               | `build_py/<wheel-tag>/` | Auto-generated|

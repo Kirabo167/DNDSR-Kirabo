@@ -52,6 +52,7 @@ namespace DNDS::ACMVariable
             .append()
             .default_value<std::vector<std::string>>({});
         parser.add_argument("--emit-schema").flag().default_value(false);
+        parser.add_argument("--check-config").flag().default_value(false);
 
         try
         {
@@ -63,6 +64,8 @@ namespace DNDS::ACMVariable
                     auto schema = KernelConfiguration::schema(
                         std::string("DNDSR ") + GetSingleBlockAppName(model) + " configuration");
                     schema["$schema"] = "http://json-schema.org/draft-07/schema#";
+                    SolverSelection::ConstrainSchema(schema,
+                        {"ACMVariable", "CFV", model == ACMModel::VariableDensity2D ? "VariableDensity2D" : "VariableDensity3D", 5});
                     std::cout << schema.dump(4) << std::endl;
                 }
                 return 0;
@@ -70,8 +73,9 @@ namespace DNDS::ACMVariable
 
             const std::string requestedConfiguration = parser.get<std::string>("config");
             std::filesystem::path caseConfiguration =
-                std::filesystem::path("../cases") /
-                GetSingleBlockAppName(model) /
+                std::filesystem::path("../cases/acm") /
+                (model == ACMModel::VariableDensity2D ? "2D" : "3D") /
+                "variable_density" /
                 (std::string(GetSingleBlockAppName(model)) + ".json");
             if (!requestedConfiguration.empty())
                 caseConfiguration = requestedConfiguration;
@@ -84,6 +88,10 @@ namespace DNDS::ACMVariable
                 caseConfiguration.string(),
                 parser.get<std::vector<std::string>>("--overwrite_key"),
                 parser.get<std::vector<std::string>>("--overwrite_value"));
+            loaded.configuration.solver.Require(
+                {"ACMVariable", "CFV", model == ACMModel::VariableDensity2D ? "VariableDensity2D" : "VariableDensity3D", 5});
+            if (parser.get<bool>("--check-config"))
+                return 0;
             ACMSolver<model> solver(mpi, loaded.configuration);
             solver.ReadMeshAndInitialize();
             solver.Run();

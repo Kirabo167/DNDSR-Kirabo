@@ -73,13 +73,13 @@ static std::string writeReactiveConfig()
     REQUIRE(fDefault);
     auto config = nlohmann::ordered_json::parse(fDefault, nullptr, true, true);
 
-    auto fCase = std::ifstream(root + "/cases/eulerEX/react_test.json");
+    auto fCase = std::ifstream(root + "/cases/euler/2D/EX/react_test.json");
     REQUIRE(fCase);
     auto caseConfig = nlohmann::ordered_json::parse(fCase, nullptr, true, true);
     config.merge_patch(caseConfig);
 
     config["dataIOControl"]["meshFile"] = root + "/data/mesh/IV10_10.cgns";
-    config["eulerSettings"]["reactiveFlow"]["mechanismFile"] = root + "/cases/eulerEX/h2o2.yaml";
+    config["eulerSettings"]["reactiveFlow"]["mechanismFile"] = root + "/cases/euler/2D/EX/h2o2.yaml";
     config["outputControl"]["dataOutAtInit"] = false;
     config["outputControl"]["nDataOut"] = 1000000;
     config["outputControl"]["nDataOutC"] = 1000000;

@@ -34,8 +34,9 @@ build instead of relying on a hard-coded total in this document.
 # 1. Configure the baseline CPU matrix (Cantera/CUDA off)
 CC=mpicc CXX=mpicxx cmake --preset release-test
 
-# 2. Build all test executables
-cmake --build --preset tests -j8
+# 2. Build native entry points for configuration CTests and all test executables
+cmake --build --preset solvers --parallel 4
+cmake --build --preset tests --parallel 4
 
 # 3. Run the full C++ test suite
 # (fetch the pinned cfd_meshes fixtures from the v0.3.1 guide first)
@@ -48,7 +49,8 @@ PYTHONPATH="$PWD/python" venv/bin/python -m pytest test/ -v
 
 # 5. Validate every C++ module with Cantera enabled
 CC=mpicc CXX=mpicxx cmake --preset reactive-test
-cmake --build --preset reactive -j8
+cmake --build build-reactive --target all_solvers --parallel 4
+cmake --build --preset reactive --parallel 4
 ctest --preset reactive
 
 # Optional: rerun only the eight chemistry/reactive checks
@@ -85,6 +87,27 @@ DNDS_TEST_NP_LIST="1;2;4" cmake --preset release-test
 `DNDS_TEST_TIMEOUT` defaults to 1800 seconds and scales upward for larger MPI
 jobs and evaluator pipelines. `DNDS_TEST_OMP_THREADS` defaults to 2. Both may
 be set in the environment at configure time.
+
+## Configuration and executable-selection regressions
+
+`solver_case_configurations` calls the native `--check-config` entry for the
+classified case files. `solver_executable_selection` verifies rejection of
+incorrect models and dimensions. Both are labelled `solver_config` and need
+the relevant executables from `all_solvers`, which `all_unit_tests` does not build.
+
+```bash
+ctest --test-dir build -L solver_config --output-on-failure
+python3 scripts/check_solver_cases.py --build-dir build \
+    --reactive-build-dir build-reactive
+python3 cases/validate_configs.py --quiet
+```
+
+Without a Cantera build, the native audit lists reaction cases as requiring
+another build. Supplying `--reactive-build-dir` checks them with that build.
+Mesh manifests are data descriptions and are excluded from solver validation.
+Parameter checks do not confirm input-file availability or simulation convergence.
+The dated split validation record and upstream comparison limits are in
+@ref solver_split_zh.
 
 ## Naming Conventions
 

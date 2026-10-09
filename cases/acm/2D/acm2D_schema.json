@@ -1,0 +1,1017 @@
+{
+    "type": "object",
+    "description": "DNDSR acm2D configuration",
+    "properties": {
+        "solver": {
+            "type": "object",
+            "description": "Unified executable dispatch settings",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "default": "ACM",
+                    "description": "Governing-equation family",
+                    "enum": [
+                        "Euler",
+                        "ACM",
+                        "ACMVariable",
+                        "ncfv_euler"
+                    ],
+                    "const": "ACM"
+                },
+                "discretization": {
+                    "type": "string",
+                    "default": "CFV",
+                    "description": "Spatial discretization",
+                    "enum": [
+                        "CFV",
+                        "NCFV"
+                    ],
+                    "const": "CFV"
+                },
+                "model": {
+                    "type": "string",
+                    "default": "ConstantDensity2D",
+                    "description": "Compiled equation/model specialization",
+                    "const": "ConstantDensity2D"
+                },
+                "fieldNVariables": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Runtime state size for dynamic Euler models NS_EX and NS_EX_3D",
+                    "minimum": 1.0,
+                    "const": 4
+                }
+            }
+        },
+        "acmSettings": {
+            "type": "object",
+            "description": "Constant-density ACM settings",
+            "properties": {
+                "rho0": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Constant density",
+                    "minimum": 0.0
+                },
+                "beta2": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Artificial-compressibility beta squared",
+                    "minimum": 0.0
+                },
+                "alpha": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Turkel alpha used by Gamma, characteristics, fluxes, and boundaries"
+                },
+                "dynamicViscosity": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Dynamic viscosity",
+                    "minimum": 0.0
+                },
+                "riemannSolverType": {
+                    "type": "string",
+                    "default": "Roe",
+                    "description": "ACM Riemann solver",
+                    "enum": [
+                        "Rusanov",
+                        "Roe"
+                    ]
+                },
+                "pressureStorage": {
+                    "type": "string",
+                    "default": "PhysicalP",
+                    "description": "Pressure storage policy",
+                    "enum": [
+                        "PhysicalP"
+                    ]
+                },
+                "entropyFixRatio": {
+                    "type": "number",
+                    "default": 0.05,
+                    "description": "Entropy-fix ratio",
+                    "minimum": 0.0
+                },
+                "pressureReference": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Pressure gauge reference"
+                },
+                "farFieldValue": {
+                    "type": "array",
+                    "default": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "description": "Far-field [u,v,w,p]"
+                },
+                "enableViscousFlux": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable the laminar viscous flux"
+                }
+            }
+        },
+        "timeMarchSettings": {
+            "type": "object",
+            "description": "ACM steady pseudo-time and physical dual-time integration settings",
+            "properties": {
+                "integrator": {
+                    "type": "string",
+                    "default": "ExplicitSSPRK3",
+                    "description": "ACM steady pseudo-time or physical dual-time integrator",
+                    "enum": [
+                        "ExplicitSSPRK3",
+                        "ImplicitEulerBlockJacobi",
+                        "ImplicitEulerLUSGS",
+                        "ImplicitEulerGMRES",
+                        "BDF2DualTimeLUSGS",
+                        "BDF2DualTimeGMRES"
+                    ]
+                },
+                "nSteps": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Number of outer pseudo-time steps, or physical steps for BDF2",
+                    "minimum": 0.0
+                },
+                "pseudoTimeStep": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "Fixed pseudo-time step",
+                    "minimum": 0.0
+                },
+                "physicalTimeStep": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "Uniform physical time step for BDF2 dual-time marching",
+                    "minimum": 0.0
+                },
+                "useCFLTimeStep": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use Euler-style local CFL pseudo-time steps"
+                },
+                "useLocalTimeStep": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use cell-local rather than globally uniform CFL steps"
+                },
+                "cfl": {
+                    "type": "number",
+                    "default": 0.5,
+                    "description": "ACM CFL number",
+                    "minimum": 0.0
+                },
+                "maximumPseudoTimeStep": {
+                    "type": "number",
+                    "default": 1e+100,
+                    "description": "Maximum CFL-derived pseudo-time step",
+                    "minimum": 0.0
+                },
+                "maxImplicitIterations": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Maximum inner iterations per implicit or physical step",
+                    "minimum": 1.0
+                },
+                "implicitTolerance": {
+                    "type": "number",
+                    "default": 1e-10,
+                    "description": "Implicit global RMS steady or physical defect tolerance",
+                    "minimum": 0.0
+                },
+                "steadyRelativeTolerance": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Steady inner defect relative to current outer spatial residual; zero uses absolute tolerance",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "steadyAdaptiveCFL": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Adapt steady implicit CFL using actual spatial residual progress"
+                },
+                "steadyCFLMin": {
+                    "type": "number",
+                    "default": 0.1,
+                    "description": "Minimum adaptive steady CFL",
+                    "minimum": 0.0
+                },
+                "steadyCFLMax": {
+                    "type": "number",
+                    "default": 20.0,
+                    "description": "Maximum adaptive steady CFL",
+                    "minimum": 0.0
+                },
+                "steadyCFLGrowth": {
+                    "type": "number",
+                    "default": 1.5,
+                    "description": "Maximum steady CFL growth factor",
+                    "minimum": 1.0
+                },
+                "steadyCFLReduction": {
+                    "type": "number",
+                    "default": 0.5,
+                    "description": "Steady CFL reduction factor",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "implicitRelaxation": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Implicit correction relaxation",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "lusgsSweeps": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "ACM fixed LU-SGS residual-correction applications",
+                    "minimum": 1.0
+                },
+                "gmresSubspace": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "ACM GMRES Krylov subspace size",
+                    "minimum": 2.0
+                },
+                "gmresRestarts": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "ACM GMRES restart count",
+                    "minimum": 0.0
+                },
+                "gmresRelativeTolerance": {
+                    "type": "number",
+                    "default": 1e-06,
+                    "description": "ACM GMRES relative residual tolerance",
+                    "minimum": 0.0
+                },
+                "gmresPreconditioner": {
+                    "type": "string",
+                    "default": "LUSGS",
+                    "description": "ACM GMRES left preconditioner",
+                    "enum": [
+                        "BlockJacobi",
+                        "LUSGS"
+                    ]
+                }
+            }
+        },
+        "turbulenceSettings": {
+            "type": "object",
+            "description": "Segregated constant-density ACM turbulence settings",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "default": "Laminar",
+                    "description": "ACM turbulence closure",
+                    "enum": [
+                        "Laminar",
+                        "SpalartAllmaras",
+                        "KOmegaWilcox",
+                        "KOmegaSST",
+                        "RealizableKEpsilon"
+                    ]
+                },
+                "initialValue": {
+                    "type": "array",
+                    "default": [
+                        1e-06,
+                        1.0
+                    ],
+                    "description": "Initial turbulence variables [q1,q2]"
+                },
+                "farFieldValue": {
+                    "type": "array",
+                    "default": [
+                        1e-06,
+                        1.0
+                    ],
+                    "description": "Far-field turbulence variables [q1,q2]"
+                },
+                "minimumValue": {
+                    "type": "array",
+                    "default": [
+                        1e-12,
+                        1e-10
+                    ],
+                    "description": "Positive turbulence-variable floors [q1,q2]"
+                },
+                "maximumValue": {
+                    "type": "array",
+                    "default": [
+                        1000000.0,
+                        1000000000000.0
+                    ],
+                    "description": "Finite turbulence-variable ceilings [q1,q2]"
+                },
+                "maximumEddyViscosityRatio": {
+                    "type": "number",
+                    "default": 100000.0,
+                    "description": "Maximum turbulent-to-molecular viscosity ratio",
+                    "minimum": 0.0
+                },
+                "wallOmegaCoefficient": {
+                    "type": "number",
+                    "default": 800.0,
+                    "description": "Wall omega coefficient in omega=C*nu/d^2",
+                    "minimum": 0.0
+                },
+                "enableSourceTerms": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable turbulence production and destruction sources"
+                },
+                "secondOrderReconstruction": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use limited second-order turbulence reconstruction"
+                },
+                "transportSubsteps": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Turbulence SSPRK3 substeps per ACM flow step",
+                    "minimum": 1.0
+                },
+                "transportTimeScale": {
+                    "type": "number",
+                    "default": 0.25,
+                    "description": "Turbulence-to-flow pseudo-time scale",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "wallDistanceMethod": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Geom wall-distance method",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "wallDistanceExecution": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "MPI wall-distance execution mode",
+                    "minimum": 0.0
+                },
+                "wallDistanceSubdivide": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Wall-face subdivision level",
+                    "minimum": 0.0
+                },
+                "minimumWallDistance": {
+                    "type": "number",
+                    "default": 1e-10,
+                    "description": "Minimum wall distance",
+                    "minimum": 0.0
+                },
+                "wallDistanceVerbose": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Wall-distance diagnostic level",
+                    "minimum": 0.0
+                }
+            }
+        },
+        "meshSettings": {
+            "type": "object",
+            "description": "Distributed mesh input settings",
+            "properties": {
+                "meshFile": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Input CGNS mesh file"
+                },
+                "meshElevation": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Elevate O1 mesh geometry to O2",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "meshDirectBisect": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Direct mesh bisection passes",
+                    "minimum": 0.0,
+                    "maximum": 4.0
+                },
+                "meshReorderCells": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Reorder local cells",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "periodicTolerance": {
+                    "type": "number",
+                    "default": 1e-09,
+                    "description": "Periodic matching tolerance",
+                    "minimum": 0.0
+                },
+                "periodicTranslation1": {
+                    "type": "array",
+                    "default": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "description": "Periodic pair-1 translation vector"
+                },
+                "periodicTranslation2": {
+                    "type": "array",
+                    "default": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "description": "Periodic pair-2 translation vector"
+                },
+                "periodicTranslation3": {
+                    "type": "array",
+                    "default": [
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "description": "Periodic pair-3 translation vector"
+                },
+                "partitionOptions": {
+                    "type": "object",
+                    "description": "Existing DNDS mesh partition settings",
+                    "properties": {
+                        "metisType": {
+                            "type": "string",
+                            "default": "KWAY",
+                            "description": "METIS partitioning method",
+                            "enum": [
+                                "KWAY",
+                                "RB"
+                            ]
+                        },
+                        "metisUfactor": {
+                            "type": "integer",
+                            "default": 20,
+                            "description": "METIS imbalance factor (ufactor)",
+                            "minimum": 1.0
+                        },
+                        "metisSeed": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "METIS random seed"
+                        },
+                        "edgeWeightMethod": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Edge weight method (0: none, 1: face size)",
+                            "minimum": 0.0,
+                            "maximum": 1.0
+                        },
+                        "metisNcuts": {
+                            "type": "integer",
+                            "default": 3,
+                            "description": "Number of cuts for METIS to try",
+                            "minimum": 1.0
+                        }
+                    }
+                }
+            }
+        },
+        "reconstructionSettings": {
+            "type": "object",
+            "description": "ACM high-order reconstruction settings",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "default": "GreenGauss",
+                    "description": "ACM reconstruction method",
+                    "enum": [
+                        "FirstOrder",
+                        "GreenGauss",
+                        "Variational"
+                    ]
+                },
+                "variationalIterations": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Variational reconstruction sweeps",
+                    "minimum": 1.0
+                },
+                "variationalTolerance": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Scaled maximum reconstruction equation defect; zero disables convergence control",
+                    "minimum": 0.0
+                },
+                "variationalMaxIterations": {
+                    "type": "integer",
+                    "default": 10000,
+                    "description": "Maximum convergence-controlled reconstruction sweeps",
+                    "minimum": 1.0
+                },
+                "variationalCheckInterval": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Reconstruction equation-defect check interval",
+                    "minimum": 1.0
+                },
+                "variationalRelaxation": {
+                    "type": "number",
+                    "default": 0.7,
+                    "description": "Convergence-controlled reconstruction defect relaxation",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "variationalUseGMRES": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use GMRES for convergence-controlled reconstruction"
+                },
+                "variationalGMRESSubspace": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Reconstruction GMRES subspace size",
+                    "minimum": 2.0
+                },
+                "variationalGMRESRestarts": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Reconstruction GMRES restart count",
+                    "minimum": 0.0
+                },
+                "variationalGMRESRelativeTolerance": {
+                    "type": "number",
+                    "default": 0.1,
+                    "description": "Reconstruction GMRES relative linear tolerance",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "resetVariationalCoefficients": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Reset variational coefficients at every residual call"
+                },
+                "enableLimiter": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable the selected reconstruction limiter"
+                },
+                "limiterType": {
+                    "type": "string",
+                    "default": "LocalExtrema",
+                    "description": "ACM reconstruction limiter",
+                    "enum": [
+                        "LocalExtrema",
+                        "WBAP",
+                        "CWBAP"
+                    ]
+                }
+            }
+        },
+        "outputSettings": {
+            "type": "object",
+            "description": "Parallel VTK-HDF flow-field output settings",
+            "properties": {
+                "interval": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Outer-step flow-field output interval; zero disables output",
+                    "minimum": 0.0
+                },
+                "directory": {
+                    "type": "string",
+                    "default": "../data/outACM",
+                    "description": "Flow-field output directory"
+                },
+                "prefix": {
+                    "type": "string",
+                    "default": "acm",
+                    "description": "Flow-field file prefix"
+                },
+                "writeInitial": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Write the initial flow field at step zero"
+                }
+            }
+        },
+        "restartSettings": {
+            "type": "object",
+            "description": "Optional same-partition VTK-HDF flow restart",
+            "properties": {
+                "flowFile": {
+                    "type": "string",
+                    "default": "",
+                    "description": "VTK-HDF flow field used for initialization; empty disables restart"
+                },
+                "completedSteps": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Completed steady steps represented by the initial field",
+                    "minimum": 0.0
+                },
+                "writerRanks": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "MPI ranks that wrote the VTK-HDF field",
+                    "minimum": 0.0
+                },
+                "requireTurbulence": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Require turbulence variables in a RANS restart file"
+                }
+            }
+        },
+        "vfvSettings": {
+            "type": "object",
+            "description": "Existing CFV variational-reconstruction settings",
+            "properties": {
+                "maxOrder": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Polynomial degree of reconstruction",
+                    "minimum": 0.0
+                },
+                "intOrder": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Global integration degree",
+                    "minimum": 0.0
+                },
+                "ignoreMeshGeometryDeficiency": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Ignore mesh geometry deficiency warnings"
+                },
+                "nIterCellSmoothScale": {
+                    "type": "integer",
+                    "default": 15,
+                    "description": "Cell smooth scale iterations",
+                    "minimum": 0.0
+                },
+                "intOrderVR": {
+                    "type": "integer",
+                    "default": -1,
+                    "description": "VR integration degree (<0 = use intOrder)"
+                },
+                "intOrderVRBC": {
+                    "type": "integer",
+                    "default": -2,
+                    "description": "VR BC integration degree (-1=intOrder, <-1=intOrderVR)"
+                },
+                "cacheDiffBase": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Cache base function values at quadrature points"
+                },
+                "cacheDiffBaseSize": {
+                    "type": "integer",
+                    "default": 255,
+                    "description": "Cached diff base size (dim+1)"
+                },
+                "jacobiRelax": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "VR SOR/Jacobi relaxation factor",
+                    "minimum": 0.0
+                },
+                "SORInstead": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use SOR instead of relaxed Jacobi"
+                },
+                "smoothThreshold": {
+                    "type": "number",
+                    "default": 0.01,
+                    "description": "Smooth indicator threshold",
+                    "minimum": 0.0
+                },
+                "WBAP_nStd": {
+                    "type": "number",
+                    "default": 10.0,
+                    "description": "WBAP limiter n parameter",
+                    "minimum": 0.0
+                },
+                "normWBAP": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use normWBAP limiter variant"
+                },
+                "limiterBiwayAlter": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Limiter biway alter: 0=wbap-L2, 1=minmod"
+                },
+                "subs2ndOrder": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "2nd order substitution: 0=vfv, 1=gauss, 2=LS, 11=GGMP"
+                },
+                "subs2ndOrderGGScheme": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "2nd order GG scheme: 0=no interp, 1=distance interp"
+                },
+                "svdTolerance": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "SVD tolerance for reconstruction",
+                    "minimum": 0.0
+                },
+                "baseSettings": {
+                    "type": "object",
+                    "description": "Basis function settings",
+                    "properties": {
+                        "localOrientation": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Use local orientation for basis"
+                        },
+                        "anisotropicLengths": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Use anisotropic length scales"
+                        }
+                    }
+                },
+                "functionalSettings": {
+                    "type": "object",
+                    "description": "Functional/weight settings",
+                    "properties": {
+                        "scaleType": {
+                            "type": "string",
+                            "default": "BaryDiff",
+                            "description": "Functional scale type"
+                        },
+                        "scaleMultiplier": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Functional scale multiplier",
+                            "minimum": 0.0
+                        },
+                        "dirWeightScheme": {
+                            "type": "string",
+                            "default": "Factorial",
+                            "description": "Directional weight scheme"
+                        },
+                        "dirWeightCombPowV": {
+                            "type": "integer",
+                            "default": 1,
+                            "description": "Directional weight combination power"
+                        },
+                        "manualDirWeights": {
+                            "type": "array",
+                            "default": [
+                                1.0,
+                                1.0,
+                                0.5,
+                                0.16666666666666666,
+                                0.041666666666666664
+                            ],
+                            "description": "Manual directional weights vector"
+                        },
+                        "geomWeightScheme": {
+                            "type": "string",
+                            "default": "GWNone",
+                            "description": "Geometric weight scheme"
+                        },
+                        "geomWeightPower": {
+                            "type": "number",
+                            "default": 0.5,
+                            "description": "Geometric weight power"
+                        },
+                        "geomWeightPower1": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Geometric weight power 1"
+                        },
+                        "geomWeightPower2": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Geometric weight power 2"
+                        },
+                        "useAnisotropicFunctional": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Use anisotropic functional"
+                        },
+                        "tanWeightScale": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Tangential weight scale"
+                        },
+                        "anisotropicType": {
+                            "type": "string",
+                            "default": "InertiaCoord",
+                            "description": "Anisotropic functional type"
+                        },
+                        "inertiaWeightPower": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "Inertia weight power"
+                        },
+                        "geomWeightBias": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Geometric weight bias"
+                        },
+                        "greenGauss1Weight": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Green-Gauss type-1 weight"
+                        },
+                        "greenGauss1Bias": {
+                            "type": "number",
+                            "default": 0.5,
+                            "description": "Green-Gauss type-1 bias"
+                        },
+                        "greenGauss1Penalty": {
+                            "type": "number",
+                            "default": 0.0,
+                            "description": "Green-Gauss type-1 penalty"
+                        },
+                        "greenGaussSpacial": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Green-Gauss spatial mode: 0=default, 1=uniform"
+                        }
+                    }
+                },
+                "bcWeight": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Boundary condition weight",
+                    "minimum": 0.0
+                }
+            }
+        },
+        "defaultBoundaryType": {
+            "type": "string",
+            "default": "BCFar",
+            "description": "Boundary type applied to unmapped external zones",
+            "enum": [
+                "BCFar",
+                "BCWall",
+                "BCWallInvis",
+                "BCWallIsothermal",
+                "BCOut",
+                "BCOutP",
+                "BCIn",
+                "BCInPsTs",
+                "BCSym",
+                "BCSpecial",
+                "FarField",
+                "VelocityInlet",
+                "PressureOutlet",
+                "NoSlipWall",
+                "SlipWall",
+                "Symmetry"
+            ]
+        },
+        "boundaryConditions": {
+            "type": "array",
+            "description": "Per-zone ACM boundary conditions using Euler-compatible names",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "default": "BCFar",
+                        "description": "ACM boundary type",
+                        "enum": [
+                            "BCFar",
+                            "BCWall",
+                            "BCWallInvis",
+                            "BCWallIsothermal",
+                            "BCOut",
+                            "BCOutP",
+                            "BCIn",
+                            "BCInPsTs",
+                            "BCSym",
+                            "BCSpecial",
+                            "FarField",
+                            "VelocityInlet",
+                            "PressureOutlet",
+                            "NoSlipWall",
+                            "SlipWall",
+                            "Symmetry"
+                        ]
+                    },
+                    "name": {
+                        "type": "string",
+                        "default": "",
+                        "description": "CGNS boundary-zone name"
+                    },
+                    "value": {
+                        "type": "array",
+                        "default": [
+                            0.0,
+                            0.0,
+                            0.0,
+                            0.0
+                        ],
+                        "description": "ACM boundary data [u,v,w,p]"
+                    },
+                    "frameOption": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Reserved frame option",
+                        "minimum": 0.0
+                    },
+                    "anchorOption": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Reserved anchor option",
+                        "minimum": 0.0
+                    },
+                    "integrationOption": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Reserved integration option",
+                        "minimum": 0.0
+                    },
+                    "specialOption": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "ACM special-boundary subtype",
+                        "minimum": 0.0
+                    },
+                    "rectifyOption": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Reserved symmetry rectification option",
+                        "minimum": 0.0
+                    },
+                    "valueExtra": {
+                        "type": "array",
+                        "default": [],
+                        "description": "Optional ACM boundary data"
+                    }
+                }
+            }
+        },
+        "initialState": {
+            "type": "array",
+            "default": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "description": "Uniform initial ACM state [u,v,w,p]"
+        },
+        "boundaryValue": {
+            "type": "array",
+            "default": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "description": "Prescribed default boundary state [u,v,w,p]"
+        },
+        "leftState": {
+            "type": "array",
+            "default": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "description": "Preview left state [u,v,w,p]"
+        },
+        "rightState": {
+            "type": "array",
+            "default": [
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "description": "Preview right state [u,v,w,p]"
+        },
+        "unitNormal": {
+            "type": "array",
+            "default": [
+                1.0,
+                0.0,
+                0.0
+            ],
+            "description": "Preview unit normal"
+        },
+        "nFacesPerRank": {
+            "type": "integer",
+            "default": 1,
+            "description": "Preview faces evaluated on each MPI rank",
+            "minimum": 1.0
+        }
+    },
+    "$schema": "http://json-schema.org/draft-07/schema#"
+}

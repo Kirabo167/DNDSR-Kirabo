@@ -1,0 +1,111 @@
+{
+  "source": "cases/ncfv_euler/3D/iv40_3d_1.cgns",
+  "nodes": 33694,
+  "cells": 60832,
+  "coordinates": {
+    "CoordinateX": {
+      "min": 0.0,
+      "max": 10.0,
+      "sha256": "6b09b238378e8ee32f51c5073f9f182f57a44934db99e0c21f33f6beff6fbdad"
+    },
+    "CoordinateY": {
+      "min": 0.0,
+      "max": 10.0,
+      "sha256": "af6d933acb95b6a7ea0231e857b20e80b5147f34b4af7e41fb54071fb35f42ea"
+    },
+    "CoordinateZ": {
+      "min": 0.0,
+      "max": 4.0,
+      "sha256": "cdf5c94320825ea0e9ff6ced294275e956f39507b26fdfaec2fe0dd4d5386be9"
+    }
+  },
+  "sections": [
+    {
+      "name": "PrismElements",
+      "type": 14,
+      "start": 1,
+      "end": 60832,
+      "sha256": "ac1681d5afe00c0379a7df928cf9ce99fd66f3a8ea3ba30f515c9690eb7e77d7"
+    },
+    {
+      "name": "bc-2",
+      "type": 7,
+      "start": 60833,
+      "end": 61472,
+      "sha256": "d39cd101f7ce95181b9b6cde7e8cf3495c70566bbc444461ddfdfacb6496e5cb"
+    },
+    {
+      "name": "bc-2-1",
+      "type": 7,
+      "start": 61473,
+      "end": 62112,
+      "sha256": "8fdeae2cdb414533f96e9b905b33b0db6b971e65b1823a112b33d25d9573396d"
+    },
+    {
+      "name": "bc-3",
+      "type": 7,
+      "start": 62113,
+      "end": 62752,
+      "sha256": "75ac1bab924b377f3f60e93b6a2377829044cb9ef664c6df0c1f6d0d2416fd3b"
+    },
+    {
+      "name": "bc-3-1",
+      "type": 7,
+      "start": 62753,
+      "end": 63392,
+      "sha256": "3822c3b293fa6d0dfe65a1b36e620b07fc0103ece6617311f9f8baafe4ae8630"
+    },
+    {
+      "name": "bc-4",
+      "type": 5,
+      "start": 63393,
+      "end": 67194,
+      "sha256": "77dc2e93f3fb97420edf305e10cf3938f6e4c3b94cdab4b8230c83908a07df8a"
+    },
+    {
+      "name": "bc-4-1",
+      "type": 5,
+      "start": 67195,
+      "end": 70996,
+      "sha256": "b1488e5161c47a6ffd02d275cd04fbe83167e354b020758d005d7fa2e2a8fd08"
+    }
+  ],
+  "boundaries": [
+    {
+      "name": "bc-2",
+      "old_point_type": 6,
+      "new_point_type": 4,
+      "count": 2
+    },
+    {
+      "name": "bc-2-1",
+      "old_point_type": 6,
+      "new_point_type": 4,
+      "count": 2
+    },
+    {
+      "name": "bc-3",
+      "old_point_type": 6,
+      "new_point_type": 4,
+      "count": 2
+    },
+    {
+      "name": "bc-3-1",
+      "old_point_type": 6,
+      "new_point_type": 4,
+      "count": 2
+    },
+    {
+      "name": "bc-4",
+      "old_point_type": 6,
+      "new_point_type": 4,
+      "count": 2
+    },
+    {
+      "name": "bc-4-1",
+      "old_point_type": 6,
+      "new_point_type": 4,
+      "count": 2
+    }
+  ]
+}

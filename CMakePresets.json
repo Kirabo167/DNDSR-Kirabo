@@ -88,6 +88,22 @@
     ],
     "buildPresets": [
         {
+            "name": "solvers",
+            "displayName": "Build all independent solver executables",
+            "configurePreset": "release-test",
+            "targets": ["all_solvers"]
+        },
+        {
+            "name": "acm",
+            "configurePreset": "release-test",
+            "targets": ["all_acm"]
+        },
+        {
+            "name": "ncfv_euler",
+            "configurePreset": "release-test",
+            "targets": ["all_ncfv_euler"]
+        },
+        {
             "name": "default",
             "displayName": "Build the baseline Euler solver",
             "configurePreset": "default",
@@ -115,7 +131,7 @@
             "displayName": "Build reactive solvers and tests",
             "configurePreset": "reactive-test",
             "targets": [
-                "euler",
+                "all_euler",
                 "eulerState",
                 "canteraConstVolTrajectory",
                 "cantera_Test",
@@ -144,7 +160,7 @@
             "displayName": "Build full-featured schema generators",
             "description": "Build every Euler variant with Cantera enabled so committed schemas describe all supported configurations.",
             "configurePreset": "reactive-test",
-            "targets": ["all_euler"]
+            "targets": ["all_solvers"]
         },
         {
             "name": "ci",
