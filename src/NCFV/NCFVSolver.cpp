@@ -40,7 +40,7 @@ namespace DNDS::NCFV
             _boundaryNameToID.clear();
             const auto object = nlohmann::ordered_json::parse(packed);
             for (const auto &[name, value] : object.items())
-                _boundaryNameToID.emplace(name, value.get<Geom::t_index>());
+                _boundaryNameToID.emplace(name, value.template get<Geom::t_index>());
         }
     }
 
