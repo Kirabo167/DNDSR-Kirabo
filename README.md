@@ -294,8 +294,13 @@ Several Euler, ACM, and legacy NCFV cases require the separately versioned
 
 ### 6. Configure a solver
 
-Input parameters are defined in JSONC config files. Every runnable case starts
-with a selector such as:
+Input parameters are defined in JSONC config files. First choose the executable
+from the table above; that executable fixes the solver family, geometry
+dimension and equation/model specialization.
+
+Maintained cases include a `solver` metadata object so the program can check
+that the case matches the chosen executable. It does not select or switch to
+another solver. The following metadata fragment belongs to `eulerSA3D.exe`:
 
 ```json
 {
@@ -308,9 +313,15 @@ with a selector such as:
 }
 ```
 
-`fieldNVariables` sets the dynamic state size for `NS_EX` and `NS_EX_3D`;
-for fixed-size models it must match the compiled state size. Use the table
-above to select an executable, then `--check-config` to validate a case.
+Running this case with `euler3D.exe` fails the model-compatibility check;
+use `eulerSA3D.exe` for `NS_SA_3D`. Changing the JSON metadata alone cannot
+turn an executable into a different solver. The metadata can appear anywhere
+in the top-level JSON object; it need not be the first property.
+
+For fixed-size models, `fieldNVariables` records the compiled state size and
+must match it. For `NS_EX` and `NS_EX_3D`, it supplies the dynamic state size
+used by the extended/multi-species model. Run the chosen executable with
+`--check-config` to validate the case before mesh loading.
 
 Start with
 [the commented Euler defaults](cases/euler/defaults/euler_default_config_commented.json) and
