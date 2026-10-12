@@ -184,6 +184,35 @@
                     "description": "Implicit global RMS steady or physical defect tolerance",
                     "minimum": 0.0
                 },
+                "dualTimeResidualScales": {
+                    "type": "array",
+                    "default": [
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0,
+                        1.0
+                    ],
+                    "description": "Positive characteristic residual scales for BDF [u,v,w,p,q1,q2]"
+                },
+                "dualTimeRelativeTolerances": {
+                    "type": "array",
+                    "default": [
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0
+                    ],
+                    "description": "BDF per-equation relative defect targets in [0,1); zero uses only the scaled absolute target"
+                },
+                "dualTimeRequireConvergence": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Reject unconverged BDF physical steps; false explicitly enables diagnostic budget-limited marching"
+                },
                 "steadyRelativeTolerance": {
                     "type": "number",
                     "default": 0.0,

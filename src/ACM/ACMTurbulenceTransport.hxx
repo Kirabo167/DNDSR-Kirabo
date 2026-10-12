@@ -123,6 +123,15 @@ namespace DNDS::ACM
                 coefficients,
                 physicalTimeStep,
                 activeVariableCount);
+            for (int variable = 0; variable < activeVariableCount; variable++)
+            {
+                const auto localCoefficients = GetPositiveTurbulenceBDFCoefficients(
+                    previous[ii](variable), previousPrevious[ii](variable), coefficients,
+                    _turbulenceSettings.minimumValue[static_cast<std::size_t>(variable)]);
+                if (localCoefficients.order != coefficients.order)
+                    defect(variable) = rhs[iCell](variable) -
+                                       (_state[iCell](variable) - previous[ii](variable)) / physicalTimeStep;
+            }
             defect.tail(nStoredVariables - activeVariableCount).setZero();
             rhs[iCell] = defect;
             DNDS_check_throw_info(rhs[iCell].allFinite(),
@@ -139,11 +148,31 @@ namespace DNDS::ACM
     {
         EvaluateRHS(_rhs, flow, time);
         ApplyPhysicalBDF2Defect(_rhs, coefficients, physicalTimeStep);
-        const real normalizer = std::sqrt(std::max<real>(
-            1.0,
-            static_cast<real>(_mesh->NumCellGlobal()) *
-                static_cast<real>(ActiveVariableCount())));
-        return _rhs.norm2() / normalizer;
+        std::array<real, 4> localStatistics{};
+        for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
+            for (int variable = 0; variable < ActiveVariableCount(); variable++)
+            {
+                const std::size_t ii = static_cast<std::size_t>(iCell);
+                const std::size_t vv = static_cast<std::size_t>(variable);
+                localStatistics[vv] += _rhs[iCell](variable) * _rhs[iCell](variable);
+                const auto localCoefficients = GetPositiveTurbulenceBDFCoefficients(
+                    _physicalHistory.Previous()[ii](variable),
+                    _physicalHistory.PreviousPrevious()[ii](variable), coefficients,
+                    _turbulenceSettings.minimumValue[vv]);
+                if (localCoefficients.order != coefficients.order)
+                    localStatistics[vv + 2] += 1;
+            }
+        std::array<real, 4> globalStatistics{};
+        MPI::Allreduce(localStatistics.data(), globalStatistics.data(), 4,
+                       DNDS_MPI_REAL, MPI_SUM, _mesh->getMPI().comm);
+        for (std::size_t variable = 0; variable < 2; variable++)
+        {
+            _physicalEquationDefectNorms[variable] = std::sqrt(
+                globalStatistics[variable] / std::max<real>(1, _mesh->NumCellGlobal()));
+            _physicalBackwardEulerCounts[variable] = static_cast<index>(globalStatistics[variable + 2]);
+        }
+        return std::hypot(_physicalEquationDefectNorms[0], _physicalEquationDefectNorms[1]) /
+               std::sqrt(static_cast<real>(ActiveVariableCount()));
     }
 
     template <int gDim>
@@ -965,42 +994,6 @@ namespace DNDS::ACM
         std::vector<TurbulenceState> state2(nOwned);
         real lastResidualNorm = 0;
 
-        // Limit each explicit stage by the distance to the configured admissible interval.
-        // This residual-based local step is especially important for the stiff wall-omega
-        // condition and leaves the four-equation ACM flow time step unchanged.
-        // Modifier: Runzhi Ma.
-        const auto boundedStageTimeStep = [this](
-                                                  const TurbulenceState &state,
-                                                  const TurbulenceState &residual,
-                                                  real requestedTimeStep)
-        {
-            constexpr real safety = 0.9;
-            real boundedTimeStep = requestedTimeStep;
-            for (int variable = 0; variable < ActiveVariableCount(); variable++)
-            {
-                const std::size_t component = static_cast<std::size_t>(variable);
-                if (residual(variable) > 0)
-                {
-                    const real available = std::max(
-                        _turbulenceSettings.maximumValue[component] - state(variable),
-                        0.0);
-                    boundedTimeStep = std::min(
-                        boundedTimeStep,
-                        safety * available / residual(variable));
-                }
-                else if (residual(variable) < 0)
-                {
-                    const real available = std::max(
-                        state(variable) - _turbulenceSettings.minimumValue[component],
-                        0.0);
-                    boundedTimeStep = std::min(
-                        boundedTimeStep,
-                        safety * available / (-residual(variable)));
-                }
-            }
-            return std::max(boundedTimeStep, 0.0);
-        };
-
         for (int substep = 0;
              substep < _turbulenceSettings.transportSubsteps;
              substep++)
@@ -1022,10 +1015,9 @@ namespace DNDS::ACM
                 const real requestedDt = flowPseudoTimeStep[ii] *
                                          _turbulenceSettings.transportTimeScale /
                                          static_cast<real>(_turbulenceSettings.transportSubsteps);
-                const real dt = boundedStageTimeStep(
-                    state0[ii], TurbulenceState(_rhs[iCell]), requestedDt);
                 state1[ii] = ClampTurbulenceState(
-                    state0[ii] + dt * TurbulenceState(_rhs[iCell]),
+                    state0[ii] + BoundedTurbulenceStageIncrement(
+                                    state0[ii], TurbulenceState(_rhs[iCell]), requestedDt, _turbulenceSettings),
                     _turbulenceSettings);
                 _state[iCell] = state1[ii];
             }
@@ -1043,11 +1035,10 @@ namespace DNDS::ACM
                 const real requestedDt = flowPseudoTimeStep[ii] *
                                          _turbulenceSettings.transportTimeScale /
                                          static_cast<real>(_turbulenceSettings.transportSubsteps);
-                const real dt = boundedStageTimeStep(
-                    state1[ii], TurbulenceState(_rhs[iCell]), requestedDt);
                 state2[ii] = ClampTurbulenceState(
                     0.75 * state0[ii] +
-                        0.25 * (state1[ii] + dt * TurbulenceState(_rhs[iCell])),
+                        0.25 * (state1[ii] + BoundedTurbulenceStageIncrement(
+                                                state1[ii], TurbulenceState(_rhs[iCell]), requestedDt, _turbulenceSettings)),
                     _turbulenceSettings);
                 _state[iCell] = state2[ii];
             }
@@ -1065,12 +1056,11 @@ namespace DNDS::ACM
                 const real requestedDt = flowPseudoTimeStep[ii] *
                                          _turbulenceSettings.transportTimeScale /
                                          static_cast<real>(_turbulenceSettings.transportSubsteps);
-                const real dt = boundedStageTimeStep(
-                    state2[ii], TurbulenceState(_rhs[iCell]), requestedDt);
                 _state[iCell] = ClampTurbulenceState(
                     (1.0 / 3.0) * state0[ii] +
                         (2.0 / 3.0) *
-                            (state2[ii] + dt * TurbulenceState(_rhs[iCell])),
+                            (state2[ii] + BoundedTurbulenceStageIncrement(
+                                              state2[ii], TurbulenceState(_rhs[iCell]), requestedDt, _turbulenceSettings)),
                     _turbulenceSettings);
             }
         }

@@ -19,6 +19,32 @@
 using namespace DNDS;
 using namespace DNDS::ACM;
 
+/// @test A variable at either safety bound cannot freeze the other transport equation.
+TEST_CASE("ACM turbulence stage bounds are independent between k and omega")
+{
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::KOmegaSST;
+    TurbulenceState state, residual;
+    state << settings.minimumValue[0], 4;
+    residual << -1, -2;
+    const auto lower = BoundedTurbulenceStageIncrement(state, residual, 0.1, settings);
+    CHECK(lower(0) == 0);
+    CHECK(lower(1) == doctest::Approx(-0.2));
+    state << 0.2, settings.maximumValue[1];
+    residual << 1, 100;
+    const auto upper = BoundedTurbulenceStageIncrement(state, residual, 0.1, settings);
+    CHECK(upper(0) == doctest::Approx(0.1));
+    CHECK(upper(1) == 0);
+
+    state << 0.2, 4;
+    residual << -1e6, 1e20;
+    const TurbulenceState next = state + BoundedTurbulenceStageIncrement(state, residual, 0.1, settings);
+    CHECK(next(0) > settings.minimumValue[0]);
+    CHECK(next(1) < settings.maximumValue[1]);
+    settings.model = TurbulenceModel::SpalartAllmaras;
+    CHECK(BoundedTurbulenceStageIncrement(state, residual, 0.1, settings)(1) == 0);
+}
+
 /// @test Verify runtime model selection and active segregated-state sizes.
 TEST_CASE("ACM turbulence model configuration is runtime selectable")
 {

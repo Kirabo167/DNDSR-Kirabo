@@ -80,9 +80,17 @@ D_q(q*) = R_q(U*, q*, t[n+1])
 ```
 
 每次流场隐式修正后，使用更新后的速度冻结流场，采用有正值界限的 SSPRK3 子步沿伪时间
-松弛 `D_q`。随后以新的湍流黏度重新求流场缺陷。只有流场和湍流两个缺陷都达到
-`implicitTolerance` 才提前结束内迭代。历史 `q[n]`、`q[n-1]` 在内迭代中保持不变，
+松弛 `D_q`。每个活跃变量独立按正值上下限约束其阶段增量，k 触底不会把 omega 的阶段
+步长一起置零。随后以新的湍流黏度重新求流场缺陷。只有每个活跃方程都达到各自的
+收敛目标才结束内迭代。历史 `q[n]`、`q[n-1]` 在内迭代中保持不变，
 物理步结束后才移动。
+
+BDF2 不保证正性。当某单元某个活跃变量的历史组合
+`-a1*q[n]-a2*q[n-1] < a0*minimumValue` 时，该变量在整个物理步中改用 BE 系数
+`(1,-1,0)`。选择仅依赖已完成历史，因此不会在内迭代中跳变；其他变量和流场继续使用
+原来的系数。日志 `turbBE=[q1单元数,q2单元数]` 报告这种局部回退。这些单元的该变量在
+本步采用一阶时间离散；回退较多时需要检查时间步和启动方式，不能宣称全场二阶精度。
+收敛统计仍使用完整、未投影的空间减时间缺陷，正值裁剪不会把无法满足的方程伪装成收敛。
 
 公共 `BDF2TurbulenceHistory` 按活跃变量数验证历史；SA 的第二存储分量固定为零，不参与
 正值检查、BDF 导数和 RMS 缺陷。提交时先验证整个待提交字段，失败不移动任何历史层。
@@ -114,6 +122,27 @@ BDF2 通过 `timeMarchSettings` 选择，当前算例 JSON 文件未被本次实
 - `implicitTolerance`：全局 RMS 物理缺陷收敛阈值；
 - `implicitRelaxation`：每次隐式修正的松弛因子。
 
+物理双时间推进现在逐方程计算 MPI 全局 RMS，顺序为 `[u,v,w,p,q1,q2]`，
+未活跃分量保持零并排除于收敛判定。新增设置为：
+
+- `dualTimeResidualScales`：六个正的方程特征残差尺度，默认均为 1；
+- `dualTimeRelativeTolerances`：各方程相对本物理步初始缺陷的目标，默认均为 0，
+  即关闭相对判据；每个值必须位于 `[0,1)`；
+- `dualTimeRequireConvergence`：默认 `true`。任一方程未收敛就报错退出，且不提交
+  物理历史、不更新物理时间、不写该步的已接受场。短跑诊断可显式设为 `false`，
+  此时日志仍显示 `converged=0`。
+
+每个活跃方程的原始 RMS 目标是
+`max(implicitTolerance*dualTimeResidualScales[i], initialRMS[i]*dualTimeRelativeTolerances[i])`。
+因此可以用具有物理依据的尺度区分速度、压力、k 和 omega，或指定各方程的残差下降比例。
+默认尺度为 1 时仍采用原容差，但现在每个方程都必须通过，不再允许某一分量被混合 RMS 稀释。
+这些判据只控制内迭代；应另做加严目标和减半物理步长的精度验证。
+
+BDF2 的固定次数变分重构（`variationalTolerance=0`）现在每次 RHS 从零系数开始，
+使缺陷由当前状态唯一决定，不受先前 RHS 或线性化调用的暖启动影响。固定次数仍不保证
+重构方程充分收敛；需要严格精度时设置正的 `variationalTolerance`，启用现有方程缺陷
+控制。该受控路径可以保留暖启动，达到重构迭代上限时会报错。
+
 为了保持旧算例可读，加载器在内存中为缺少 `physicalTimeStep` 的旧 JSON 补入默认值
 `0.01`。这不会回写或改动磁盘上的 JSON 文件。动态 `--emit-schema` 输出会列出新字段和
 两种 BDF2 枚举值。
@@ -123,14 +152,16 @@ BDF2 通过 `timeMarchSettings` 选择，当前算例 JSON 文件未被本次实
 BDF2 模式的日志使用 `ACM physical step`，并显示物理时间、当前 BDF 阶数、初末缺陷、
 最小伪时间步和内迭代次数。第一个物理步显示 `BDF1`，第二步起显示 `BDF2`。流场输出
 文件仍按外层步编号命名，但 VTK 时间序列值使用真实物理时间。
+`eqResidual` 和 `eqTarget` 分别输出六个原始方程 RMS 和实际目标；`turbBE` 报告湍流的
+局部 BE 回退数。`BDF2` 标记描述流场历史系数，不能覆盖有回退单元的湍流变量时间阶数。
 
 ## 6. 当前限制
 
 - 只支持固定 `physicalTimeStep`，尚未实现变步长 BDF2 系数；
 - 当前允许层流及全部四种 RANS 模型；活跃湍流变量保存两个已完成物理时间层，
   内迭代采用分离式显式伪时间推进，尚无湍流源项/扩散项的隐式 Jacobian；
-- 物理步在达到最大内迭代次数后仍继续推进，使用者应根据日志中的 `converged` 和缺陷
-  判断内迭代是否充分收敛；
+- 旧配置缺少新增字段时补入严格默认值；曾依靠迭代预算强制推进的短跑，需要显式设置
+  `dualTimeRequireConvergence=false`。生产计算不应通过这个选项绕过收敛检查；
 - 重启文件和 BDF2 两层历史尚未序列化，重启接续非定常计算前需先补齐该功能。
 
 ### SA 与 realizable k-epsilon 的物理时间验证
@@ -171,13 +202,14 @@ BDF2 模式的日志使用 `ACM physical step`，并显示物理时间、当前 
 ```bash
 HWLOC_COMPONENTS=-gl OMP_NUM_THREADS=1 venv/bin/python scripts/check_acm_rans_cylinder.py \
   --integrator BDF2DualTimeGMRES --models SpalartAllmaras RealizableKEpsilon \
-  --steps 3 --physical-time-step 0.01 --max-implicit-iterations 5 \
+  --steps 3 --physical-time-step 0.01 --max-implicit-iterations 5 --allow-unconverged \
   --viscosity 0.0002564102564102564 --np 2
 ```
 
 三维检查在上述命令中再加入
 `--case cases/acm/3D/acm3D_cylinder_Re3900_coarse_SST.json --limiter LocalExtrema`，
-并将 `--np 2` 改为 `--np 4`。脚本从 `build/` 调用已编译的 `app/euler.exe`，
+加入 `--dimension 3`，并将 `--np 2` 改为 `--np 4`。脚本从 `build/` 调用对应维度的
+`app/acm2D.exe` 或 `app/acm3D.exe`，
 通过命令行覆盖模型和推进参数，并逐步核查 BE/BDF2 阶数及最终输出字段。
 
 ## 7. 代码位置

@@ -484,6 +484,32 @@ namespace DNDS::ACM
     }
 
     /** @copydoc TurbulenceSource */
+    TurbulenceState BoundedTurbulenceStageIncrement(
+        const TurbulenceState &state,
+        const TurbulenceState &residual,
+        real requestedTimeStep,
+        const TurbulenceSettings &settings)
+    {
+        DNDS_check_throw_info(std::isfinite(requestedTimeStep) && requestedTimeStep > 0 &&
+                                  state.allFinite() && residual.allFinite(),
+                              "ACM turbulence stage requires finite state, residual and positive time step");
+        TurbulenceState increment = TurbulenceState::Zero();
+        constexpr real safety = 0.9;
+        for (int variable = 0; variable < TurbulenceVariableCount(settings.model); variable++)
+        {
+            const std::size_t component = static_cast<std::size_t>(variable);
+            real dt = requestedTimeStep;
+            if (residual(variable) > 0)
+                dt = std::min(dt, safety * std::max(settings.maximumValue[component] - state(variable), 0.0) /
+                                      residual(variable));
+            else if (residual(variable) < 0)
+                dt = std::min(dt, safety * std::max(state(variable) - settings.minimumValue[component], 0.0) /
+                                      (-residual(variable)));
+            increment(variable) = dt * residual(variable);
+        }
+        return increment;
+    }
+
     TurbulenceState TurbulenceSource(
         const TurbulenceState &turbulenceInput,
         const VelocityGradient &velocityGradient,

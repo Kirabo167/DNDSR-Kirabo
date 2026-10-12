@@ -1127,7 +1127,8 @@ namespace DNDS::ACM
             timeMarch["physicalTimeStep"] = TimeMarchSettings{}.physicalTimeStep;
         const nlohmann::ordered_json timeDefaults = TimeMarchSettings{};
         for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
-                                "steadyCFLGrowth", "steadyCFLReduction"})
+                                "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
+                                "dualTimeRelativeTolerances", "dualTimeRequireConvergence"})
             if (!timeMarch.contains(key))
                 timeMarch[key] = timeDefaults.at(key);
         auto &reconstruction = resolved.at("reconstructionSettings");

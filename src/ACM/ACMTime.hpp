@@ -16,6 +16,7 @@
 #include "DNDS/Config/ConfigParam.hpp"
 #include "DNDS/MPI.hpp"
 
+#include <array>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -124,6 +125,9 @@ namespace DNDS::ACM
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
         real implicitTolerance = 1e-10;                                     ///< Global RMS steady or physical defect tolerance.
+        std::array<real, 6> dualTimeResidualScales{1, 1, 1, 1, 1, 1};         ///< Characteristic residual scales for [u,v,w,p,q1,q2].
+        std::array<real, 6> dualTimeRelativeTolerances{};                    ///< Per-equation target relative to the initial physical defect; zero disables it.
+        bool dualTimeRequireConvergence = true;                            ///< Reject an unconverged physical step before committing histories.
         real steadyRelativeTolerance = 0;                                 ///< Steady inner target relative to this outer step's spatial RMS.
         bool steadyAdaptiveCFL = false;                                   ///< Adapt CFL using post-step spatial residual and inner success.
         real steadyCFLMin = 0.1;
@@ -157,6 +161,9 @@ namespace DNDS::ACM
                        DNDS::Config::range(1));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(dualTimeResidualScales, "Positive characteristic residual scales for BDF [u,v,w,p,q1,q2]");
+            DNDS_FIELD(dualTimeRelativeTolerances, "BDF per-equation relative defect targets in [0,1); zero uses only the scaled absolute target");
+            DNDS_FIELD(dualTimeRequireConvergence, "Reject unconverged BDF physical steps; false explicitly enables diagnostic budget-limited marching");
             DNDS_FIELD(steadyRelativeTolerance, "Steady inner defect relative to current outer spatial residual; zero uses absolute tolerance",
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(steadyAdaptiveCFL, "Adapt steady implicit CFL using actual spatial residual progress");
@@ -180,6 +187,11 @@ namespace DNDS::ACM
          * @throws std::runtime_error If a count, time step, tolerance, or relaxation is invalid.
          */
         void Validate() const;
+        /** @brief Raw per-equation physical defect targets, combining scaled absolute and relative criteria. */
+        std::array<real, 6> DualTimeTargets(const std::array<real, 6> &initialDefects) const;
+        /** @brief Require every active physical equation to meet its own finite RMS target. */
+        bool DualTimeConverged(const std::array<real, 6> &initialDefects,
+                               const std::array<real, 6> &finalDefects, int activeEquations) const;
         /** @brief Absolute/relative target for one steady implicit pseudo-time step. */
         real SteadyImplicitTarget(real initialSpatialResidual) const;
         /** @brief Bounded CFL update; stalled steps cannot trigger a CFL increase. */
@@ -214,6 +226,8 @@ namespace DNDS::ACM
         bool converged = false;     ///< True when the configured defect tolerance was reached.
         real defectTolerance = 0;   ///< Actual absolute or combined steady inner target.
         real turbulenceDefectNorm = 0; ///< Active RANS physical-time defect during BDF2 marching.
+        std::array<real, 6> initialEquationDefectNorms{}; ///< Raw initial RMS values [u,v,w,p,q1,q2].
+        std::array<real, 6> equationDefectNorms{};        ///< Raw final RMS values; inactive entries remain zero.
     };
 
     /**

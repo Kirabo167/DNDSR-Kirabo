@@ -135,6 +135,12 @@ namespace DNDS::ACM
         /** @brief Return the selected runtime turbulence model. */
         TurbulenceModel GetModel() const { return _turbulenceSettings.model; }
 
+        /** @brief Raw MPI-global RMS defects for each active equation at the last physical defect evaluation. */
+        const std::array<real, 2> &GetPhysicalEquationDefectNorms() const { return _physicalEquationDefectNorms; }
+
+        /** @brief Global cells using local BE rather than BDF2, separately for the two stored variables. */
+        const std::array<index, 2> &GetPhysicalBackwardEulerCounts() const { return _physicalBackwardEulerCounts; }
+
         /** @brief Return the number of active transport equations. */
         int ActiveVariableCount() const
         {
@@ -159,6 +165,8 @@ namespace DNDS::ACM
         bool _initialized = false;                   ///< Wall-distance/state initialization guard.
         bool _prepared = false;                      ///< Frozen-viscosity cache validity guard.
         BDF2TurbulenceHistory _physicalHistory;       ///< Active-variable-aware completed physical levels.
+        std::array<real, 2> _physicalEquationDefectNorms{};
+        std::array<index, 2> _physicalBackwardEulerCounts{};
 
         /** @brief Apply the active RANS BDF derivative and zero inactive residual entries. */
         void ApplyPhysicalBDF2Defect(

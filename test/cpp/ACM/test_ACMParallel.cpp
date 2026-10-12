@@ -141,6 +141,96 @@ TEST_CASE_TEMPLATE("ACM converged reconstruction defines a repeatable residual",
                          doctest::Contains("reconstruction did not converge"), std::runtime_error);
 }
 
+/// @test Fixed BDF reconstruction must depend only on the current state, including after a linearization call.
+TEST_CASE_TEMPLATE("ACM BDF2 fixed reconstruction is independent of RHS history", TModel, ACMConvergence2D, ACMConvergence3D)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    KernelConfiguration cfg;
+    cfg.meshSettings.meshFile = (root / (TModel::value == ACMModel::ConstantDensity2D
+                                           ? "data/mesh/ACMVariable_verify2D.cgns"
+                                           : "data/mesh/ACMVariable_verify3D.cgns")).string();
+    cfg.initialState = {0.4, -0.2, 0, 0.1};
+    cfg.boundaryValue = cfg.initialState;
+    cfg.reconstructionSettings.type = ReconstructionType::Variational;
+    cfg.reconstructionSettings.variationalIterations = 3;
+    cfg.reconstructionSettings.resetVariationalCoefficients = false;
+    cfg.timeMarchSettings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
+    cfg.vfvSettings.maxOrder = 2;
+    using TSolver = ACMSolver<TModel::value>;
+    TSolver solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    typename TSolver::TDof rhs, repeated;
+    solver.GetReconstruction()->BuildUDof(rhs, 4);
+    solver.GetReconstruction()->BuildUDof(repeated, 4);
+    for (DNDS::index i = 0; i < solver.GetMesh()->NumCell(); i++)
+    {
+        const auto x = solver.GetReconstruction()->GetCellBary(i);
+        solver.GetState()[i] << 0.4 + 0.08 * std::sin(x(0) + x(1)),
+            -0.2 + 0.08 * std::cos(2 * x(0)), 0, 0.1 + 0.08 * std::sin(x(1));
+    }
+    solver.GetEvaluator()->EvaluateRHS(rhs, solver.GetState());
+    solver.GetEvaluator()->EvaluateRHS(repeated, solver.GetState());
+    repeated.addTo(rhs, -1);
+    CHECK(repeated.norm2() < 1e-13);
+    MatrixField diagonal;
+    typename TSolver::TEvaluator::FaceJacobianField faces;
+    solver.GetEvaluator()->AssembleImplicitLinearization(
+        solver.GetState(), ScalarField(static_cast<std::size_t>(solver.GetMesh()->NumCell()), 0.01), diagonal, faces);
+    solver.GetEvaluator()->EvaluateRHS(repeated, solver.GetState());
+    repeated.addTo(rhs, -1);
+    CHECK(repeated.norm2() < 1e-13);
+}
+
+/// @test Physical RANS norms, BE fallback counts and rejected steps must agree on every MPI rank.
+TEST_CASE_TEMPLATE("ACM RANS physical defect statistics and rejection are MPI global", TModel, ACMConvergence2D, ACMConvergence3D)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    KernelConfiguration cfg;
+    cfg.meshSettings.meshFile = (root / (TModel::value == ACMModel::ConstantDensity2D
+                                           ? "data/mesh/ACMVariable_verify2D.cgns"
+                                           : "data/mesh/ACMVariable_verify3D.cgns")).string();
+    cfg.initialState = {0, 0, 0, 0.3};
+    cfg.defaultBoundaryType = BoundaryType::BCSym;
+    cfg.reconstructionSettings.type = ReconstructionType::FirstOrder;
+    cfg.acmSettings.enableViscousFlux = true;
+    cfg.acmSettings.dynamicViscosity = 0.001;
+    cfg.turbulenceSettings.model = TurbulenceModel::KOmegaSST;
+    cfg.turbulenceSettings.initialValue = {0.2, 4};
+    cfg.turbulenceSettings.secondOrderReconstruction = false;
+    cfg.timeMarchSettings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
+    cfg.timeMarchSettings.nSteps = 1;
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.timeMarchSettings.implicitTolerance = 1e-12;
+    using TSolver = ACMSolver<TModel::value>;
+    TSolver solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    auto boundary = std::make_shared<BoundaryHandler>(cfg.defaultBoundaryType, cfg.InitialState(), cfg.boundaryConditions);
+    typename TSolver::TTurbulence transport(solver.GetMesh(), solver.GetReconstruction(),
+                                             cfg.acmSettings, cfg.turbulenceSettings, boundary);
+    transport.Initialize();
+    transport.InitializePhysicalHistory();
+    TurbulenceState newer;
+    newer << 1e-4, 3.9;
+    transport.GetState().setConstant(newer);
+    transport.CommitPhysicalStep();
+    constexpr DNDS::real dt = 0.05;
+    const DNDS::real norm = transport.EvaluatePhysicalBDF2DefectNorm(
+        solver.GetState(), GetBDF2Coefficients(1), dt, 2 * dt);
+    const DNDS::real kDefect = 0.09 * newer(0) * newer(1);
+    const DNDS::real omegaDefect = 0.0828 * newer(1) * newer(1) +
+                                  (1.5 * newer(1) - 2 * newer(1) + 0.5 * 4) / dt;
+    CHECK(transport.GetPhysicalEquationDefectNorms()[0] == doctest::Approx(kDefect));
+    CHECK(transport.GetPhysicalEquationDefectNorms()[1] == doctest::Approx(omegaDefect));
+    CHECK(norm == doctest::Approx(std::hypot(kDefect, omegaDefect) / std::sqrt(2.0)));
+    CHECK(transport.GetPhysicalBackwardEulerCounts()[0] == solver.GetMesh()->NumCellGlobal());
+    CHECK(transport.GetPhysicalBackwardEulerCounts()[1] == 0);
+    CHECK_THROWS_WITH_AS(solver.Run(), doctest::Contains("histories were not committed"), std::runtime_error);
+}
+
 /// @test Verify face-index independence and rank-count scaling of the MPI all-reduced checksum.
 TEST_CASE("ACM face buffer and MPI reduction are rank-count invariant")
 {

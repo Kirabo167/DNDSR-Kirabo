@@ -149,6 +149,13 @@ namespace DNDS::ACM
         const TurbulenceState &state,
         const TurbulenceSettings &settings);
 
+    /** @brief Bound each active SSPRK increment independently; a blocked variable cannot freeze another equation. */
+    TurbulenceState BoundedTurbulenceStageIncrement(
+        const TurbulenceState &state,
+        const TurbulenceState &residual,
+        real requestedTimeStep,
+        const TurbulenceSettings &settings);
+
     /**
      * @brief Evaluate turbulent dynamic viscosity for one flow/turbulence state.
      * @param turbulence Primitive turbulence variables.

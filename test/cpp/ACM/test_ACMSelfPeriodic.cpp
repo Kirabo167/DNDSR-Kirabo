@@ -294,6 +294,148 @@ TEST_CASE("ACMVariable implicit solvers fold self-periodic coupling into the dia
     VerifySelfPeriodicImplicitOperator<5>(solver);
 }
 
+/// @test A floor-bound k never freezes omega; physical residuals are not projected to hide the blocked equation.
+TEST_CASE("ACM SST omega advances when k is at its floor")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+                                    ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 0);
+    cfg.turbulenceSettings.initialValue = {cfg.turbulenceSettings.minimumValue[0], 4};
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    auto boundary = std::make_shared<ACM::BoundaryHandler>(cfg.defaultBoundaryType, cfg.InitialState(), cfg.boundaryConditions);
+    ACM::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+                                             cfg.acmSettings, cfg.turbulenceSettings, boundary);
+    for (const bool physical : {false, true})
+    {
+        transport.Initialize();
+        if (physical)
+        {
+            transport.InitializePhysicalHistory();
+            transport.AdvancePhysicalBDF2(solver.GetState(), {0.01}, ACM::GetBDF2Coefficients(0), 0.05, 0.05);
+            CHECK(transport.GetPhysicalEquationDefectNorms()[0] > 0);
+        }
+        else
+            transport.Advance(solver.GetState(), {0.01});
+        CHECK(transport.GetState()[0](0) >= cfg.turbulenceSettings.minimumValue[0]);
+        CHECK(transport.GetState()[0](0) < 1.01 * cfg.turbulenceSettings.minimumValue[0]);
+        CHECK(transport.GetState()[0](1) < 3.999);
+        CHECK(transport.GetState()[0](1) > 0);
+    }
+}
+
+/// @test Local BE uses the newer k history while omega continues to solve its independent BDF2 root.
+TEST_CASE("ACM SST positive physical marching solves a mixed BE and BDF2 step")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+                                    ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 0);
+    cfg.turbulenceSettings.initialValue = {0.2, 4};
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    auto boundary = std::make_shared<ACM::BoundaryHandler>(cfg.defaultBoundaryType, cfg.InitialState(), cfg.boundaryConditions);
+    ACM::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+                                             cfg.acmSettings, cfg.turbulenceSettings, boundary);
+    transport.Initialize();
+    transport.InitializePhysicalHistory();
+    transport.GetState()[0] << 1e-4, 3.9;
+    transport.CommitPhysicalStep();
+    constexpr DNDS::real dt = 0.05;
+    const auto coefficients = ACM::GetBDF2Coefficients(1);
+    transport.EvaluatePhysicalBDF2DefectNorm(solver.GetState(), coefficients, dt, 2 * dt);
+    CHECK(transport.GetPhysicalBackwardEulerCounts()[0] == 1);
+    CHECK(transport.GetPhysicalBackwardEulerCounts()[1] == 0);
+    CHECK(transport.GetPhysicalEquationDefectNorms()[0] == doctest::Approx(0.09 * 1e-4 * 3.9));
+    DNDS::real defect = 1;
+    for (int iteration = 0; iteration < 500 && defect > 1e-11; iteration++)
+        defect = transport.AdvancePhysicalBDF2(solver.GetState(), {0.01}, coefficients, dt, 2 * dt);
+    CHECK(defect < 1e-11);
+    constexpr DNDS::real historyOmega = 2 * 3.9 - 0.5 * 4;
+    // This mesh has no wall: F1=0 and SST uses its far-field beta2=0.0828.
+    const DNDS::real exactOmega = 2 * historyOmega /
+                                 (1.5 + std::sqrt(1.5 * 1.5 + 4 * dt * 0.0828 * historyOmega));
+    const DNDS::real exactK = 1e-4 / (1 + dt * 0.09 * exactOmega);
+    CHECK(std::abs(transport.GetState()[0](1) - exactOmega) < 1e-10);
+    CHECK(std::abs(transport.GetState()[0](0) - exactK) < 1e-12);
+    CHECK(transport.GetPhysicalBackwardEulerCounts()[0] == 1);
+}
+
+/// @test Smooth SST decay retains second-order time accuracy when its positive histories need no fallback.
+TEST_CASE("ACM SST BDF2 has second-order physical accuracy away from bounds")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    constexpr DNDS::real endTime = 0.32;
+    constexpr DNDS::real beta = 0.0828;
+    constexpr DNDS::real betaStar = 0.09;
+    const DNDS::real decay = 1 + beta * 4 * endTime;
+    ACM::TurbulenceState exact;
+    exact << 0.2 * std::pow(decay, -betaStar / beta), 4 / decay;
+    for (const auto integrator : {ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
+                                 ACM::TimeIntegratorType::BDF2DualTimeGMRES})
+    {
+        std::array<DNDS::real, 3> errors{};
+        for (std::size_t level = 0; level < errors.size(); level++)
+        {
+            const DNDS::real dt = 0.08 / static_cast<DNDS::real>(1 << level);
+            auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+                                            integrator, dt, static_cast<int>(std::lround(endTime / dt)));
+            cfg.turbulenceSettings.initialValue = {0.2, 4};
+            ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+            solver.ReadMeshAndInitialize();
+            solver.Run(); // Strict defaults require every physical equation to converge.
+            errors[level] = (ACM::TurbulenceState((*solver.GetTurbulenceState())[0]) - exact).norm();
+        }
+        CHECK(errors[0] / errors[1] > 3.5);
+        CHECK(errors[1] / errors[2] > 3.5);
+        std::cout << "ACM RANS BDF2 refinement: model=KOmegaSST integrator=" << static_cast<int>(integrator)
+                  << " errors=" << errors[0] << ',' << errors[1] << ',' << errors[2]
+                  << " ratios=" << errors[0] / errors[1] << ',' << errors[1] / errors[2] << std::endl;
+    }
+}
+
+/// @test Unconverged production steps produce no accepted output; diagnostic advancement needs an explicit option.
+TEST_CASE("ACM physical marching rejects an unconverged step by default")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    struct TempOutput
+    {
+        std::filesystem::path path;
+        ~TempOutput() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } output{meshFile.path.string() + ".outputs"};
+    auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+                                    ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 2);
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.outputSettings.interval = 1;
+    cfg.outputSettings.writeInitial = false;
+    cfg.outputSettings.directory = output.path.string();
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> rejected(mpi, cfg);
+    rejected.ReadMeshAndInitialize();
+    CHECK_THROWS_WITH_AS(rejected.Run(), doctest::Contains("histories were not committed"), std::runtime_error);
+    CHECK_FALSE(std::filesystem::exists(output.path));
+    cfg.timeMarchSettings.dualTimeRequireConvergence = false;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> diagnostic(mpi, cfg);
+    diagnostic.ReadMeshAndInitialize();
+    CHECK_NOTHROW(diagnostic.Run());
+    CHECK(std::filesystem::exists(output.path / "acm_00000001.vtkhdf"));
+    CHECK(std::filesystem::exists(output.path / "acm_00000002.vtkhdf"));
+}
+
 /// @test Recover the exact nonlinear BE/BDF2 decay roots, including both completed history levels.
 TEST_CASE("ACM Wilcox physical marching follows homogeneous k-omega decay")
 {

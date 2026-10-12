@@ -22,6 +22,59 @@
 using namespace DNDS;
 using namespace DNDS::ACM;
 
+/// @test An individual equation cannot hide in an aggregate RMS, even with different variable scales.
+TEST_CASE("ACM dual-time convergence uses separate scaled equation targets")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
+    settings.implicitTolerance = 1e-8;
+    std::array<DNDS::real, 6> initial{1, 2, 0, 10, 0.01, 1e6};
+    std::array<DNDS::real, 6> final{};
+    final[0] = 1.5e-8; // The old four-component RMS would have accepted this equation.
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 4));
+    final[0] = 1e-9;
+    final[5] = 1; // Inactive equations must not affect a laminar step.
+    CHECK(settings.DualTimeConverged(initial, final, 4));
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
+    settings.dualTimeResidualScales[5] = 1e6;
+    settings.dualTimeRelativeTolerances[5] = 1e-3;
+    settings.dualTimeRelativeTolerances[4] = 1e-2;
+    settings.Validate();
+    const auto target = settings.DualTimeTargets(initial);
+    CHECK(target[4] == doctest::Approx(1e-4));
+    CHECK(target[5] == doctest::Approx(1000));
+    final[4] = 5e-5;
+    CHECK(settings.DualTimeConverged(initial, final, 6));
+    final[4] = 2e-4;
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
+    final[0] = std::numeric_limits<DNDS::real>::quiet_NaN();
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
+    settings.dualTimeResidualScales[0] = 0;
+    CHECK_THROWS(settings.Validate());
+    settings.dualTimeResidualScales[0] = 1;
+    settings.dualTimeRelativeTolerances[4] = 1;
+    CHECK_THROWS(settings.Validate());
+}
+
+/// @test A negative BDF history gets a fixed BE equation without modifying valid BDF2 coefficients.
+TEST_CASE("ACM RANS BDF2 falls back only for a history incompatible with positivity")
+{
+    const auto bdf2 = GetBDF2Coefficients(1);
+    const auto fallback = GetPositiveTurbulenceBDFCoefficients(1e-4, 0.2, bdf2, 1e-12);
+    CHECK(fallback.order == 1);
+    CHECK(fallback.current == 1);
+    CHECK(fallback.previous == -1);
+    CHECK(fallback.previousPrevious == 0);
+    const auto valid = GetPositiveTurbulenceBDFCoefficients(3.9, 4, bdf2, 1e-10);
+    CHECK(valid.order == 2);
+    CHECK(valid.current == 1.5);
+    CHECK(valid.previous == -2);
+    CHECK(valid.previousPrevious == 0.5);
+    CHECK(GetPositiveTurbulenceBDFCoefficients(1e-12, 1e-12, bdf2, 1e-12).order == 2);
+    CHECK(GetPositiveTurbulenceBDFCoefficients(1e-4, 0.2, GetBDF2Coefficients(0), 1e-12).order == 1);
+    CHECK_THROWS(GetPositiveTurbulenceBDFCoefficients(0, 0.2, bdf2, 1e-12));
+}
+
 namespace
 {
     /**
@@ -529,7 +582,8 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     nlohmann::ordered_json legacyConfiguration = KernelConfiguration{};
     legacyConfiguration.at("timeMarchSettings").erase("physicalTimeStep");
     for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
-                            "steadyCFLGrowth", "steadyCFLReduction"})
+                            "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
+                            "dualTimeRelativeTolerances", "dualTimeRequireConvergence"})
         legacyConfiguration.at("timeMarchSettings").erase(key);
     for (const char *key : {"variationalTolerance", "variationalMaxIterations", "variationalCheckInterval", "variationalRelaxation"})
         legacyConfiguration.at("reconstructionSettings").erase(key);
@@ -548,6 +602,9 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     CHECK(loaded.configuration.timeMarchSettings.physicalTimeStep == doctest::Approx(0.01));
     CHECK(loaded.configuration.timeMarchSettings.steadyRelativeTolerance == 0);
     CHECK_FALSE(loaded.configuration.timeMarchSettings.steadyAdaptiveCFL);
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeRequireConvergence);
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeResidualScales[5] == 1);
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeRelativeTolerances[5] == 0);
     CHECK(loaded.configuration.reconstructionSettings.variationalTolerance == 0);
     REQUIRE(loaded.resolvedJson.contains("timeMarchSettings"));
     CHECK(loaded.resolvedJson.at("timeMarchSettings").contains("physicalTimeStep"));

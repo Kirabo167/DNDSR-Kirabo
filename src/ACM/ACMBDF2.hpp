@@ -37,6 +37,15 @@ namespace DNDS::ACM
     BDF2Coefficients GetBDF2Coefficients(std::size_t completedPhysicalSteps);
 
     /**
+     * @brief Use BE for one RANS equation if its BDF2 history predicts a value below its floor.
+     * @details The choice depends only on completed histories and is fixed throughout the physical step.
+     * Spatial defects remain unprojected; this fallback does not certify a floor-constrained state as converged.
+     */
+    BDF2Coefficients GetPositiveTurbulenceBDFCoefficients(
+        real previous, real previousPrevious,
+        const BDF2Coefficients &coefficients, real minimumValue);
+
+    /**
      * @brief Return the physical-time mass matrix `diag(1,1,1,0)`.
      * @return Matrix applying physical time derivatives to velocity but not pressure.
      */

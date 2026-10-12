@@ -43,6 +43,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--case", type=Path, default=ROOT / "cases/acm/2D/acm2D.json")
     parser.add_argument("--mesh", type=Path, help="Override the case mesh without rewriting its JSON")
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
+    parser.add_argument("--dimension", type=int, choices=(2, 3), default=2,
+                        help="Geometric dimension of the ACM executable; use a matching case")
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument(
         "--integrator", choices=(
@@ -53,6 +55,8 @@ def arguments() -> argparse.Namespace:
     )
     parser.add_argument("--physical-time-step", type=float)
     parser.add_argument("--max-implicit-iterations", type=int)
+    parser.add_argument("--allow-unconverged", action="store_true",
+                        help="Explicitly allow budget-limited BDF diagnostic steps that miss the physical defect targets")
     parser.add_argument("--reconstruction", choices=("FirstOrder", "GreenGauss", "Variational"))
     parser.add_argument("--limiter", choices=("LocalExtrema", "WBAP", "CWBAP"))
     parser.add_argument("--order", type=int, choices=(0, 1, 2, 3), help="CFV polynomial degree")
@@ -92,7 +96,7 @@ def arguments() -> argparse.Namespace:
 
 
 def command(args: argparse.Namespace, model: str, model_dir: Path) -> list[str]:
-    executable = (args.build_dir / "app/acm2D.exe").resolve()
+    executable = (args.build_dir / f"app/acm{args.dimension}D.exe").resolve()
     invocation = [str(executable), str(args.case.resolve())]
     overrides = {
         "/turbulenceSettings/model": model,
@@ -116,6 +120,8 @@ def command(args: argparse.Namespace, model: str, model_dir: Path) -> list[str]:
         overrides["/timeMarchSettings/physicalTimeStep"] = args.physical_time_step
     if args.max_implicit_iterations is not None:
         overrides["/timeMarchSettings/maxImplicitIterations"] = args.max_implicit_iterations
+    if args.allow_unconverged:
+        overrides["/timeMarchSettings/dualTimeRequireConvergence"] = False
     if args.reconstruction is not None:
         overrides["/reconstructionSettings/type"] = args.reconstruction
     if args.limiter is not None:

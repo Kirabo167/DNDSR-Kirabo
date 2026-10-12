@@ -152,6 +152,12 @@ namespace DNDS::ACM
         DNDS_check_throw_info(
             std::isfinite(implicitTolerance) && implicitTolerance >= 0,
             "ACM implicitTolerance must be finite and non-negative");
+        for (std::size_t equation = 0; equation < dualTimeResidualScales.size(); equation++)
+            DNDS_check_throw_info(
+                std::isfinite(dualTimeResidualScales[equation]) && dualTimeResidualScales[equation] > 0 &&
+                    std::isfinite(dualTimeRelativeTolerances[equation]) &&
+                    dualTimeRelativeTolerances[equation] >= 0 && dualTimeRelativeTolerances[equation] < 1,
+                "ACM dual-time residual scales must be positive and relative tolerances must be in [0,1)");
         DNDS_check_throw_info(
             std::isfinite(steadyRelativeTolerance) && steadyRelativeTolerance >= 0 && steadyRelativeTolerance < 1 &&
                 std::isfinite(steadyCFLMin) && steadyCFLMin > 0 &&
@@ -177,6 +183,36 @@ namespace DNDS::ACM
         DNDS_check_throw_info(
             std::isfinite(gmresRelativeTolerance) && gmresRelativeTolerance >= 0,
             "ACM gmresRelativeTolerance must be finite and non-negative");
+    }
+
+    std::array<real, 6> TimeMarchSettings::DualTimeTargets(const std::array<real, 6> &initialDefects) const
+    {
+        std::array<real, 6> targets{};
+        for (std::size_t equation = 0; equation < targets.size(); equation++)
+        {
+            DNDS_check_throw_info(std::isfinite(initialDefects[equation]) && initialDefects[equation] >= 0,
+                                  "ACM dual-time initial equation defect must be finite and non-negative");
+            targets[equation] = std::max(implicitTolerance * dualTimeResidualScales[equation],
+                                         dualTimeRelativeTolerances[equation] * initialDefects[equation]);
+            DNDS_check_throw_info(std::isfinite(targets[equation]), "ACM dual-time equation target overflowed");
+        }
+        return targets;
+    }
+
+    bool TimeMarchSettings::DualTimeConverged(
+        const std::array<real, 6> &initialDefects,
+        const std::array<real, 6> &finalDefects, int activeEquations) const
+    {
+        DNDS_check_throw_info(activeEquations >= 4 && activeEquations <= 6,
+                              "ACM dual-time convergence requires four to six active equations");
+        const auto targets = DualTimeTargets(initialDefects);
+        for (int equation = 0; equation < activeEquations; equation++)
+        {
+            const auto ii = static_cast<std::size_t>(equation);
+            if (!std::isfinite(finalDefects[ii]) || finalDefects[ii] < 0 || finalDefects[ii] > targets[ii])
+                return false;
+        }
+        return true;
     }
 
     real TimeMarchSettings::SteadyImplicitTarget(real initialSpatialResidual) const

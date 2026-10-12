@@ -136,6 +136,11 @@ namespace DNDS::ACM
         _linearIncrement.setConstant(0.0);
 
         auto flowReconstructionSettings = _configuration.reconstructionSettings;
+        // A physical defect must be a function of the current state. Fixed sweeps
+        // from a warm start depend on previous RHS calls, including linearization.
+        if (IsBDF2DualTimeIntegrator(_configuration.timeMarchSettings.integrator) &&
+            flowReconstructionSettings.variationalTolerance == 0)
+            flowReconstructionSettings.resetVariationalCoefficients = true;
         if (_configuration.vfvSettings.maxOrder == 0 &&
             flowReconstructionSettings.type == ReconstructionType::Variational)
         {
@@ -610,12 +615,39 @@ namespace DNDS::ACM
         if (_turbulence)
             report.turbulenceDefectNorm = _turbulence->EvaluatePhysicalBDF2DefectNorm(
                 _u, coefficients, physicalTimeStep, physicalTime);
+        const int activeEquations = Traits::nVarsFixed + (_turbulence ? _turbulence->ActiveVariableCount() : 0);
+        const auto recordEquationDefects = [&]()
+        {
+            std::array<real, 4> localSquares{};
+            for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
+                for (int variable = 0; variable < Traits::nVarsFixed; variable++)
+                    localSquares[static_cast<std::size_t>(variable)] +=
+                        _linearRhs[iCell](variable) * _linearRhs[iCell](variable);
+            std::array<real, 4> globalSquares{};
+            MPI::Allreduce(localSquares.data(), globalSquares.data(), Traits::nVarsFixed,
+                           DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+            for (int variable = 0; variable < Traits::nVarsFixed; variable++)
+                report.equationDefectNorms[static_cast<std::size_t>(variable)] = std::sqrt(
+                    globalSquares[static_cast<std::size_t>(variable)] /
+                    std::max<real>(1, _mesh->NumCellGlobal()));
+            if (_turbulence)
+                for (int variable = 0; variable < _turbulence->ActiveVariableCount(); variable++)
+                    report.equationDefectNorms[static_cast<std::size_t>(variable + Traits::nVarsFixed)] =
+                        _turbulence->GetPhysicalEquationDefectNorms()[static_cast<std::size_t>(variable)];
+        };
+        recordEquationDefects();
+        report.initialEquationDefectNorms = report.equationDefectNorms;
+        report.defectTolerance = _configuration.timeMarchSettings.implicitTolerance;
+        const auto converged = [&]()
+        {
+            return _configuration.timeMarchSettings.DualTimeConverged(
+                report.initialEquationDefectNorms, report.equationDefectNorms, activeEquations);
+        };
         for (int iteration = 0;
              iteration < _configuration.timeMarchSettings.maxImplicitIterations;
              iteration++)
         {
-            if (report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance &&
-                report.turbulenceDefectNorm <= _configuration.timeMarchSettings.implicitTolerance)
+            if (converged())
             {
                 report.converged = true;
                 break;
@@ -649,10 +681,9 @@ namespace DNDS::ACM
             }
             report.iterations = iteration + 1;
             report.finalDefectNorm = evaluateDefect();
+            recordEquationDefects();
         }
-        report.converged =
-            report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance &&
-            report.turbulenceDefectNorm <= _configuration.timeMarchSettings.implicitTolerance;
+        report.converged = converged();
         return report;
     }
 
@@ -737,9 +768,16 @@ namespace DNDS::ACM
                     bdf2History,
                     pseudoTimeStep,
                     residualTime);
-                // Match the reference fixed-pseudo-iteration policy: reaching the
-                // inner limit completes the physical step, while report.converged
-                // records whether the requested defect tolerance was also reached.
+                DNDS_check_throw_info(
+                    report.converged || !_configuration.timeMarchSettings.dualTimeRequireConvergence,
+                    fmt::format("ACM physical step {} at time {:.6e} did not converge after {} iterations: "
+                                "flow={:.6e}, turbulence={:.6e}, equation RMS={}, targets={}; histories were not committed. "
+                                "dualTimeRequireConvergence=false enables diagnostic marching only",
+                                absoluteStep, residualTime, report.iterations,
+                                report.finalDefectNorm, report.turbulenceDefectNorm,
+                                nlohmann::ordered_json(report.equationDefectNorms).dump(),
+                                nlohmann::ordered_json(_configuration.timeMarchSettings.DualTimeTargets(
+                                    report.initialEquationDefectNorms)).dump()));
                 bdf2History.Commit(states);
                 if (_turbulence)
                     _turbulence->CommitPhysicalStep();
@@ -796,6 +834,14 @@ namespace DNDS::ACM
                       << " turbResidual=" << turbulenceResidual
                       << " inner=" << report.iterations
                       << " converged=" << report.converged;
+                if (useBDF2)
+                {
+                    log() << " eqResidual=" << nlohmann::ordered_json(report.equationDefectNorms).dump()
+                          << " eqTarget=" << nlohmann::ordered_json(_configuration.timeMarchSettings.DualTimeTargets(
+                                 report.initialEquationDefectNorms)).dump();
+                    if (_turbulence)
+                        log() << " turbBE=" << nlohmann::ordered_json(_turbulence->GetPhysicalBackwardEulerCounts()).dump();
+                }
                 if (steadyControls)
                     log() << " innerTarget=" << report.defectTolerance
                           << " steadyResidual=" << steadyResidual

@@ -85,6 +85,22 @@ namespace DNDS::ACM
         return mass;
     }
 
+    BDF2Coefficients GetPositiveTurbulenceBDFCoefficients(
+        real previous, real previousPrevious,
+        const BDF2Coefficients &coefficients, real minimumValue)
+    {
+        ValidateCoefficients(coefficients);
+        DNDS_check_throw_info(std::isfinite(previous) && previous > 0 &&
+                                  std::isfinite(previousPrevious) && previousPrevious > 0 &&
+                                  std::isfinite(minimumValue) && minimumValue > 0,
+                              "ACM positive RANS BDF requires positive finite histories and floor");
+        const real history = -coefficients.previous * previous -
+                             coefficients.previousPrevious * previousPrevious;
+        if (coefficients.order == 2 && history < coefficients.current * minimumValue)
+            return GetBDF2Coefficients(0);
+        return coefficients;
+    }
+
     /** @copydoc EvaluateBDF2PhysicalDerivative */
     State EvaluateBDF2PhysicalDerivative(
         const State &current,
