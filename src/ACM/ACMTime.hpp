@@ -18,6 +18,7 @@
 
 #include <array>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -112,6 +113,8 @@ namespace DNDS::ACM
             {GMRESPreconditionerType::LUSGS, "LUSGS"},
         })
 
+    struct TimeStepReport;
+
     /// Runtime controls shared by steady pseudo-time and BDF2 dual-time stepping.
     struct TimeMarchSettings
     {
@@ -125,6 +128,9 @@ namespace DNDS::ACM
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
         real implicitTolerance = 1e-10;                                     ///< Global RMS steady or physical defect tolerance.
+        std::string dualTimeConvergenceCriterion = "Both";                  ///< Combine flow/RANS convergence: Both, Either, Flow, or Turbulence.
+        real dualTimeFlowRelativeTolerance = 0;                            ///< Flow RMS target relative to this physical step's initial defect; zero uses equation targets.
+        real dualTimeTurbulenceRelativeTolerance = 0;                      ///< Active RANS RMS target relative to its own initial physical defect.
         std::array<real, 6> dualTimeResidualScales{1, 1, 1, 1, 1, 1};         ///< Characteristic residual scales for [u,v,w,p,q1,q2].
         std::array<real, 6> dualTimeRelativeTolerances{};                    ///< Per-equation target relative to the initial physical defect; zero disables it.
         bool dualTimeRequireConvergence = true;                            ///< Reject an unconverged physical step before committing histories.
@@ -161,6 +167,12 @@ namespace DNDS::ACM
                        DNDS::Config::range(1));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(dualTimeConvergenceCriterion, "BDF convergence selection: Both groups, Either active group, Flow only, or Turbulence only",
+                       DNDS::Config::enum_values({"Both", "Either", "Flow", "Turbulence"}));
+            DNDS_FIELD(dualTimeFlowRelativeTolerance, "BDF flow RMS target relative to this physical step's initial flow defect; zero uses per-equation targets",
+                       DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(dualTimeTurbulenceRelativeTolerance, "BDF active RANS RMS target relative to its own initial physical defect; zero uses per-equation targets",
+                       DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(dualTimeResidualScales, "Positive characteristic residual scales for BDF [u,v,w,p,q1,q2]");
             DNDS_FIELD(dualTimeRelativeTolerances, "BDF per-equation relative defect targets in [0,1); zero uses only the scaled absolute target");
             DNDS_FIELD(dualTimeRequireConvergence, "Reject unconverged BDF physical steps; false explicitly enables diagnostic budget-limited marching");
@@ -187,11 +199,15 @@ namespace DNDS::ACM
          * @throws std::runtime_error If a count, time step, tolerance, or relaxation is invalid.
          */
         void Validate() const;
+        /** @brief Combine the raw absolute tolerance with one group's own initial physical RMS. */
+        real DualTimeGroupTarget(real initialDefect, bool turbulence) const;
         /** @brief Raw per-equation physical defect targets, combining scaled absolute and relative criteria. */
         std::array<real, 6> DualTimeTargets(const std::array<real, 6> &initialDefects) const;
-        /** @brief Require every active physical equation to meet its own finite RMS target. */
+        /** @brief Apply the selected group combination to per-equation targets; all active defects must be finite. */
         bool DualTimeConverged(const std::array<real, 6> &initialDefects,
                                const std::array<real, 6> &finalDefects, int activeEquations) const;
+        /** @brief Apply the selected group combination using grouped RMS where enabled, otherwise equation targets. */
+        bool DualTimeConverged(const TimeStepReport &report, int activeEquations) const;
         /** @brief Absolute/relative target for one steady implicit pseudo-time step. */
         real SteadyImplicitTarget(real initialSpatialResidual) const;
         /** @brief Bounded CFL update; stalled steps cannot trigger a CFL increase. */
@@ -226,8 +242,23 @@ namespace DNDS::ACM
         bool converged = false;     ///< True when the configured defect tolerance was reached.
         real defectTolerance = 0;   ///< Actual absolute or combined steady inner target.
         real turbulenceDefectNorm = 0; ///< Active RANS physical-time defect during BDF2 marching.
+        real initialTurbulenceDefectNorm = 0; ///< RANS RMS before any update in this physical step.
+        real turbulenceDefectTolerance = 0;   ///< Absolute/relative RANS group target fixed for this physical step.
         std::array<real, 6> initialEquationDefectNorms{}; ///< Raw initial RMS values [u,v,w,p,q1,q2].
         std::array<real, 6> equationDefectNorms{};        ///< Raw final RMS values; inactive entries remain zero.
+
+        /** @brief Ratio to this step's initial flow RMS; zero/zero is zero, nonzero/zero is infinity. */
+        real FlowDefectRatio() const
+        {
+            return initialDefectNorm > 0 ? finalDefectNorm / initialDefectNorm
+                                        : (finalDefectNorm == 0 ? 0 : std::numeric_limits<real>::infinity());
+        }
+        /** @brief Ratio to this step's own initial active RANS RMS. */
+        real TurbulenceDefectRatio() const
+        {
+            return initialTurbulenceDefectNorm > 0 ? turbulenceDefectNorm / initialTurbulenceDefectNorm
+                                                  : (turbulenceDefectNorm == 0 ? 0 : std::numeric_limits<real>::infinity());
+        }
     };
 
     /**

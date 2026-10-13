@@ -1,0 +1,253 @@
+// File: cases/acm/3D/acm3D_cylinder_Re3000_coarse_SST_BDF2_LUSGS.json
+// Purpose: Three-dimensional, constant-density SST URANS cylinder flow at Re_D=3000.
+// Author/Modifier: Runzhi Ma
+//
+// Mesh verification:
+//   - File: data/mesh/ACM3D_Cylinder_Re3900/CylinderRe3900_coarse.cgns
+//   - CGNS dimensions: CellDimension=3, PhysicalDimension=3.
+//   - Domain: x=[-8,52], y=[-25,25], z=[0,1.5*pi].
+//   - Cylinder diameter: D=1, cylinder axis parallel to z.
+//   - Cells: 210656 (26112 HEXA_8 and 184544 PENTA_6).
+//   - Boundaries: WALL=1536 quadrilateral faces, FAR=1760 quadrilateral faces,
+//     plus PERIODIC_1/PERIODIC_1_DONOR on the two spanwise planes.
+//
+// Nondimensionalization:
+//   rho_inf=1, U_inf=1, D=1, so Re_D=rho_inf*U_inf*D/mu=1/mu.
+//   For Re_D=3000, dynamicViscosity=1/3000=0.0003333333333333333.
+//
+// Modelling note:
+//   KOmegaSST solves the k and omega transport equations with shear-stress limiting.
+//   At Re=3000 the real cylinder wake is transitional. This is a fully turbulent URANS
+//   baseline on the supplied coarse mesh; grid/time convergence and wall resolution still
+//   need checking before quantitative comparison with measured shedding frequencies.
+//   No measured inflow turbulence was supplied: assume I=1% and length scale ell=0.07D.
+//   For U_inf=D=1, k=1.5*(I*U_inf)^2=0.00015 and
+//   omega=sqrt(k)/(0.09^0.25*ell)=0.31943828249997. Adjust to measured inflow conditions.
+//
+// Time integration:
+//   Unsteady BDF2 dual-time LU-SGS marching. The first physical step uses backward Euler,
+//   and subsequent steps use BDF2. With dt=0.01 and 10000 steps, t*=100.
+//   GMRES is disabled for both flow corrections and variational reconstruction.
+//   Either mode accepts a physical step when the flow or SST group meets its own target.
+//   Each target is max(1e-8 absolute RMS, 1e-3 times that group's physical-step initial RMS).
+//   Check converged=1, convergenceCriterion=Either, and both residual diagnostics at every step.
+//   The inner-iteration cap alone does not guarantee convergence.
+//
+// Intended launch from build/ with 32 MPI ranks:
+//   HWLOC_COMPONENTS=-gl OMP_NUM_THREADS=1 mpirun -np 32 ./app/acm3D.exe \
+//     ../cases/acm/3D/acm3D_cylinder_Re3000_coarse_SST_BDF2_LUSGS.json
+// Configuration-only check from build/ (does not load the mesh or run time steps):
+//   HWLOC_COMPONENTS=-gl OMP_NUM_THREADS=1 ./app/acm3D.exe \
+//     ../cases/acm/3D/acm3D_cylinder_Re3000_coarse_SST_BDF2_LUSGS.json --check-config
+{
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity3D",
+        "fieldNVariables": 4
+    },
+
+    // Constant-density ACM state order is [u,v,w,p].
+    "acmSettings": {
+        "rho0": 1.0,
+        "beta2": 4.0,
+        "alpha": 0.5,
+        // Re_D=1/mu=3000.
+        "dynamicViscosity": 0.0003333333333333333,
+        "riemannSolverType": "Roe",
+        "pressureStorage": "PhysicalP",
+        "entropyFixRatio": 0.05,
+        "pressureReference": 0.0,
+        "farFieldValue": [1.0, 0.0, 0.0, 0.0],
+        "enableViscousFlux": true
+    },
+
+    // Physical BDF2 steps with local-CFL pseudo-time convergence in every step.
+    "timeMarchSettings": {
+        "integrator": "BDF2DualTimeLUSGS",
+        "nSteps": 10000,
+        "pseudoTimeStep": 0.0005,
+        "physicalTimeStep": 0.01,
+        "useCFLTimeStep": true,
+        "useLocalTimeStep": true,
+        // This is a conservative initial setting for the supplied mixed-element coarse mesh.
+        "cfl": 5.0,
+        "maximumPseudoTimeStep": 0.005,
+        "maxImplicitIterations": 100,
+        "implicitTolerance": 1e-8,
+        // Both: both groups; Either: either group; Flow/Turbulence: check only that group.
+        "dualTimeConvergenceCriterion": "Either",
+        // Separate physical-step flow and SST RMS references, each with its own three-order target.
+        "dualTimeFlowRelativeTolerance": 1e-3,
+        "dualTimeTurbulenceRelativeTolerance": 1e-3,
+        // Steady-only controls are inactive during BDF2 physical-time marching.
+        "steadyRelativeTolerance": 0.0,
+        "steadyAdaptiveCFL": false,
+        "steadyCFLMin": 0.1,
+        "steadyCFLMax": 20.0,
+        "steadyCFLGrowth": 1.5,
+        "steadyCFLReduction": 0.5,
+        "implicitRelaxation": 0.7,
+        "lusgsSweeps": 2,
+        // Retained for the complete shared schema; inactive with BDF2DualTimeLUSGS.
+        "gmresSubspace": 20,
+        "gmresRestarts": 3,
+        "gmresRelativeTolerance": 1e-4,
+        "gmresPreconditioner": "LUSGS"
+    },
+
+    // Primitive SST variables [k, omega], using the assumed inflow conditions above.
+    "turbulenceSettings": {
+        "model": "KOmegaSST",
+        "initialValue": [0.00015, 0.31943828249997],
+        "farFieldValue": [0.00015, 0.31943828249997],
+        "minimumValue": [1e-12, 1e-10],
+        "maximumValue": [1000000.0, 1000000000000.0],
+        "maximumEddyViscosityRatio": 100000.0,
+        "wallOmegaCoefficient": 800.0,
+        "enableSourceTerms": true,
+        "secondOrderReconstruction": true,
+        "transportSubsteps": 8,
+        "transportTimeScale": 0.1,
+        "wallDistanceMethod": 1,
+        "wallDistanceExecution": 0,
+        "wallDistanceSubdivide": 0,
+        "minimumWallDistance": 1e-10,
+        "wallDistanceVerbose": 0
+    },
+
+    "meshSettings": {
+        "meshFile": "../data/mesh/ACM3D_Cylinder_Re3900/CylinderRe3900_coarse.cgns",
+        "meshElevation": 0,
+        "meshDirectBisect": 0,
+        "meshReorderCells": 0,
+        "periodicTolerance": 1e-9,
+        // Spanwise periodic length Lz=1.5*pi.
+        "periodicTranslation1": [0.0, 0.0, 4.71238898038469],
+        "periodicTranslation2": [0.0, 0.0, 0.0],
+        "periodicTranslation3": [0.0, 0.0, 0.0],
+        "partitionOptions": {
+            "metisType": "KWAY",
+            "metisUfactor": 20,
+            "metisSeed": 0,
+            "edgeWeightMethod": 0,
+            "metisNcuts": 3
+        }
+    },
+
+    // High-order CFV reconstruction with the ACM characteristic CWBAP limiter.
+    "reconstructionSettings": {
+        "type": "Variational",
+        "variationalIterations": 3,
+        // Fixed-point reconstruction sweeps; no reconstruction GMRES.
+        "variationalTolerance": 0.0,
+        "variationalMaxIterations": 10000,
+        "variationalCheckInterval": 10,
+        "variationalRelaxation": 0.7,
+        "variationalUseGMRES": false,
+        // Inactive shared-schema settings.
+        "variationalGMRESSubspace": 20,
+        "variationalGMRESRestarts": 2,
+        "variationalGMRESRelativeTolerance": 0.1,
+        "resetVariationalCoefficients": false,
+        "enableLimiter": true,
+        "limiterType": "CWBAP"
+    },
+
+    "outputSettings": {
+        "interval": 50,
+        "directory": "../data/outACM/acm3D_CylinderRe3000_coarse_SST_BDF2_LUSGS",
+        "prefix": "CylinderRe3000_coarse_SST_BDF2_LUSGS",
+        "writeInitial": true
+    },
+
+    // Start a new physical-time calculation; no BDF2 history restart is available.
+    "restartSettings": {
+        "flowFile": "",
+        "completedSteps": 0,
+        "writerRanks": 0,
+        "requireTurbulence": false
+    },
+
+    "vfvSettings": {
+        "maxOrder": 2,
+        "intOrder": 4,
+        "ignoreMeshGeometryDeficiency": false,
+        "nIterCellSmoothScale": 15,
+        "intOrderVR": -1,
+        "intOrderVRBC": -2,
+        "cacheDiffBase": false,
+        "cacheDiffBaseSize": 4,
+        "jacobiRelax": 1.0,
+        "SORInstead": true,
+        "smoothThreshold": 0.01,
+        "WBAP_nStd": 10.0,
+        // Use the corrected dimension-aware 3-D polynomial norm implementation.
+        "normWBAP": true,
+        "limiterBiwayAlter": 0,
+        "subs2ndOrder": 0,
+        "subs2ndOrderGGScheme": 1,
+        "svdTolerance": 0.0,
+        "baseSettings": {
+            "localOrientation": false,
+            "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 1.0,
+            "dirWeightScheme": "Factorial",
+            "dirWeightCombPowV": 1,
+            "manualDirWeights": [1.0, 1.0, 0.5, 0.16666666666666666, 0.041666666666666664],
+            "geomWeightScheme": "GWNone",
+            "geomWeightPower": 0.5,
+            "geomWeightPower1": 0.0,
+            "geomWeightPower2": 0.0,
+            "useAnisotropicFunctional": false,
+            "tanWeightScale": 1.0,
+            "anisotropicType": "InertiaCoord",
+            "inertiaWeightPower": 1.0,
+            "geomWeightBias": 0.0,
+            "greenGauss1Weight": 0.0,
+            "greenGauss1Bias": 0.5,
+            "greenGauss1Penalty": 0.0,
+            "greenGaussSpacial": 0
+        },
+        "bcWeight": 1.0
+    },
+
+    "defaultBoundaryType": "BCFar",
+    "boundaryConditions": [
+        {
+            "type": "BCWall",
+            "name": "WALL",
+            "value": [0.0, 0.0, 0.0, 0.0],
+            "frameOption": 0,
+            "anchorOption": 0,
+            "integrationOption": 0,
+            "specialOption": 0,
+            "rectifyOption": 0,
+            "valueExtra": []
+        },
+        {
+            "type": "BCFar",
+            "name": "FAR",
+            "value": [1.0, 0.0, 0.0, 0.0],
+            "frameOption": 0,
+            "anchorOption": 0,
+            "integrationOption": 0,
+            "specialOption": 0,
+            "rectifyOption": 0,
+            "valueExtra": []
+        }
+    ],
+
+    // Small transverse perturbation breaks exact cross-flow symmetry.
+    // The initial state is uniform in z; a three-dimensional mesh alone does not seed
+    // physical spanwise instabilities. Apply spanwise-dependent initialization separately if needed.
+    "initialState": [1.0, 0.001, 0.0, 0.0],
+    "boundaryValue": [1.0, 0.0, 0.0, 0.0],
+    "leftState": [1.0, 0.0, 0.0, 0.0],
+    "rightState": [0.0, 0.0, 0.0, 0.0],
+    "unitNormal": [1.0, 0.0, 0.0],
+    "nFacesPerRank": 16
+}

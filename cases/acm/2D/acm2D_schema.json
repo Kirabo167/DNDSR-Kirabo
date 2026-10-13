@@ -184,6 +184,31 @@
                     "description": "Implicit global RMS steady or physical defect tolerance",
                     "minimum": 0.0
                 },
+                "dualTimeConvergenceCriterion": {
+                    "type": "string",
+                    "default": "Both",
+                    "description": "BDF convergence selection: Both groups, Either active group, Flow only, or Turbulence only",
+                    "enum": [
+                        "Both",
+                        "Either",
+                        "Flow",
+                        "Turbulence"
+                    ]
+                },
+                "dualTimeFlowRelativeTolerance": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "BDF flow RMS target relative to this physical step's initial flow defect; zero uses per-equation targets",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "dualTimeTurbulenceRelativeTolerance": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "BDF active RANS RMS target relative to its own initial physical defect; zero uses per-equation targets",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
                 "dualTimeResidualScales": {
                     "type": "array",
                     "default": [

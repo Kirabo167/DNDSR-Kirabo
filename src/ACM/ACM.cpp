@@ -977,6 +977,9 @@ namespace DNDS::ACM
         acmSettings.Validate();
         timeMarchSettings.Validate();
         turbulenceSettings.Validate();
+        DNDS_check_throw_info(timeMarchSettings.dualTimeConvergenceCriterion != "Turbulence" ||
+                                  TurbulenceVariableCount(turbulenceSettings.model) > 0,
+                              "ACM Turbulence convergence requires an active turbulence model");
         DNDS_check_throw_info(
             !IsBDF2DualTimeIntegrator(timeMarchSettings.integrator) ||
                 SupportsBDF2TurbulenceModel(turbulenceSettings.model),
@@ -1128,7 +1131,8 @@ namespace DNDS::ACM
         const nlohmann::ordered_json timeDefaults = TimeMarchSettings{};
         for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
                                 "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
-                                "dualTimeRelativeTolerances", "dualTimeRequireConvergence"})
+                                "dualTimeRelativeTolerances", "dualTimeRequireConvergence",
+                                "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion"})
             if (!timeMarch.contains(key))
                 timeMarch[key] = timeDefaults.at(key);
         auto &reconstruction = resolved.at("reconstructionSettings");

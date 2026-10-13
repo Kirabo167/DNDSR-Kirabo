@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <regex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -434,6 +436,117 @@ TEST_CASE("ACM physical marching rejects an unconverged step by default")
     CHECK_NOTHROW(diagnostic.Run());
     CHECK(std::filesystem::exists(output.path / "acm_00000001.vtkhdf"));
     CHECK(std::filesystem::exists(output.path / "acm_00000002.vtkhdf"));
+}
+
+/// @test Native SST physical marching recomputes the relative reference every step and stops above the absolute floor.
+TEST_CASE("ACM SST physical marching uses each step's own relative RMS reference")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    for (const auto integrator : {ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
+                                 ACM::TimeIntegratorType::BDF2DualTimeGMRES})
+    {
+        auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST, integrator, 0.05, 3);
+        cfg.turbulenceSettings.initialValue = {0.2, 4};
+        cfg.timeMarchSettings.implicitTolerance = 1e-8;
+        cfg.timeMarchSettings.dualTimeFlowRelativeTolerance = 1e-3;
+        cfg.timeMarchSettings.dualTimeTurbulenceRelativeTolerance = 1e-3;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        std::ostringstream captured;
+        {
+            struct Capture
+            {
+                std::streambuf *previous;
+                explicit Capture(std::ostringstream &target) : previous(std::cout.rdbuf(target.rdbuf())) {}
+                ~Capture() { std::cout.rdbuf(previous); }
+            } capture(captured);
+            solver.Run();
+        }
+        std::istringstream lines(captured.str());
+        std::vector<DNDS::real> initialResiduals;
+        for (std::string line; std::getline(lines, line);)
+        {
+            if (line.find("ACM physical step") == std::string::npos)
+                continue;
+            CAPTURE(line);
+            CHECK(line.find("converged=1") != std::string::npos);
+            const auto value = [&](const char *name)
+            {
+                std::smatch match;
+                if (!std::regex_search(line, match, std::regex(std::string(name) + "=(\\S+)")))
+                    throw std::runtime_error(std::string("Missing physical-step log field: ") + name);
+                return std::stod(match[1].str());
+            };
+            const DNDS::real initial = value("turbInitial");
+            const DNDS::real final = value("turbResidual");
+            const DNDS::real target = value("turbTarget");
+            const DNDS::real expected = std::max(1e-8, initial * 1e-3);
+            CHECK(std::abs(target - expected) <= 0.005 * expected); // Printed values have three decimal digits.
+            CHECK(final <= 1.005 * target);
+            CHECK(value("turbRatio") <= 1.005e-3);
+            CHECK(final > 1e-8); // The relative criterion must actually be able to stop the solve.
+            CHECK(value("flowTarget") == doctest::Approx(1e-8)); // Zero initial flow uses the absolute criterion.
+            CHECK(value("flowRatio") == 0);
+            initialResiduals.push_back(initial);
+        }
+        REQUIRE(initialResiduals.size() == 3);
+        CHECK(std::abs(initialResiduals[1] - initialResiduals[0]) > 0.01 * initialResiduals[0]);
+        std::cout << "ACM SST grouped BDF2 references, integrator=" << static_cast<int>(integrator) << '\n'
+                  << captured.str();
+    }
+}
+
+/// @test Flow/Either can accept a physical step while SST remains above target; Both/Turbulence cannot.
+TEST_CASE("ACM SST physical marching applies the configured convergence selection")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    for (const auto integrator : {ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
+                                 ACM::TimeIntegratorType::BDF2DualTimeGMRES})
+        for (const std::string criterion : {"Both", "Either", "Flow", "Turbulence"})
+        {
+            CAPTURE(static_cast<int>(integrator));
+            CAPTURE(criterion);
+            auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST, integrator, 0.05, 1);
+            cfg.turbulenceSettings.initialValue = {0.2, 4};
+            cfg.timeMarchSettings.implicitTolerance = 1e-8;
+            cfg.timeMarchSettings.dualTimeFlowRelativeTolerance = 1e-3;
+            cfg.timeMarchSettings.dualTimeTurbulenceRelativeTolerance = 1e-3;
+            cfg.timeMarchSettings.dualTimeConvergenceCriterion = criterion;
+            cfg.timeMarchSettings.maxImplicitIterations = 1;
+            ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+            solver.ReadMeshAndInitialize();
+            if (criterion == "Both" || criterion == "Turbulence")
+            {
+                const std::string expectedMessage = "criterion=" + criterion;
+                CHECK_THROWS_WITH_AS(solver.Run(), doctest::Contains(expectedMessage.c_str()), std::runtime_error);
+                continue;
+            }
+            std::ostringstream captured;
+            {
+                struct Capture
+                {
+                    std::streambuf *previous;
+                    explicit Capture(std::ostringstream &target) : previous(std::cout.rdbuf(target.rdbuf())) {}
+                    ~Capture() { std::cout.rdbuf(previous); }
+                } capture(captured);
+                CHECK_NOTHROW(solver.Run());
+            }
+            const std::string output = captured.str();
+            CAPTURE(output);
+            CHECK(output.find("inner=0 converged=1") != std::string::npos);
+            CHECK(output.find("convergenceCriterion=" + criterion) != std::string::npos);
+            std::smatch match;
+            REQUIRE(std::regex_search(output, match, std::regex("turbRatio=(\\S+)")));
+            CHECK(std::stod(match[1].str()) == doctest::Approx(1)); // SST has not reached its target.
+        }
 }
 
 /// @test Recover the exact nonlinear BE/BDF2 decay roots, including both completed history levels.

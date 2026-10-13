@@ -81,8 +81,9 @@ D_q(q*) = R_q(U*, q*, t[n+1])
 
 每次流场隐式修正后，使用更新后的速度冻结流场，采用有正值界限的 SSPRK3 子步沿伪时间
 松弛 `D_q`。每个活跃变量独立按正值上下限约束其阶段增量，k 触底不会把 omega 的阶段
-步长一起置零。随后以新的湍流黏度重新求流场缺陷。只有每个活跃方程都达到各自的
-收敛目标才结束内迭代。历史 `q[n]`、`q[n-1]` 在内迭代中保持不变，
+步长一起置零。随后以新的湍流黏度重新求流场缺陷。按 `dualTimeConvergenceCriterion`
+选择流场、湍流或两组的组合条件，满足所选条件才结束内迭代。
+历史 `q[n]`、`q[n-1]` 在内迭代中保持不变，
 物理步结束后才移动。
 
 BDF2 不保证正性。当某单元某个活跃变量的历史组合
@@ -99,8 +100,7 @@ BDF2 不保证正性。当某单元某个活跃变量的历史组合
 
 ## 4. 配置语义
 
-BDF2 通过 `timeMarchSettings` 选择，当前算例 JSON 文件未被本次实现修改。以后需要启用
-时可设置：
+BDF2 通过 `timeMarchSettings` 选择，可设置：
 
 ```json
 {
@@ -122,7 +122,7 @@ BDF2 通过 `timeMarchSettings` 选择，当前算例 JSON 文件未被本次实
 - `implicitTolerance`：全局 RMS 物理缺陷收敛阈值；
 - `implicitRelaxation`：每次隐式修正的松弛因子。
 
-物理双时间推进现在逐方程计算 MPI 全局 RMS，顺序为 `[u,v,w,p,q1,q2]`，
+物理双时间推进默认逐方程计算 MPI 全局 RMS，顺序为 `[u,v,w,p,q1,q2]`，
 未活跃分量保持零并排除于收敛判定。新增设置为：
 
 - `dualTimeResidualScales`：六个正的方程特征残差尺度，默认均为 1；
@@ -135,8 +135,52 @@ BDF2 通过 `timeMarchSettings` 选择，当前算例 JSON 文件未被本次实
 每个活跃方程的原始 RMS 目标是
 `max(implicitTolerance*dualTimeResidualScales[i], initialRMS[i]*dualTimeRelativeTolerances[i])`。
 因此可以用具有物理依据的尺度区分速度、压力、k 和 omega，或指定各方程的残差下降比例。
-默认尺度为 1 时仍采用原容差，但现在每个方程都必须通过，不再允许某一分量被混合 RMS 稀释。
+默认尺度为 1、组合方式为 `Both` 时仍采用原容差，所有活跃方程都必须通过，
+不再允许某一分量被混合 RMS 稀释。其他组合方式仍要求所选组内的每个活跃方程通过。
 这些判据只控制内迭代；应另做加严目标和减半物理步长的精度验证。
+
+如果希望为流场和 SST 分别设置三个数量级的下降目标，并在任一组达标时结束内迭代，
+在 `timeMarchSettings` 中设置：
+
+```json
+{
+  "implicitTolerance": 1e-8,
+  "dualTimeConvergenceCriterion": "Either",
+  "dualTimeFlowRelativeTolerance": 1e-3,
+  "dualTimeTurbulenceRelativeTolerance": 1e-3,
+  "steadyRelativeTolerance": 0.0
+}
+```
+
+两个新字段仅用于 BDF2 双时间推进，默认均为 0，表示继续使用对应组的逐方程目标。
+正值启用该组的原始 RMS 判据：流场 RMS 包含 `[u,v,w,p]`，湍流 RMS 只包含模型的活跃
+输运变量（SST 为 `[k,omega]`，SA 仅为 `nuTilde`）。每个物理步在任何流场或湍流修正之前
+分别记录 `R_flow,0` 和 `R_turb,0`；两者在本步内固定，下一物理步重新记录。
+
+```text
+R_flow <= max(implicitTolerance, dualTimeFlowRelativeTolerance * R_flow,0)
+R_turb <= max(implicitTolerance, dualTimeTurbulenceRelativeTolerance * R_turb,0)
+```
+
+通过 `dualTimeConvergenceCriterion` 选择使用哪组收敛判据：
+
+| JSON 值 | 结束内迭代的条件 |
+| --- | --- |
+| `Both` | 流场和湍流两组都通过；旧配置缺省值 |
+| `Either` | 流场或湍流任一活跃组通过 |
+| `Flow` | 只判断流场 |
+| `Turbulence` | 只判断湍流（SST 或其他活跃 RANS 模型） |
+
+上述示例及圆柱配置选择 `Either`。各组仍采用绝对条件或自身相对条件，选择组的方式不会
+改变组内目标；相对字段为 0 时也按同样选择组合对应组的逐方程判据。
+`1e-3` 表示相对本物理步初值
+下降三个数量级，不能用 `implicitTolerance=1e-3` 代替。某组初始 RMS 为零或很小时，
+绝对容差仍然有效；层流的 `Both`、`Either`、`Flow` 均只判断流场，不能由不存在的
+湍流组满足 `Either`，选择 `Turbulence` 会报配置错误。任一活跃组存在非有限或负残差时
+仍拒绝收敛，即使未选择该组。日志用 `convergenceCriterion` 显示所选方式。
+为避免同一组出现互相覆盖的设置，启用组相对判据时，
+该组的 `dualTimeResidualScales` 必须为 1、`dualTimeRelativeTolerances` 必须为 0。
+`steadyRelativeTolerance` 仍然只适用于稳态隐式推进，不应在 BDF2 中启用。
 
 BDF2 的固定次数变分重构（`variationalTolerance=0`）现在每次 RHS 从零系数开始，
 使缺陷由当前状态唯一决定，不受先前 RHS 或线性化调用的暖启动影响。固定次数仍不保证
@@ -152,7 +196,10 @@ BDF2 的固定次数变分重构（`variationalTolerance=0`）现在每次 RHS �
 BDF2 模式的日志使用 `ACM physical step`，并显示物理时间、当前 BDF 阶数、初末缺陷、
 最小伪时间步和内迭代次数。第一个物理步显示 `BDF1`，第二步起显示 `BDF2`。流场输出
 文件仍按外层步编号命名，但 VTK 时间序列值使用真实物理时间。
-`eqResidual` 和 `eqTarget` 分别输出六个原始方程 RMS 和实际目标；`turbBE` 报告湍流的
+日志增加 `flowRatio`、`turbInitial` 和 `turbRatio`，展示本物理步的流场下降比例、初始湍流
+RMS 和湍流下降比例。开启组判据时，`flowTarget` / `turbTarget` 输出本步实际组目标；
+未开启组判据时，`eqTarget` 或混合模式下的 `flowEqTarget` / `turbEqTarget` 输出对应的
+逐方程目标。`eqResidual` 始终输出六个原始方程 RMS；`turbBE` 报告湍流的
 局部 BE 回退数。`BDF2` 标记描述流场历史系数，不能覆盖有回退单元的湍流变量时间阶数。
 
 ## 6. 当前限制

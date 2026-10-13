@@ -615,6 +615,7 @@ namespace DNDS::ACM
         if (_turbulence)
             report.turbulenceDefectNorm = _turbulence->EvaluatePhysicalBDF2DefectNorm(
                 _u, coefficients, physicalTimeStep, physicalTime);
+        report.initialTurbulenceDefectNorm = report.turbulenceDefectNorm;
         const int activeEquations = Traits::nVarsFixed + (_turbulence ? _turbulence->ActiveVariableCount() : 0);
         const auto recordEquationDefects = [&]()
         {
@@ -637,11 +638,12 @@ namespace DNDS::ACM
         };
         recordEquationDefects();
         report.initialEquationDefectNorms = report.equationDefectNorms;
-        report.defectTolerance = _configuration.timeMarchSettings.implicitTolerance;
+        report.defectTolerance = _configuration.timeMarchSettings.DualTimeGroupTarget(report.initialDefectNorm, false);
+        report.turbulenceDefectTolerance = _configuration.timeMarchSettings.DualTimeGroupTarget(report.initialTurbulenceDefectNorm, true);
         const auto converged = [&]()
         {
             return _configuration.timeMarchSettings.DualTimeConverged(
-                report.initialEquationDefectNorms, report.equationDefectNorms, activeEquations);
+                report, activeEquations);
         };
         for (int iteration = 0;
              iteration < _configuration.timeMarchSettings.maxImplicitIterations;
@@ -770,11 +772,17 @@ namespace DNDS::ACM
                     residualTime);
                 DNDS_check_throw_info(
                     report.converged || !_configuration.timeMarchSettings.dualTimeRequireConvergence,
-                    fmt::format("ACM physical step {} at time {:.6e} did not converge after {} iterations: "
-                                "flow={:.6e}, turbulence={:.6e}, equation RMS={}, targets={}; histories were not committed. "
+                    fmt::format("ACM physical step {} at time {:.6e} did not converge after {} iterations (criterion={}): "
+                                "flow={:.6e} (initial={:.6e}, ratio={:.6e}, group target={:.6e}), "
+                                "turbulence={:.6e} (initial={:.6e}, ratio={:.6e}, group target={:.6e}), "
+                                "group relative tolerances=[{:.6e},{:.6e}], equation RMS={}, equation targets={}; histories were not committed. "
                                 "dualTimeRequireConvergence=false enables diagnostic marching only",
                                 absoluteStep, residualTime, report.iterations,
-                                report.finalDefectNorm, report.turbulenceDefectNorm,
+                                _configuration.timeMarchSettings.dualTimeConvergenceCriterion,
+                                report.finalDefectNorm, report.initialDefectNorm, report.FlowDefectRatio(), report.defectTolerance,
+                                report.turbulenceDefectNorm, report.initialTurbulenceDefectNorm, report.TurbulenceDefectRatio(), report.turbulenceDefectTolerance,
+                                _configuration.timeMarchSettings.dualTimeFlowRelativeTolerance,
+                                _configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance,
                                 nlohmann::ordered_json(report.equationDefectNorms).dump(),
                                 nlohmann::ordered_json(_configuration.timeMarchSettings.DualTimeTargets(
                                     report.initialEquationDefectNorms)).dump()));
@@ -836,9 +844,28 @@ namespace DNDS::ACM
                       << " converged=" << report.converged;
                 if (useBDF2)
                 {
-                    log() << " eqResidual=" << nlohmann::ordered_json(report.equationDefectNorms).dump()
-                          << " eqTarget=" << nlohmann::ordered_json(_configuration.timeMarchSettings.DualTimeTargets(
-                                 report.initialEquationDefectNorms)).dump();
+                    log() << " convergenceCriterion=" << _configuration.timeMarchSettings.dualTimeConvergenceCriterion
+                          << " flowRatio=" << report.FlowDefectRatio()
+                          << " turbInitial=" << report.initialTurbulenceDefectNorm
+                          << " turbRatio=" << report.TurbulenceDefectRatio()
+                          << " eqResidual=" << nlohmann::ordered_json(report.equationDefectNorms).dump();
+                    const auto equationTargets = _configuration.timeMarchSettings.DualTimeTargets(report.initialEquationDefectNorms);
+                    if (_configuration.timeMarchSettings.dualTimeFlowRelativeTolerance > 0)
+                        log() << " flowTarget=" << report.defectTolerance;
+                    if (_configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance > 0 && _turbulence)
+                        log() << " turbTarget=" << report.turbulenceDefectTolerance;
+                    if (_configuration.timeMarchSettings.dualTimeFlowRelativeTolerance == 0 &&
+                        _configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance == 0)
+                        log() << " eqTarget=" << nlohmann::ordered_json(equationTargets).dump();
+                    else
+                    {
+                        if (_configuration.timeMarchSettings.dualTimeFlowRelativeTolerance == 0)
+                            log() << " flowEqTarget=" << nlohmann::ordered_json(
+                                std::vector<real>(equationTargets.begin(), equationTargets.begin() + 4)).dump();
+                        if (_configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance == 0 && _turbulence)
+                            log() << " turbEqTarget=" << nlohmann::ordered_json(
+                                std::vector<real>(equationTargets.begin() + 4, equationTargets.begin() + 4 + _turbulence->ActiveVariableCount())).dump();
+                    }
                     if (_turbulence)
                         log() << " turbBE=" << nlohmann::ordered_json(_turbulence->GetPhysicalBackwardEulerCounts()).dump();
                 }
