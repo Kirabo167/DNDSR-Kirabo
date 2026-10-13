@@ -27,7 +27,16 @@ namespace DNDS::ACM
      */
     constexpr const char *GetSingleBlockAppName(ACMModel model)
     {
-        return model == ACMModel::ConstantDensity2D ? "acm2D" : "acm3D";
+        switch (model)
+        {
+        case ACMModel::ConstantDensity2D: return "acm2D";
+        case ACMModel::ConstantDensity3D: return "acm3D";
+        case ACMModel::ConstantDensitySA2D: return "acmSA2D";
+        case ACMModel::ConstantDensitySA3D: return "acmSA3D";
+        case ACMModel::ConstantDensity2EQ2D: return "acm2EQ2D";
+        case ACMModel::ConstantDensity2EQ3D: return "acm2EQ3D";
+        }
+        return "unknownACM";
     }
 
     /**
@@ -64,8 +73,35 @@ namespace DNDS::ACM
                     auto schema = KernelConfiguration::schema(
                         std::string("DNDSR ") + GetSingleBlockAppName(model) + " configuration");
                     schema["$schema"] = "http://json-schema.org/draft-07/schema#";
-                    SolverSelection::ConstrainSchema(schema,
-                        {"ACM", "CFV", model == ACMModel::ConstantDensity2D ? "ConstantDensity2D" : "ConstantDensity3D", 4});
+                    SolverSelection::ConstrainSchema(schema, ModelSelection<model>());
+                    auto &initial = schema["properties"]["initialState"];
+                    initial["minItems"] = ModelTraits<model>::nVarsFixed;
+                    initial["maxItems"] = ModelTraits<model>::nVarsFixed;
+                    auto &turbulence = schema["properties"]["turbulenceSettings"]["properties"];
+                    if constexpr (ModelTraits<model>::nExtraVars == 0)
+                    {
+                        turbulence["model"]["const"] = "Laminar";
+                        turbulence["model"]["default"] = "Laminar";
+                    }
+                    else
+                    {
+                        const bool sa = ModelTraits<model>::nExtraVars == 1;
+                        auto &physical = schema["properties"]["acmSettings"]["properties"];
+                        physical["enableViscousFlux"]["const"] = true;
+                        physical["enableViscousFlux"]["default"] = true;
+                        physical["dynamicViscosity"]["minimum"] = std::numeric_limits<real>::min();
+                        physical["dynamicViscosity"]["default"] = 0.001;
+                        turbulence["model"]["enum"] = sa
+                            ? nlohmann::ordered_json::array({"SpalartAllmaras"})
+                            : nlohmann::ordered_json::array({"KOmegaWilcox", "KOmegaSST", "RealizableKEpsilon"});
+                        turbulence["model"]["default"] = sa ? "SpalartAllmaras" : "KOmegaWilcox";
+                        turbulence["transportSubsteps"]["const"] = 1;
+                        turbulence["transportSubsteps"]["default"] = 1;
+                        nlohmann::ordered_json state = nlohmann::ordered_json::array({1, 0, 0, 0});
+                        for (int variable = 0; variable < ModelTraits<model>::nExtraVars; variable++)
+                            state.push_back(TurbulenceSettings{}.initialValue[variable]);
+                        initial["default"] = state;
+                    }
                     std::cout << schema.dump(4) << std::endl;
                 }
                 return 0;
@@ -74,7 +110,8 @@ namespace DNDS::ACM
             const std::string requestedConfiguration = parser.get<std::string>("config");
             std::filesystem::path caseConfiguration =
                 std::filesystem::path("../cases/acm") /
-                (model == ACMModel::ConstantDensity2D ? "2D" : "3D") /
+                (ModelTraits<model>::gDim == 2 ? "2D" : "3D") /
+                (ModelTraits<model>::nExtraVars == 1 ? "SA" : ModelTraits<model>::nExtraVars == 2 ? "2EQ" : "") /
                 (std::string(GetSingleBlockAppName(model)) + ".json");
             if (!requestedConfiguration.empty())
                 caseConfiguration = requestedConfiguration;
@@ -87,8 +124,7 @@ namespace DNDS::ACM
                 caseConfiguration.string(),
                 parser.get<std::vector<std::string>>("--overwrite_key"),
                 parser.get<std::vector<std::string>>("--overwrite_value"));
-            loaded.configuration.solver.Require(
-                {"ACM", "CFV", model == ACMModel::ConstantDensity2D ? "ConstantDensity2D" : "ConstantDensity3D", 4});
+            ValidateModelConfiguration<model>(loaded.configuration);
             if (parser.get<bool>("--check-config"))
                 return 0;
             ACMSolver<model> solver(mpi, loaded.configuration);

@@ -96,9 +96,12 @@ def arguments() -> argparse.Namespace:
 
 
 def command(args: argparse.Namespace, model: str, model_dir: Path) -> list[str]:
-    executable = (args.build_dir / f"app/acm{args.dimension}D.exe").resolve()
+    family = "" if model == "Laminar" else "SA" if model == "SpalartAllmaras" else "2EQ"
+    executable = (args.build_dir / f"app/acm{family}{args.dimension}D.exe").resolve()
     invocation = [str(executable), str(args.case.resolve())]
     overrides = {
+        "/solver/model": f"ConstantDensity{family}{args.dimension}D",
+        "/solver/fieldNVariables": 4 if not family else 5 if family == "SA" else 6,
         "/turbulenceSettings/model": model,
         "/timeMarchSettings/integrator": args.integrator,
         "/timeMarchSettings/nSteps": args.steps,
@@ -108,6 +111,14 @@ def command(args: argparse.Namespace, model: str, model_dir: Path) -> list[str]:
         "/outputSettings/directory": str(model_dir),
         "/outputSettings/prefix": model,
     }
+    pattern = r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*[\s\S]*?\*/'
+    source = json.loads(re.sub(pattern, lambda m: m[0] if m[0].startswith('"') else "", args.case.read_text()))
+    initial = source["initialState"][:4]
+    if family:
+        rho = source["acmSettings"]["rho0"]
+        initial += [rho * q for q in MODELS[model][1][:1 if family == "SA" else 2]]
+        overrides["/turbulenceSettings/transportSubsteps"] = 1
+    overrides["/initialState"] = initial
     if MODELS[model][1] is not None:
         overrides["/turbulenceSettings/initialValue"] = MODELS[model][1]
         overrides["/turbulenceSettings/farFieldValue"] = MODELS[model][1]
@@ -148,6 +159,8 @@ def inspect_output(path: Path, expected_fields: list[str]) -> dict[str, object]:
     with h5py.File(path, "r") as handle:
         cell_data = handle["VTKHDF/CellData"]
         required = {"Velocity", "Pressure", *expected_fields}
+        if expected_fields:
+            required.update({"Density", *("rho_" + field for field in expected_fields)})
         actual = set(cell_data.keys())
         if actual != required:
             raise ValueError(f"CellData fields {sorted(actual)} differ from {sorted(required)}")

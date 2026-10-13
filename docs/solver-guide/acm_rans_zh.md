@@ -14,9 +14,9 @@ $$
  -\tfrac13(\nabla\cdot\boldsymbol u)I.
 $$
 
-对于输运 $k$ 的双方程模型，$p^*=\bar p+2\rho_0 k/3$ 吸收了 Reynolds 应力的各向同性部分；SA 模型没有 $k$ 变量，其压力直接采用模型的平均压力约定。因此 RANS 流场只需将黏性应力中的 $\mu$ 换为 $\mu+\mu_t$；`[u,v,w,p]` 四分量状态、ACM 通量和 $4\times4$ 预条件矩阵无需扩展。伪时间方程为 $\Gamma(U)\partial_\tau U+R_{\rm flow}(U,q)=0$。二维计算仍保存四分量，但 $w$ 不参与二维空间导数。
+对于输运 $k$ 的双方程模型，$p^*=\bar p+2\rho_0 k/3$ 吸收了 Reynolds 应力的各向同性部分；SA 模型没有 $k$ 变量，其压力直接采用模型的平均压力约定。因此RANS流动子块将黏性应力中的 $\mu$ 换为 $\mu+\mu_t$；流动子块保留`[u,v,w,p]`和$4\times4$预条件矩阵；新主状态追加密度加权的SA或两个RANS变量。伪时间方程为 $\Gamma(U)\partial_\tau U+R_{\rm flow}(U,q)=0$。二维计算仍保存四分量，但 $w$ 不参与二维空间导数。
 
-湍流变量 $q$ 独立存放，稳态伪时间输运统一写成
+闭合计算使用原始变量$q$，新主状态存储$\rho_0q$。除以常密度后的输运形式为
 
 $$
 \partial_\tau q_a+\nabla\cdot(\boldsymbol u q_a)
@@ -77,20 +77,8 @@ $$
 
 模型公式、正值界限和壁面状态在 [`ACMTurbulence.cpp`](../../src/ACM/ACMTurbulence.cpp)；面通量、梯度、MPI ghost 交换与 SSPRK3 在 [`ACMTurbulenceTransport.hxx`](../../src/ACM/ACMTurbulenceTransport.hxx)；与流场黏性通量和黏性 CFL 的耦合在 [`ACMEvaluator.hxx`](../../src/ACM/ACMEvaluator.hxx)，求解流程在 [`ACMSolver.hxx`](../../src/ACM/ACMSolver.hxx)。`turbulenceSettings.model` 选择模型，`initialValue` 和 `farFieldValue` 按表中的变量顺序填写。VTK-HDF 字段分别命名为 `TurbulenceNuTilde`、`TurbulenceK`、`TurbulenceOmega` 或 `TurbulenceEpsilon`，重启按所选模型读取。
 
-当前四变量流场可用显式或隐式伪时间推进，湍流输运仍为显式分离推进；物理时间 BDF2 模式接受层流及全部四种 RANS 模型，活跃原始变量具有两级已完成物理步历史。SA 的第二存储分量保持为零，不参加历史正值检查或时间残差；两方程模型验证两个活跃分量。其伪时间推进仍是显式的，须检查每步流场和湍流缺陷是否充分收敛。旧版本将 SA 和 realizable $k$–$\epsilon$ 的 VTK-HDF 字段误标为 `TurbulenceK/Omega`；新版本按变量真实名称读取，旧文件应重新导出或显式重建湍流初值。已有 [`test_ACMTurbulence.cpp`](../../test/cpp/ACM/test_ACMTurbulence.cpp) 覆盖模型配置、SST 解析剪切流、闭合核、边界状态和变量命名；模型的物理预测仍需使用网格收敛与基准算例验证。
+新模型的统一主状态和完整残差在同一阶段/内迭代中更新。SA入口为acmSA2D/3D，两方程入口为acm2EQ2D/3D。物理BDF2保存完整守恒状态的两级历史，采用逐变量正性保护。隐式系统使用流场面耦合和局部湍流源项/谱半径近似，交叉导数冻结；细节见[统一状态与模型入口](acm_model_state_zh.md)。
 
-全部模型可与六种时间推进枚举及所有合法流场重构配置组合使用：`FirstOrder`、`GreenGauss`、`Variational`，其中 WBAP/CWBAP 仍要求 Variational。独立湍流场继续由 `turbulenceSettings.secondOrderReconstruction` 控制一阶或带限制器的二阶 Green–Gauss 重构，流场使用 Variational 并不改变湍流场的多项式阶数。BDF2 的启动、历史移位和耗散项时间离散由均匀 Wilcox 衰减、SA 输运衰减和均匀 k-epsilon 耗散的解析离散根测试覆盖；后两者还验证了物理时间二阶收敛。
+流场的FirstOrder、GreenGauss、Variational及WBAP/CWBAP设置保持原有要求。湍流重构仍由secondOrderReconstruction控制；流场Variational不自动提高湍流多项式次数。初值以initialState的rho*q尾部为准，farFieldValue及上下界仍填原始量q。VTK-HDF同时保存原始和密度加权湍流数据。
 
-## 4. 圆柱算例的多模型链路检查
-
-从项目根目录运行：
-
-```bash
-cmake --build build -t euler acm_test_turbulence -j4
-./build/test/cpp/acm_test_turbulence
-venv/bin/python scripts/check_acm_rans_cylinder.py --steps 5 --np 1
-```
-
-检查脚本默认使用 `cases/acm/2D/acm2D.json` 的 Re=20 网格和物性，用相同的显式 SSPRK3、CFL 与步数运行层流基线和四种 RANS 模式，分别检查完整步数、有限残差、VTK-HDF 字段名、有限场值及湍流变量正值。结果写到 `/tmp/acm-rans-cylinder-<时间>/report.json`，原始求解日志保存在各模型子目录。该短算例是求解链路测试；Re=20 不用于判断 RANS 的物理准确性。可通过 `--case`、`--np`、`--steps` 和 `--viscosity` 改用合适的高 Reynolds 数算例；物理验证还需足够长的稳态收敛、壁面量和网格敏感性检查。
-
-在无图形会话的计算节点上，脚本默认设置 `HWLOC_COMPONENTS=-gl`，避免 OpenMPI 的 hwloc GL 插件反复尝试连接 X11 显示并打印授权提示；旧运行日志表明这些提示有时不会阻止后续计算。直接运行求解器时也可设置同一环境变量。脚本的本机套接字预检查用于区分执行沙箱阻断与求解器失败；若系统禁止创建套接字，MPI 算例必须转到允许本机通信的执行环境。
+底层四变量兼容类及旧分离输运核保留用于流动子块、闭合工作缓存和原有回归；原生四变量入口仅接受层流配置。新统一入口使用[ACMRANSSolver.hxx](../../src/ACM/ACMRANSSolver.hxx)推进全部活跃方程。

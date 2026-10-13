@@ -19,6 +19,8 @@ MODELS = {
     'NS_2EQ': 'euler2EQ', 'NS_2EQ_3D': 'euler2EQ3D',
     'NS_EX': 'eulerEX', 'NS_EX_3D': 'eulerEX3D',
     'ConstantDensity2D': 'acm2D', 'ConstantDensity3D': 'acm3D',
+    'ConstantDensitySA2D': 'acmSA2D', 'ConstantDensitySA3D': 'acmSA3D',
+    'ConstantDensity2EQ2D': 'acm2EQ2D', 'ConstantDensity2EQ3D': 'acm2EQ3D',
     'VariableDensity2D': 'acmVariable2D', 'VariableDensity3D': 'acmVariable3D',
 }
 
@@ -95,6 +97,7 @@ def main():
         results = []
         # Each executable must reject a selector that belongs to another model.
         for exe in ('euler', 'euler2D', 'euler3D', 'acm2D', 'acm3D',
+                    'acmSA2D', 'acmSA3D', 'acm2EQ2D', 'acm2EQ3D',
                     'acmVariable2D', 'acmVariable3D', 'ncfv_euler2D', 'ncfv_euler3D'):
             path = next(path for path, doc in cases if executable_for(doc) == exe)
             process = subprocess.run(

@@ -59,10 +59,9 @@ namespace DNDS::Linear
                 real beta = UnInitReal;
                 beta = std::sqrt(fDot(Vs[0], Vs[0])); // beta = norm2(r)
                 if (FStop(iRestart, beta, scale_MLb)) // see if converge
-                    break;
-                if (std::abs(beta) < verySmallReal || // beta is floating-point negligible
-                    (iRestart == nRestart))
-                    break;
+                    return true;
+                if (std::abs(beta) < verySmallReal) // beta is floating-point negligible
+                    return true;
                 Vs[0] *= -1.0 / beta; // Vs[0] = r/norm2(r)
 
                 uint32_t j = 0;
@@ -83,7 +82,9 @@ namespace DNDS::Linear
                     h(j + 1, j) = std::sqrt(fDot(Vs[j + 1], Vs[j + 1])); //
                     if (h(j + 1, j) < scale_MLb * 1e-32)
                     {
-                        std::cout << "early stop" << std::endl;
+                        // This column is complete even though there is no next
+                        // Arnoldi direction. Include it in the least-squares update.
+                        j++;
                         break;
                     }
                     Vs[j + 1] *= 1.0 / h(j + 1, j); // normalize
@@ -128,7 +129,10 @@ namespace DNDS::Linear
                     break; // do not restart
                 }
             }
-            return iRestart < nRestart;
+            FA(x, V_temp);
+            FML(V_temp, Vs[0]);
+            Vs[0].addTo(MLb, -1.0);
+            return FStop(iRestart, std::sqrt(fDot(Vs[0], Vs[0])), scale_MLb);
         }
     };
 

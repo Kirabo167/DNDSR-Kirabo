@@ -28,9 +28,10 @@
 //   Unsteady BDF2 dual-time LU-SGS marching. The first physical step uses backward Euler,
 //   and subsequent steps use BDF2. With dt=0.01 and 10000 steps, t*=100.
 //   GMRES is disabled for both flow corrections and variational reconstruction.
-//   Either mode accepts a physical step when the flow or SST group meets its own target.
-//   Each target is max(1e-8 absolute RMS, 1e-3 times that group's physical-step initial RMS).
-//   Check converged=1, convergenceCriterion=Either, and both residual diagnostics at every step.
+//   Relative mode requires both flow and SST defects to reach their respective relative targets.
+//   Each target is 1e-3 times that group's fixed physical-step initial RMS.
+//   Absolute mode instead uses the retained implicitTolerance=1e-8.
+//   Check converged=1, convergenceCriterion=Relative, and both residual diagnostics at every step.
 //   The inner-iteration cap alone does not guarantee convergence.
 //
 // Intended launch from build/ with 32 MPI ranks:
@@ -40,11 +41,12 @@
 //   HWLOC_COMPONENTS=-gl OMP_NUM_THREADS=1 ./app/acm3D.exe \
 //     ../cases/acm/3D/acm3D_cylinder_Re3000_coarse_SST_BDF2_LUSGS.json --check-config
 {
+    "$schema": "2EQ/acm2EQ3D_schema.json",
     "solver": {
         "type": "ACM",
         "discretization": "CFV",
-        "model": "ConstantDensity3D",
-        "fieldNVariables": 4
+        "model": "ConstantDensity2EQ3D",
+        "fieldNVariables": 6
     },
 
     // Constant-density ACM state order is [u,v,w,p].
@@ -75,8 +77,8 @@
         "maximumPseudoTimeStep": 0.005,
         "maxImplicitIterations": 100,
         "implicitTolerance": 1e-8,
-        // Both: both groups; Either: either group; Flow/Turbulence: check only that group.
-        "dualTimeConvergenceCriterion": "Either",
+        // Explicitly choose Absolute (implicitTolerance) or Relative (per-step initial RMS ratios).
+        "dualTimeConvergenceCriterion": "Relative",
         // Separate physical-step flow and SST RMS references, each with its own three-order target.
         "dualTimeFlowRelativeTolerance": 1e-3,
         "dualTimeTurbulenceRelativeTolerance": 1e-3,
@@ -107,7 +109,7 @@
         "wallOmegaCoefficient": 800.0,
         "enableSourceTerms": true,
         "secondOrderReconstruction": true,
-        "transportSubsteps": 8,
+        "transportSubsteps": 1,
         "transportTimeScale": 0.1,
         "wallDistanceMethod": 1,
         "wallDistanceExecution": 0,
@@ -244,7 +246,7 @@
     // Small transverse perturbation breaks exact cross-flow symmetry.
     // The initial state is uniform in z; a three-dimensional mesh alone does not seed
     // physical spanwise instabilities. Apply spanwise-dependent initialization separately if needed.
-    "initialState": [1.0, 0.001, 0.0, 0.0],
+    "initialState": [1.0, 0.001, 0.0, 0.0, 0.00015, 0.31943828249997],
     "boundaryValue": [1.0, 0.0, 0.0, 0.0],
     "leftState": [1.0, 0.0, 0.0, 0.0],
     "rightState": [0.0, 0.0, 0.0, 0.0],

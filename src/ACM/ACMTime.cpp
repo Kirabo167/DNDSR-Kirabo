@@ -19,24 +19,6 @@ namespace DNDS::ACM
 {
     namespace
     {
-        /** @brief Combine group convergence without allowing an inactive turbulence group to satisfy Either. */
-        bool CombineDualTimeGroups(const std::string &criterion, bool flow, bool turbulence, int activeEquations)
-        {
-            if (criterion == "Both")
-                return flow && (activeEquations == 4 || turbulence);
-            if (criterion == "Either")
-                return flow || (activeEquations > 4 && turbulence);
-            if (criterion == "Flow")
-                return flow;
-            if (criterion == "Turbulence")
-            {
-                DNDS_check_throw_info(activeEquations > 4,
-                                      "ACM Turbulence convergence requires an active turbulence model");
-                return turbulence;
-            }
-            throw std::invalid_argument("unknown ACM dual-time convergence criterion: " + criterion);
-        }
-
         /**
          * @brief Validate field sizes and all local pseudo-time-step values.
          * @param states Rank-local state field.
@@ -176,10 +158,9 @@ namespace DNDS::ACM
             "ACM BDF grouped relative tolerances must be finite and in [0,1)");
         const bool physicalBDF = integrator == TimeIntegratorType::BDF2DualTimeLUSGS ||
                                  integrator == TimeIntegratorType::BDF2DualTimeGMRES;
-        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Both" || dualTimeConvergenceCriterion == "Either" ||
-                                  dualTimeConvergenceCriterion == "Flow" || dualTimeConvergenceCriterion == "Turbulence",
-                              "ACM dualTimeConvergenceCriterion must be Both, Either, Flow, or Turbulence");
-        DNDS_check_throw_info(physicalBDF || dualTimeConvergenceCriterion == "Both",
+        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
+                              "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
+        DNDS_check_throw_info(physicalBDF || dualTimeConvergenceCriterion == "Absolute",
                               "ACM dual-time convergence selection requires a BDF2 dual-time integrator");
         DNDS_check_throw_info(physicalBDF || (dualTimeFlowRelativeTolerance == 0 && dualTimeTurbulenceRelativeTolerance == 0),
                               "ACM grouped physical relative tolerances require a BDF2 dual-time integrator");
@@ -195,6 +176,7 @@ namespace DNDS::ACM
                                       (dualTimeResidualScales[equation] == 1 && dualTimeRelativeTolerances[equation] == 0),
                                   "ACM grouped RMS and per-equation convergence controls cannot be combined in the same group");
         }
+        ValidateDualTimeConvergence(4); // Turbulence activity is checked by the full kernel configuration.
         DNDS_check_throw_info(
             std::isfinite(steadyRelativeTolerance) && steadyRelativeTolerance >= 0 && steadyRelativeTolerance < 1 &&
                 std::isfinite(steadyCFLMin) && steadyCFLMin > 0 &&
@@ -222,12 +204,30 @@ namespace DNDS::ACM
             "ACM gmresRelativeTolerance must be finite and non-negative");
     }
 
+    void TimeMarchSettings::ValidateDualTimeConvergence(int activeEquations) const
+    {
+        DNDS_check_throw_info(activeEquations >= 4 && activeEquations <= 6,
+                              "ACM dual-time convergence requires four to six active equations");
+        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
+                              "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
+        if (dualTimeConvergenceCriterion == "Relative")
+            for (int equation = 0; equation < activeEquations; equation++)
+            {
+                const real groupTolerance = equation < 4 ? dualTimeFlowRelativeTolerance : dualTimeTurbulenceRelativeTolerance;
+                const real tolerance = groupTolerance > 0 ? groupTolerance : dualTimeRelativeTolerances[static_cast<std::size_t>(equation)];
+                DNDS_check_throw_info(std::isfinite(tolerance) && tolerance > 0 && tolerance < 1,
+                                      "ACM Relative convergence requires a positive relative tolerance for every active equation or its RMS group");
+            }
+    }
+
     real TimeMarchSettings::DualTimeGroupTarget(real initialDefect, bool turbulence) const
     {
         DNDS_check_throw_info(std::isfinite(initialDefect) && initialDefect >= 0,
                               "ACM initial physical group defect must be finite and non-negative");
         const real relativeTolerance = turbulence ? dualTimeTurbulenceRelativeTolerance : dualTimeFlowRelativeTolerance;
-        return std::max(implicitTolerance, relativeTolerance * initialDefect);
+        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
+                              "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
+        return dualTimeConvergenceCriterion == "Absolute" ? implicitTolerance : relativeTolerance * initialDefect;
     }
 
     std::array<real, 6> TimeMarchSettings::DualTimeTargets(const std::array<real, 6> &initialDefects) const
@@ -237,8 +237,11 @@ namespace DNDS::ACM
         {
             DNDS_check_throw_info(std::isfinite(initialDefects[equation]) && initialDefects[equation] >= 0,
                                   "ACM dual-time initial equation defect must be finite and non-negative");
-            targets[equation] = std::max(implicitTolerance * dualTimeResidualScales[equation],
-                                         dualTimeRelativeTolerances[equation] * initialDefects[equation]);
+            DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
+                                  "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
+            targets[equation] = dualTimeConvergenceCriterion == "Absolute"
+                                    ? implicitTolerance * dualTimeResidualScales[equation]
+                                    : dualTimeRelativeTolerances[equation] * initialDefects[equation];
             DNDS_check_throw_info(std::isfinite(targets[equation]), "ACM dual-time equation target overflowed");
         }
         return targets;
@@ -248,26 +251,31 @@ namespace DNDS::ACM
         const std::array<real, 6> &initialDefects,
         const std::array<real, 6> &finalDefects, int activeEquations) const
     {
-        DNDS_check_throw_info(activeEquations >= 4 && activeEquations <= 6,
-                              "ACM dual-time convergence requires four to six active equations");
-        const auto targets = DualTimeTargets(initialDefects);
-        bool flowConverged = true;
-        bool turbulenceConverged = true;
-        for (int equation = 0; equation < activeEquations; equation++)
+        ValidateDualTimeConvergence(activeEquations);
+        const auto rms = [](const std::array<real, 6> &values, int first, int last)
         {
-            const auto ii = static_cast<std::size_t>(equation);
-            if (!std::isfinite(finalDefects[ii]) || finalDefects[ii] < 0)
-                return false;
-            if (finalDefects[ii] > targets[ii])
-                (equation < 4 ? flowConverged : turbulenceConverged) = false;
+            real norm = 0;
+            const real scale = std::sqrt(static_cast<real>(last - first));
+            for (int equation = first; equation < last; equation++)
+                norm = std::hypot(norm, values[static_cast<std::size_t>(equation)] / scale);
+            return norm;
+        };
+        TimeStepReport report;
+        report.initialEquationDefectNorms = initialDefects;
+        report.equationDefectNorms = finalDefects;
+        report.initialDefectNorm = rms(initialDefects, 0, 4);
+        report.finalDefectNorm = rms(finalDefects, 0, 4);
+        if (activeEquations > 4)
+        {
+            report.initialTurbulenceDefectNorm = rms(initialDefects, 4, activeEquations);
+            report.turbulenceDefectNorm = rms(finalDefects, 4, activeEquations);
         }
-        return CombineDualTimeGroups(dualTimeConvergenceCriterion, flowConverged, turbulenceConverged, activeEquations);
+        return DualTimeConverged(report, activeEquations);
     }
 
     bool TimeMarchSettings::DualTimeConverged(const TimeStepReport &report, int activeEquations) const
     {
-        DNDS_check_throw_info(activeEquations >= 4 && activeEquations <= 6,
-                              "ACM dual-time convergence requires four to six active equations");
+        ValidateDualTimeConvergence(activeEquations);
         const auto targets = DualTimeTargets(report.initialEquationDefectNorms);
         bool flowConverged = true;
         bool turbulenceConverged = true;
@@ -292,7 +300,7 @@ namespace DNDS::ACM
         if (activeEquations > 4 && dualTimeTurbulenceRelativeTolerance > 0 &&
             report.turbulenceDefectNorm > DualTimeGroupTarget(report.initialTurbulenceDefectNorm, true))
             turbulenceConverged = false;
-        return CombineDualTimeGroups(dualTimeConvergenceCriterion, flowConverged, turbulenceConverged, activeEquations);
+        return flowConverged && turbulenceConverged;
     }
 
     real TimeMarchSettings::SteadyImplicitTarget(real initialSpatialResidual) const

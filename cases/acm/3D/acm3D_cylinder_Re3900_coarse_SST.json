@@ -12,10 +12,10 @@
     "solver": {
         "type": "ACM",
         "discretization": "CFV",
-        "model": "ConstantDensity3D",
-        "fieldNVariables": 4
+        "model": "ConstantDensity2EQ3D",
+        "fieldNVariables": 6
     },
-    "$schema": "acm3D_schema.json",
+    "$schema": "2EQ/acm2EQ3D_schema.json",
     "acmSettings": {
         "rho0": 1.0,
         "beta2": 4.0,
@@ -55,7 +55,7 @@
         "wallOmegaCoefficient": 800.0,
         "enableSourceTerms": true,
         "secondOrderReconstruction": true,
-        "transportSubsteps": 8,
+        "transportSubsteps": 1,
         "transportTimeScale": 0.1,
         "wallDistanceMethod": 1,
         "wallDistanceExecution": 0,
@@ -162,7 +162,7 @@
             "valueExtra": []
         }
     ],
-    "initialState": [1.0, 0.0, 0.0, 0.0],
+    "initialState": [1.0, 0.0, 0.0, 0.0, 0.001, 10.0],
     "boundaryValue": [1.0, 0.0, 0.0, 0.0],
     "leftState": [1.0, 0.0, 0.0, 0.0],
     "rightState": [0.0, 0.0, 0.0, 0.0],

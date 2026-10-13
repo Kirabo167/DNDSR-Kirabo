@@ -7,6 +7,10 @@ ACM 求解器现在支持定常伪时间推进和非定常 BDF2 双时间推进�
 物理时间方程。它没有直接复用 Euler 的通用 BDF 状态方程，因为 ACM 压力只参与伪时间
 人工压缩过程，不应具有物理时间导数。
 
+SA/两方程入口已改用统一的五/六分量守恒输运状态，分别为acmSA2D/acmSA3D、
+acm2EQ2D/acm2EQ3D。层流使用acm2D/acm3D。入口、JSON和隐式近似的完整约定见
+[ACM统一状态说明](acm_model_state_zh.md)。
+
 可选格式为：
 
 - `BDF2DualTimeLUSGS`：内迭代直接使用分布式 ACM LU-SGS；
@@ -15,7 +19,7 @@ ACM 求解器现在支持定常伪时间推进和非定常 BDF2 双时间推进�
 
 ## 2. 控制方程
 
-ACM 状态和物理状态分别定义为
+ACM 的四分量流场块和物理状态分别定义为
 
 ```text
 U = [u, v, w, p]^T
@@ -29,8 +33,8 @@ Gamma(U) * dU/dtau + dQ/dt = R(U, t)
 ```
 
 其中 `tau` 是用于收敛每个物理步的伪时间，`t` 是真实物理时间，`R` 是现有空间离散
-残差。矩阵 `M` 的最后一个对角元为零，因此速度采用 BDF 物理时间离散，压力没有物理
-时间导数。
+残差。矩阵 `M` 的压力对角元为零，因此速度采用 BDF 物理时间离散，压力没有物理
+时间导数。SA/两方程在U中追加rho*q，物理质量矩阵相应为diag(1,1,1,0,1[,1])。
 
 对新物理时刻的当前内迭代值 `U*`，非线性缺陷为
 
@@ -70,33 +74,34 @@ CFL 估计均接收目标物理时刻 `t[n+1]`。
 
 ### 各 RANS 模型的物理时间项
 
-四种 RANS 模型均保存原始活跃变量的两个已完成物理层：SA 为 `nuTilde`，Wilcox/SST 为
-`[k, omega]`，realizable k-epsilon 为 `[k, epsilon]`。常密度下 `rho0` 在时间项中约去，
-每个活跃变量的非线性缺陷为：
+四种 RANS 模型均在统一主状态中保存两个已完成物理层：SA 尾部为 `rho*nuTilde`，
+Wilcox/SST 为 `[rho*k, rho*omega]`，realizable k-epsilon 为 `[rho*k, rho*epsilon]`。
+每个活跃守恒输运变量的非线性缺陷为：
 
 ```text
-D_q(q*) = R_q(U*, q*, t[n+1])
-          - (a0*q* + a1*q[n] + a2*q[n-1]) / dt
+D_rhoq(U*) = rho0 * R_q(U*, q*, t[n+1])
+             - (a0*(rho*q)* + a1*(rho*q)[n] + a2*(rho*q)[n-1]) / dt
 ```
 
-每次流场隐式修正后，使用更新后的速度冻结流场，采用有正值界限的 SSPRK3 子步沿伪时间
-松弛 `D_q`。每个活跃变量独立按正值上下限约束其阶段增量，k 触底不会把 omega 的阶段
-步长一起置零。随后以新的湍流黏度重新求流场缺陷。按 `dualTimeConvergenceCriterion`
-选择流场、湍流或两组的组合条件，满足所选条件才结束内迭代。
+所有主状态量在同一次非线性内迭代中修正。流场使用原4×4面耦合算子，湍流使用局部
+源项Jacobian、对流/扩散谱半径近似及时间对角项，GMRES向量包含完整五/六分量。
+流场与闭合的交叉导数冻结，湍流空间非对角Jacobian尚未建立；这是分块近似。
+各守恒输运分量独立按rho0乘原始上下限约束增量，k触底不会把omega的修正一起置零。
+随后用完整新状态重新求流场和湍流缺陷。按 `dualTimeConvergenceCriterion`
+选择绝对或相对收敛方式，流场与活跃湍流方程均满足所选方式才结束内迭代。
 历史 `q[n]`、`q[n-1]` 在内迭代中保持不变，
 物理步结束后才移动。
 
 BDF2 不保证正性。当某单元某个活跃变量的历史组合
 `-a1*q[n]-a2*q[n-1] < a0*minimumValue` 时，该变量在整个物理步中改用 BE 系数
 `(1,-1,0)`。选择仅依赖已完成历史，因此不会在内迭代中跳变；其他变量和流场继续使用
-原来的系数。日志 `turbBE=[q1单元数,q2单元数]` 报告这种局部回退。这些单元的该变量在
+原来的系数。这些单元的该变量在
 本步采用一阶时间离散；回退较多时需要检查时间步和启动方式，不能宣称全场二阶精度。
 收敛统计仍使用完整、未投影的空间减时间缺陷，正值裁剪不会把无法满足的方程伪装成收敛。
 
-公共 `BDF2TurbulenceHistory` 按活跃变量数验证历史；SA 的第二存储分量固定为零，不参与
-正值检查、BDF 导数和 RMS 缺陷。提交时先验证整个待提交字段，失败不移动任何历史层。
-首步使用 BE，随后使用 BDF2。固定空间离散的 SA 输运衰减和均匀 k-epsilon 非线性耗散
-测试分别验证离散解及时间步减半时约四倍的误差缩小。
+统一求解器的历史与主状态同宽，SA不存储第六分量。未收敛物理步不移动历史和物理时间。
+公共 `BDF2TurbulenceHistory` 保留用于原始变量时间核测试及旧内部实现；它的SA第二
+存储分量固定为零，不参与正值检查、BDF导数和RMS缺陷。
 
 ## 4. 配置语义
 
@@ -122,65 +127,73 @@ BDF2 通过 `timeMarchSettings` 选择，可设置：
 - `implicitTolerance`：全局 RMS 物理缺陷收敛阈值；
 - `implicitRelaxation`：每次隐式修正的松弛因子。
 
-物理双时间推进默认逐方程计算 MPI 全局 RMS，顺序为 `[u,v,w,p,q1,q2]`，
+物理双时间推进默认逐方程计算 MPI 全局 RMS，顺序为 `[u,v,w,p,rho*q1,rho*q2]`，
 未活跃分量保持零并排除于收敛判定。新增设置为：
 
 - `dualTimeResidualScales`：六个正的方程特征残差尺度，默认均为 1；
 - `dualTimeRelativeTolerances`：各方程相对本物理步初始缺陷的目标，默认均为 0，
   即关闭相对判据；每个值必须位于 `[0,1)`；
-- `dualTimeRequireConvergence`：默认 `true`。任一方程未收敛就报错退出，且不提交
+- `dualTimeRequireConvergence`：默认 `true`。所选收敛条件未满足就报错退出，且不提交
   物理历史、不更新物理时间、不写该步的已接受场。短跑诊断可显式设为 `false`，
   此时日志仍显示 `converged=0`。
 
-每个活跃方程的原始 RMS 目标是
-`max(implicitTolerance*dualTimeResidualScales[i], initialRMS[i]*dualTimeRelativeTolerances[i])`。
-因此可以用具有物理依据的尺度区分速度、压力、k 和 omega，或指定各方程的残差下降比例。
-默认尺度为 1、组合方式为 `Both` 时仍采用原容差，所有活跃方程都必须通过，
-不再允许某一分量被混合 RMS 稀释。其他组合方式仍要求所选组内的每个活跃方程通过。
+通过 `dualTimeConvergenceCriterion` 明确选择收敛方式：
+
+| JSON 值 | 原始 RMS 目标 |
+| --- | --- |
+| `Absolute` | 绝对容差；逐方程模式为 `implicitTolerance * dualTimeResidualScales[i]` |
+| `Relative` | 本物理步初始残差乘相对阈值；逐方程模式为 `initialRMS[i] * dualTimeRelativeTolerances[i]` |
+
+缺少该字段的旧配置默认使用 `Absolute`。相对容差必须在 `Relative` 模式下显式启用，
+只判断所选方式，不对绝对、相对条件求“任一满足”。在逐方程模式下所有活跃方程都必须通过。
 这些判据只控制内迭代；应另做加严目标和减半物理步长的精度验证。
 
-如果希望为流场和 SST 分别设置三个数量级的下降目标，并在任一组达标时结束内迭代，
-在 `timeMarchSettings` 中设置：
+如果希望为流场和 SST 分别设置三个数量级的下降目标，在 `timeMarchSettings` 中设置：
 
 ```json
 {
   "implicitTolerance": 1e-8,
-  "dualTimeConvergenceCriterion": "Either",
+  "dualTimeConvergenceCriterion": "Relative",
   "dualTimeFlowRelativeTolerance": 1e-3,
   "dualTimeTurbulenceRelativeTolerance": 1e-3,
   "steadyRelativeTolerance": 0.0
 }
 ```
 
-两个新字段仅用于 BDF2 双时间推进，默认均为 0，表示继续使用对应组的逐方程目标。
+`dualTimeFlowRelativeTolerance` 与 `dualTimeTurbulenceRelativeTolerance` 仅用于 BDF2
+双时间推进，默认均为 0，表示继续使用对应组的逐方程目标。
 正值启用该组的原始 RMS 判据：流场 RMS 包含 `[u,v,w,p]`，湍流 RMS 只包含模型的活跃
-输运变量（SST 为 `[k,omega]`，SA 仅为 `nuTilde`）。每个物理步在任何流场或湍流修正之前
+守恒输运变量（SST 为 `[rho*k,rho*omega]`，SA 仅为 `rho*nuTilde`）。每个物理步在任何流场或湍流修正之前
 分别记录 `R_flow,0` 和 `R_turb,0`；两者在本步内固定，下一物理步重新记录。
 
 ```text
-R_flow <= max(implicitTolerance, dualTimeFlowRelativeTolerance * R_flow,0)
-R_turb <= max(implicitTolerance, dualTimeTurbulenceRelativeTolerance * R_turb,0)
+Relative:
+  R_flow <= dualTimeFlowRelativeTolerance * R_flow,0
+  R_turb <= dualTimeTurbulenceRelativeTolerance * R_turb,0
+Absolute (when group RMS controls are configured):
+  R_flow <= implicitTolerance
+  R_turb <= implicitTolerance
 ```
 
-通过 `dualTimeConvergenceCriterion` 选择使用哪组收敛判据：
-
-| JSON 值 | 结束内迭代的条件 |
-| --- | --- |
-| `Both` | 流场和湍流两组都通过；旧配置缺省值 |
-| `Either` | 流场或湍流任一活跃组通过 |
-| `Flow` | 只判断流场 |
-| `Turbulence` | 只判断湍流（SST 或其他活跃 RANS 模型） |
-
-上述示例及圆柱配置选择 `Either`。各组仍采用绝对条件或自身相对条件，选择组的方式不会
-改变组内目标；相对字段为 0 时也按同样选择组合对应组的逐方程判据。
-`1e-3` 表示相对本物理步初值
-下降三个数量级，不能用 `implicitTolerance=1e-3` 代替。某组初始 RMS 为零或很小时，
-绝对容差仍然有效；层流的 `Both`、`Either`、`Flow` 均只判断流场，不能由不存在的
-湍流组满足 `Either`，选择 `Turbulence` 会报配置错误。任一活跃组存在非有限或负残差时
-仍拒绝收敛，即使未选择该组。日志用 `convergenceCriterion` 显示所选方式。
+上述示例及圆柱配置选择 `Relative`。流场与 SST 两组都必须达到各自相对目标。
+`implicitTolerance=1e-8` 仍保留在 JSON 中，切换为 `Absolute` 时使用；它不会在
+`Relative` 模式下提前触发收敛。`1e-3` 表示相对本物理步初值下降三个数量级，不能用
+`implicitTolerance=1e-3` 代替。初始 RMS 为零时相对目标也为零，只有当前残差为零才通过。
+选择 `Relative` 时，每个活跃方程或其 RMS 组都必须配置正的相对阈值；缺少阈值会报错。
+层流不检查湍流组，SA 不检查第二个湍流存储分量。任一活跃残差非有限或负值都拒绝收敛。
+日志用 `convergenceCriterion=Absolute/Relative` 显示所选方式。
+此前的 `Both`、`Either`、`Flow`、`Turbulence` 组选择名称已移除，使用这些值的 JSON
+需明确改为 `Absolute` 或 `Relative`。
 为避免同一组出现互相覆盖的设置，启用组相对判据时，
 该组的 `dualTimeResidualScales` 必须为 1、`dualTimeRelativeTolerances` 必须为 0。
 `steadyRelativeTolerance` 仍然只适用于稳态隐式推进，不应在 BDF2 中启用。
+
+这里借鉴 Euler 的相对阈值收敛方式：Euler 的 `rhsThresholdInternal` 在
+`EulerSolver_Init.hxx::functor_fstop` 中作用于密度分量的相对残差，并受
+`nTimeStepInternalMin` 约束。其参考值在步内取历次残差的最大值；ACM 保留本需求指定的
+固定初始残差与现有 RMS 范数。CFV 重构由 Euler 驱动，SOR/GMRES/PCG 使用
+`implicitReconstructionControl.recThreshold` 判断重构增量或残差的相对下降，
+与物理步内迭代的停止条件分别配置。
 
 BDF2 的固定次数变分重构（`variationalTolerance=0`）现在每次 RHS 从零系数开始，
 使缺陷由当前状态唯一决定，不受先前 RHS 或线性化调用的暖启动影响。固定次数仍不保证
@@ -197,21 +210,24 @@ BDF2 模式的日志使用 `ACM physical step`，并显示物理时间、当前 
 最小伪时间步和内迭代次数。第一个物理步显示 `BDF1`，第二步起显示 `BDF2`。流场输出
 文件仍按外层步编号命名，但 VTK 时间序列值使用真实物理时间。
 日志增加 `flowRatio`、`turbInitial` 和 `turbRatio`，展示本物理步的流场下降比例、初始湍流
-RMS 和湍流下降比例。开启组判据时，`flowTarget` / `turbTarget` 输出本步实际组目标；
-未开启组判据时，`eqTarget` 或混合模式下的 `flowEqTarget` / `turbEqTarget` 输出对应的
-逐方程目标。`eqResidual` 始终输出六个原始方程 RMS；`turbBE` 报告湍流的
-局部 BE 回退数。`BDF2` 标记描述流场历史系数，不能覆盖有回退单元的湍流变量时间阶数。
+RMS 和湍流下降比例。统一RANS入口的 `eqResidual` 输出五/六个活跃守恒方程RMS，
+并显示 `model` 和 `nVars`。层流入口保留其原有目标日志。
+`BDF2` 标记描述流场历史系数，不能覆盖有回退单元的湍流变量时间阶数。
 
 ## 6. 当前限制
 
 - 只支持固定 `physicalTimeStep`，尚未实现变步长 BDF2 系数；
-- 当前允许层流及全部四种 RANS 模型；活跃湍流变量保存两个已完成物理时间层，
-  内迭代采用分离式显式伪时间推进，尚无湍流源项/扩散项的隐式 Jacobian；
+- 当前允许层流及全部四种 RANS 模型；活跃守恒输运变量保存两个已完成物理时间层，
+  隐式系统采用分块近似，尚未建立流场/闭合交叉导数和湍流空间非对角Jacobian；
 - 旧配置缺少新增字段时补入严格默认值；曾依靠迭代预算强制推进的短跑，需要显式设置
   `dualTimeRequireConvergence=false`。生产计算不应通过这个选项绕过收敛检查；
 - 重启文件和 BDF2 两层历史尚未序列化，重启接续非定常计算前需先补齐该功能。
 
 ### SA 与 realizable k-epsilon 的物理时间验证
+
+以下2026-10-08结果属于旧时间核及分离式实现的历史验证，不作为新统一求解器的精度结论。
+2026-10-13统一实现已通过九项相关CTest（含np=1/2/4/8和GMRES测试）、Wilcox物理
+离散根测试、六组入口短步运行及稳态重启检查。短步运行不代替湍流物理精度验证。
 
 2026-10-08 的时间核测试为 20 个用例、130 个断言，覆盖活跃变量掩码、两层历史、BE 启动、
 非法提交不改变历史及全部模型的 BDF2 配置。七项 ACM CTest（含 np=1/2/4 的 MPI 回归）均通过。
@@ -256,14 +272,16 @@ HWLOC_COMPONENTS=-gl OMP_NUM_THREADS=1 venv/bin/python scripts/check_acm_rans_cy
 三维检查在上述命令中再加入
 `--case cases/acm/3D/acm3D_cylinder_Re3900_coarse_SST.json --limiter LocalExtrema`，
 加入 `--dimension 3`，并将 `--np 2` 改为 `--np 4`。脚本从 `build/` 调用对应维度的
-`app/acm2D.exe` 或 `app/acm3D.exe`，
+层流的 `app/acm2D.exe` / `app/acm3D.exe`、SA的 `app/acmSA2D.exe` / `app/acmSA3D.exe`，
+或两方程的 `app/acm2EQ2D.exe` / `app/acm2EQ3D.exe`，
 通过命令行覆盖模型和推进参数，并逐步核查 BE/BDF2 阶数及最终输出字段。
 
 ## 7. 代码位置
 
 - `src/ACM/ACMBDF2.hpp/.cpp`：BDF 系数、物理质量矩阵、缺陷、对角项和历史管理；
-- `src/ACM/ACMTurbulenceTransport.hpp/.hxx`：活跃 RANS 历史及物理缺陷、分离式伪时间子步；
-- `src/ACM/ACMSolver.hxx`：物理步循环、目标时间传递、LU-SGS/GMRES 内迭代；
+- `src/ACM/ACMRANSSolver.hpp/.hxx`：统一守恒主状态及历史、目标时间传递、完整残差和隐式内迭代；
+- `src/ACM/ACMTurbulenceTransport.hpp/.hxx`：原始闭合工作缓冲、守恒面通量、源项线性化及旧内部时间核；
+- `src/ACM/ACMSolver.hxx`：四变量流场求解器、LU-SGS/GMRES算子复用；
 - `src/ACM/ACMTime.hpp`：JSON 可选的积分格式和 `physicalTimeStep`；
 - `src/ACM/ACM.cpp`：旧 JSON 默认值兼容和 BDF2 模型范围检查；
 - `test/cpp/ACM/test_ACMTime.cpp`：启动阶数、压力屏蔽、活跃变量历史、缺陷/矩阵一致性和枚举测试；

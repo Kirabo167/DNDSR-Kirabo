@@ -185,7 +185,7 @@ namespace DNDS::ACM
         CFV::VRSettings vfvSettings{3};
         BoundaryType defaultBoundaryType = BoundaryType::FarField;
         std::vector<BoundaryCondition> boundaryConditions; ///< Per-zone Euler-style ACM boundaries.
-        std::array<real, 4> initialState{1, 0, 0, 0};
+        std::vector<real> initialState{1, 0, 0, 0}; ///< Model state: flow followed by density-weighted RANS variables.
         std::array<real, 4> boundaryValue{1, 0, 0, 0};
         std::array<real, 4> leftState{1, 0, 0, 0};
         std::array<real, 4> rightState{0, 0, 0, 0};
@@ -203,7 +203,7 @@ namespace DNDS::ACM
             config.field_section(
                 &T::turbulenceSettings,
                 "turbulenceSettings",
-                "Segregated constant-density ACM turbulence settings");
+                "Constant-density ACM turbulence closure settings");
             config.field_section(&T::meshSettings, "meshSettings", "Distributed mesh input settings");
             config.field_section(&T::reconstructionSettings, "reconstructionSettings", "ACM high-order reconstruction settings");
             config.field_section(&T::outputSettings, "outputSettings", "Parallel VTK-HDF flow-field output settings");
@@ -215,7 +215,7 @@ namespace DNDS::ACM
                 &T::boundaryConditions,
                 "boundaryConditions",
                 "Per-zone ACM boundary conditions using Euler-compatible names");
-            DNDS_FIELD(initialState, "Uniform initial ACM state [u,v,w,p]");
+            DNDS_FIELD(initialState, "Uniform model state [u,v,w,p,rho*q...] for the compiled ACM model");
             DNDS_FIELD(boundaryValue, "Prescribed default boundary state [u,v,w,p]");
             DNDS_FIELD(leftState, "Preview left state [u,v,w,p]");
             DNDS_FIELD(rightState, "Preview right state [u,v,w,p]");

@@ -189,12 +189,12 @@ namespace
             ACM::BoundaryCondition inlet, outlet;
             inlet.name = "Left";
             inlet.type = ACM::BoundaryType::BCIn;
-            inlet.value = cfg.initialState;
+            std::copy_n(cfg.initialState.begin(), inlet.value.size(), inlet.value.begin());
             outlet.name = "Right";
             outlet.type = ACM::BoundaryType::BCOut;
             cfg.boundaryConditions = {inlet, outlet};
         }
-        cfg.acmSettings.farFieldValue = cfg.initialState;
+        std::copy_n(cfg.initialState.begin(), cfg.acmSettings.farFieldValue.size(), cfg.acmSettings.farFieldValue.begin());
         cfg.turbulenceSettings.secondOrderReconstruction = secondOrder;
         cfg.turbulenceSettings.transportTimeScale = 1;
         cfg.timeMarchSettings.integrator = integrator;
@@ -260,8 +260,8 @@ TEST_CASE("ACM implicit solvers fold self-periodic coupling into the diagonal")
     configuration.meshSettings.periodicTranslation1 = {1, 0, 0};
     configuration.meshSettings.periodicTranslation2 = {0, 1, 0};
     configuration.initialState = {0.4, -0.2, 0.1, 0.3};
-    configuration.boundaryValue = configuration.initialState;
-    configuration.acmSettings.farFieldValue = configuration.initialState;
+    std::copy_n(configuration.initialState.begin(), configuration.boundaryValue.size(), configuration.boundaryValue.begin());
+    std::copy_n(configuration.initialState.begin(), configuration.acmSettings.farFieldValue.size(), configuration.acmSettings.farFieldValue.begin());
     configuration.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
     configuration.reconstructionSettings.enableLimiter = false;
     configuration.Validate();
@@ -284,8 +284,8 @@ TEST_CASE("ACMVariable implicit solvers fold self-periodic coupling into the dia
     configuration.meshSettings.periodicTranslation1 = {1, 0, 0};
     configuration.meshSettings.periodicTranslation2 = {0, 1, 0};
     configuration.initialState = {1.1, 0.2, -0.1, 0.05, 0.3};
-    configuration.boundaryValue = configuration.initialState;
-    configuration.acmSettings.farFieldValue = configuration.initialState;
+    std::copy_n(configuration.initialState.begin(), configuration.boundaryValue.size(), configuration.boundaryValue.begin());
+    std::copy_n(configuration.initialState.begin(), configuration.acmSettings.farFieldValue.size(), configuration.acmSettings.farFieldValue.begin());
     configuration.reconstructionSettings.type =
         ACMVariable::ReconstructionType::FirstOrder;
     configuration.reconstructionSettings.enableLimiter = false;
@@ -452,6 +452,7 @@ TEST_CASE("ACM SST physical marching uses each step's own relative RMS reference
         auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST, integrator, 0.05, 3);
         cfg.turbulenceSettings.initialValue = {0.2, 4};
         cfg.timeMarchSettings.implicitTolerance = 1e-8;
+        cfg.timeMarchSettings.dualTimeConvergenceCriterion = "Relative";
         cfg.timeMarchSettings.dualTimeFlowRelativeTolerance = 1e-3;
         cfg.timeMarchSettings.dualTimeTurbulenceRelativeTolerance = 1e-3;
         ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
@@ -489,7 +490,7 @@ TEST_CASE("ACM SST physical marching uses each step's own relative RMS reference
             CHECK(final <= 1.005 * target);
             CHECK(value("turbRatio") <= 1.005e-3);
             CHECK(final > 1e-8); // The relative criterion must actually be able to stop the solve.
-            CHECK(value("flowTarget") == doctest::Approx(1e-8)); // Zero initial flow uses the absolute criterion.
+            CHECK(value("flowTarget") == 0); // Relative mode keeps a zero initial flow target at zero.
             CHECK(value("flowRatio") == 0);
             initialResiduals.push_back(initial);
         }
@@ -500,8 +501,8 @@ TEST_CASE("ACM SST physical marching uses each step's own relative RMS reference
     }
 }
 
-/// @test Flow/Either can accept a physical step while SST remains above target; Both/Turbulence cannot.
-TEST_CASE("ACM SST physical marching applies the configured convergence selection")
+/// @test A loose absolute threshold cannot stop a step that explicitly selects relative convergence.
+TEST_CASE("ACM SST physical marching explicitly selects absolute or relative convergence")
 {
     MPIInfo mpi;
     mpi.setWorld();
@@ -510,25 +511,18 @@ TEST_CASE("ACM SST physical marching applies the configured convergence selectio
     WriteSingleCellQuad(meshFile.path, false);
     for (const auto integrator : {ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
                                  ACM::TimeIntegratorType::BDF2DualTimeGMRES})
-        for (const std::string criterion : {"Both", "Either", "Flow", "Turbulence"})
+        for (const std::string criterion : {"Absolute", "Relative"})
         {
             CAPTURE(static_cast<int>(integrator));
             CAPTURE(criterion);
             auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST, integrator, 0.05, 1);
             cfg.turbulenceSettings.initialValue = {0.2, 4};
-            cfg.timeMarchSettings.implicitTolerance = 1e-8;
+            cfg.timeMarchSettings.implicitTolerance = 1;
             cfg.timeMarchSettings.dualTimeFlowRelativeTolerance = 1e-3;
             cfg.timeMarchSettings.dualTimeTurbulenceRelativeTolerance = 1e-3;
             cfg.timeMarchSettings.dualTimeConvergenceCriterion = criterion;
-            cfg.timeMarchSettings.maxImplicitIterations = 1;
             ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
             solver.ReadMeshAndInitialize();
-            if (criterion == "Both" || criterion == "Turbulence")
-            {
-                const std::string expectedMessage = "criterion=" + criterion;
-                CHECK_THROWS_WITH_AS(solver.Run(), doctest::Contains(expectedMessage.c_str()), std::runtime_error);
-                continue;
-            }
             std::ostringstream captured;
             {
                 struct Capture
@@ -541,11 +535,23 @@ TEST_CASE("ACM SST physical marching applies the configured convergence selectio
             }
             const std::string output = captured.str();
             CAPTURE(output);
-            CHECK(output.find("inner=0 converged=1") != std::string::npos);
+            CHECK(output.find("converged=1") != std::string::npos);
             CHECK(output.find("convergenceCriterion=" + criterion) != std::string::npos);
             std::smatch match;
             REQUIRE(std::regex_search(output, match, std::regex("turbRatio=(\\S+)")));
-            CHECK(std::stod(match[1].str()) == doctest::Approx(1)); // SST has not reached its target.
+            const DNDS::real ratio = std::stod(match[1].str());
+            REQUIRE(std::regex_search(output, match, std::regex("inner=(\\S+)")));
+            const int iterations = std::stoi(match[1].str());
+            if (criterion == "Absolute")
+            {
+                CHECK(iterations == 0);
+                CHECK(ratio == doctest::Approx(1));
+            }
+            else
+            {
+                CHECK(iterations > 0);
+                CHECK(ratio <= 1.005e-3); // The absolute threshold is met initially, but is not selected.
+            }
         }
 }
 
@@ -571,7 +577,7 @@ TEST_CASE("ACM Wilcox physical marching follows homogeneous k-omega decay")
             cfg.meshSettings.meshFile = meshFile.path.string();
             cfg.defaultBoundaryType = ACM::BoundaryType::BCSym;
             cfg.initialState = {0, 0, 0, 0.3};
-            cfg.acmSettings.farFieldValue = cfg.initialState;
+            std::copy_n(cfg.initialState.begin(), cfg.acmSettings.farFieldValue.size(), cfg.acmSettings.farFieldValue.begin());
             cfg.acmSettings.enableViscousFlux = true;
             cfg.acmSettings.dynamicViscosity = 0.001;
             cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
@@ -699,6 +705,210 @@ TEST_CASE("ACM SA and realizable k-epsilon BDF2 has second-order physical accura
                       << " errors=" << errors[0] << "," << errors[1] << "," << errors[2]
                       << " ratios=" << errors[0] / errors[1] << "," << errors[1] / errors[2] << std::endl;
         }
+}
+
+namespace
+{
+    template <ACM::ACMModel model>
+    ACM::KernelConfiguration MakeUnifiedCase(const std::filesystem::path &mesh)
+    {
+        ACM::KernelConfiguration cfg;
+        cfg.solver = ACM::ModelSelection<model>();
+        cfg.meshSettings.meshFile = mesh.string();
+        cfg.meshSettings.periodicTranslation1 = {1, 0, 0};
+        cfg.meshSettings.periodicTranslation2 = {0, 1, 0};
+        cfg.acmSettings.rho0 = 3;
+        cfg.acmSettings.dynamicViscosity = 0.001;
+        cfg.acmSettings.enableViscousFlux = true;
+        cfg.initialState = {0, 0, 0, 0.3, 1.2};
+        cfg.turbulenceSettings.model = ACM::ModelTraits<model>::nExtraVars == 1
+            ? ACM::TurbulenceModel::SpalartAllmaras : ACM::TurbulenceModel::KOmegaWilcox;
+        if constexpr (ACM::ModelTraits<model>::nExtraVars == 2)
+            cfg.initialState.push_back(0.24);
+        cfg.turbulenceSettings.transportSubsteps = 1;
+        cfg.turbulenceSettings.transportTimeScale = 1;
+        cfg.turbulenceSettings.enableSourceTerms = false;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
+        cfg.reconstructionSettings.enableLimiter = false;
+        cfg.timeMarchSettings.pseudoTimeStep = 0.02;
+        cfg.timeMarchSettings.physicalTimeStep = 0.01;
+        cfg.timeMarchSettings.maxImplicitIterations = 500;
+        cfg.timeMarchSettings.implicitTolerance = 1e-12;
+        cfg.timeMarchSettings.nSteps = 3;
+        return cfg;
+    }
+
+    /** @brief Multi-cell periodic box with distinct neighbour centers for viscous closures. */
+    void WritePeriodicQuadGrid(const std::filesystem::path &path)
+    {
+        int file = -1, base = 0, zone = 0, coordinate = 0, section = 0, boundary = 0;
+        CheckCGNS(cg_open(path.c_str(), CG_MODE_WRITE, &file));
+        try
+        {
+            CheckCGNS(cg_base_write(file, "Base", 2, 2, &base));
+            cgsize_t size[3] = {9, 4, 0};
+            CheckCGNS(cg_zone_write(file, base, "Zone", size, Unstructured, &zone));
+            std::array<double, 9> x{}, y{};
+            for (int j = 0; j < 3; j++)
+                for (int i = 0; i < 3; i++)
+                {
+                    x[3 * j + i] = 0.5 * i;
+                    y[3 * j + i] = 0.5 * j;
+                }
+            CheckCGNS(cg_coord_write(file, base, zone, RealDouble, "CoordinateX", x.data(), &coordinate));
+            CheckCGNS(cg_coord_write(file, base, zone, RealDouble, "CoordinateY", y.data(), &coordinate));
+            std::array<cgsize_t, 16> cells{};
+            int offset = 0;
+            for (int j = 0; j < 2; j++)
+                for (int i = 0; i < 2; i++)
+                {
+                    const cgsize_t first = 3 * j + i + 1;
+                    cells[offset++] = first;
+                    cells[offset++] = first + 1;
+                    cells[offset++] = first + 4;
+                    cells[offset++] = first + 3;
+                }
+            CheckCGNS(cg_section_write(file, base, zone, "Cells", QUAD_4, 1, 4, 0, cells.data(), &section));
+            const std::array<const char *, 4> names = {"PERIODIC_1", "PERIODIC_1_DONOR", "PERIODIC_2", "PERIODIC_2_DONOR"};
+            const std::array<std::array<cgsize_t, 4>, 4> edges = {{{1, 4, 4, 7}, {3, 6, 6, 9},
+                                                               {1, 2, 2, 3}, {7, 8, 8, 9}}};
+            for (int i = 0; i < 4; i++)
+            {
+                const cgsize_t start = 5 + 2 * i;
+                CheckCGNS(cg_section_write(file, base, zone, names[i], BAR_2, start, start + 1, 0, edges[i].data(), &section));
+                cgsize_t range[2] = {start, start + 1};
+                CheckCGNS(cg_boco_write(file, base, zone, names[i], BCTypeNull, PointRange, 2, range, &boundary));
+                CheckCGNS(cg_boco_gridlocation_write(file, base, zone, boundary, EdgeCenter));
+            }
+            CheckCGNS(cg_close(file));
+        }
+        catch (...)
+        {
+            cg_close(file);
+            throw;
+        }
+    }
+}
+
+using UnifiedSA = std::integral_constant<ACM::ACMModel, ACM::ACMModel::ConstantDensitySA2D>;
+using Unified2EQ = std::integral_constant<ACM::ACMModel, ACM::ACMModel::ConstantDensity2EQ2D>;
+
+TEST_CASE_TEMPLATE("ACM unified RANS stores density-weighted variables and shares every integration stage",
+                   TModel, UnifiedSA, Unified2EQ)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    for (const auto integrator : {ACM::TimeIntegratorType::ExplicitSSPRK3,
+                                 ACM::TimeIntegratorType::ImplicitEulerBlockJacobi,
+                                 ACM::TimeIntegratorType::ImplicitEulerLUSGS,
+                                 ACM::TimeIntegratorType::ImplicitEulerGMRES,
+                                 ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
+                                 ACM::TimeIntegratorType::BDF2DualTimeGMRES})
+    {
+        auto cfg = MakeUnifiedCase<TModel::value>(mesh.path);
+        cfg.timeMarchSettings.integrator = integrator;
+        ACM::ACMSolver<TModel::value> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        CHECK(solver.GetState()[0].size() == ACM::ModelTraits<TModel::value>::nVarsFixed);
+        typename ACM::ACMSolver<TModel::value>::TState initial = solver.GetState()[0];
+        CHECK(initial(4) == doctest::Approx(1.2));
+        const auto primitive = ACM::ModelConservativeToPrimitive<TModel::value>(initial, cfg.acmSettings.rho0);
+        CHECK(primitive(4) == doctest::Approx(0.4));
+        CHECK((ACM::ModelPrimitiveToConservative<TModel::value>(primitive, cfg.acmSettings.rho0) - initial).norm() < 1e-14);
+        solver.Run();
+        CHECK((solver.GetState()[0] - initial).norm() < 1e-10);
+        if (ACM::IsBDF2DualTimeIntegrator(integrator))
+        {
+            CHECK(solver.CompletedPhysicalSteps() == 3);
+            CHECK(solver.SimulationTime() == doctest::Approx(0.03));
+        }
+    }
+}
+
+TEST_CASE("ACM unified two-equation BDF2 reproduces conservative Wilcox decay with both linear solvers")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    for (auto integrator : {ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
+                            ACM::TimeIntegratorType::BDF2DualTimeGMRES})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = integrator;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        cfg.timeMarchSettings.nSteps = 4;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        solver.Run();
+        ACM::TurbulenceState expected, older;
+        expected << 0.4, 0.08;
+        older = expected;
+        for (int step = 0; step < 4; step++)
+        {
+            const auto coefficients = ACM::GetBDF2Coefficients(step);
+            const ACM::TurbulenceState history =
+                -coefficients.previous * expected - coefficients.previousPrevious * older;
+            ACM::TurbulenceState next;
+            next(1) = 2 * history(1) / (coefficients.current +
+                std::sqrt(coefficients.current * coefficients.current + 4 * 0.0708 * 0.01 * history(1)));
+            next(0) = history(0) / (coefficients.current + 0.09 * 0.01 * next(1));
+            older = expected;
+            expected = next;
+        }
+        CHECK(solver.GetState()[0](4) / cfg.acmSettings.rho0 == doctest::Approx(expected(0)).epsilon(1e-10));
+        CHECK(solver.GetState()[0](5) / cfg.acmSettings.rho0 == doctest::Approx(expected(1)).epsilon(1e-10));
+    }
+}
+
+TEST_CASE("ACM unified RANS keeps failed physical histories uncommitted and validates model choices")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeLUSGS;
+    cfg.turbulenceSettings.enableSourceTerms = true;
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.timeMarchSettings.implicitTolerance = 1e-25;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    CHECK_THROWS_WITH_AS(solver.Run(), doctest::Contains("histories were not committed"), std::runtime_error);
+    CHECK(solver.CompletedPhysicalSteps() == 0);
+    CHECK(solver.SimulationTime() == 0);
+    cfg.turbulenceSettings.model = ACM::TurbulenceModel::SpalartAllmaras;
+    CHECK_THROWS_AS(ACM::ValidateModelConfiguration<ACM::ACMModel::ConstantDensity2EQ2D>(cfg), std::runtime_error);
+    cfg.initialState.resize(4);
+    CHECK_THROWS_AS(cfg.Validate(), std::runtime_error);
+}
+
+TEST_CASE("ACM unified two-equation state supports Wilcox SST and realizable k-epsilon closures")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    for (auto closure : {ACM::TurbulenceModel::KOmegaWilcox, ACM::TurbulenceModel::KOmegaSST,
+                         ACM::TurbulenceModel::RealizableKEpsilon})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.turbulenceSettings.model = closure;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeLUSGS;
+        cfg.timeMarchSettings.nSteps = 1;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        const DNDS::real k0 = solver.GetState()[0](4);
+        solver.Run();
+        CHECK(solver.GetState()[0].allFinite());
+        CHECK(solver.GetState()[0](4) < k0);
+        CHECK(solver.GetState()[0](4) > 0);
+        CHECK(solver.GetState()[0](5) > 0);
+    }
 }
 
 int main(int argc, char **argv)

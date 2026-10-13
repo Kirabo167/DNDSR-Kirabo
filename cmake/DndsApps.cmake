@@ -155,6 +155,10 @@ set_target_properties(euler PROPERTIES EXCLUDE_FROM_ALL OFF)
 foreach(dimension 2 3)
     ADD_EXE_APP("acm${dimension}D" "app/ACM"
         "acm_${dimension}D;cfv;geom;dnds;" ON cpp)
+    foreach(closure SA 2EQ)
+        ADD_EXE_APP("acm${closure}${dimension}D" "app/ACM"
+            "acm_rans_${dimension}D;cfv;geom;dnds;" ON cpp)
+    endforeach()
     ADD_EXE_APP("acmVariable${dimension}D" "app/ACMVariable"
         "acmVariable_${dimension}D;cfv;geom;dnds;" ON cpp)
     ADD_EXE_APP("ncfv_euler${dimension}D" "app/NCFV"
@@ -180,7 +184,7 @@ endif()
 add_custom_target(all_euler)
 add_dependencies(all_euler ${DNDS_APPS_Euler_Models} ${DNDS_EULER_EXTRA_APPS})
 add_custom_target(all_acm)
-add_dependencies(all_acm ACM acm2D acm3D acmVariable2D acmVariable3D)
+add_dependencies(all_acm ACM acm2D acm3D acmSA2D acmSA3D acm2EQ2D acm2EQ3D acmVariable2D acmVariable3D)
 add_custom_target(all_ncfv_euler)
 add_dependencies(all_ncfv_euler ncfv_euler2D ncfv_euler3D)
 add_custom_target(all_solvers)

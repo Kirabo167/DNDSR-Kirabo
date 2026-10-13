@@ -91,8 +91,8 @@ TEST_CASE_TEMPLATE("ACM converged reconstruction defines a repeatable residual",
                                            ? "data/mesh/ACMVariable_verify2D.cgns"
                                            : "data/mesh/ACMVariable_verify3D.cgns")).string();
     cfg.initialState = {0.4, -0.2, 0.0, 0.1};
-    cfg.acmSettings.farFieldValue = cfg.initialState;
-    cfg.boundaryValue = cfg.initialState;
+    std::copy_n(cfg.initialState.begin(), cfg.acmSettings.farFieldValue.size(), cfg.acmSettings.farFieldValue.begin());
+    std::copy_n(cfg.initialState.begin(), cfg.boundaryValue.size(), cfg.boundaryValue.begin());
     cfg.reconstructionSettings.type = ReconstructionType::Variational;
     cfg.reconstructionSettings.variationalTolerance = 1e-13;
     cfg.reconstructionSettings.variationalMaxIterations = 10000;
@@ -152,7 +152,7 @@ TEST_CASE_TEMPLATE("ACM BDF2 fixed reconstruction is independent of RHS history"
                                            ? "data/mesh/ACMVariable_verify2D.cgns"
                                            : "data/mesh/ACMVariable_verify3D.cgns")).string();
     cfg.initialState = {0.4, -0.2, 0, 0.1};
-    cfg.boundaryValue = cfg.initialState;
+    std::copy_n(cfg.initialState.begin(), cfg.boundaryValue.size(), cfg.boundaryValue.begin());
     cfg.reconstructionSettings.type = ReconstructionType::Variational;
     cfg.reconstructionSettings.variationalIterations = 3;
     cfg.reconstructionSettings.resetVariationalCoefficients = false;
@@ -320,8 +320,8 @@ TEST_CASE("ACM LU-SGS multiple sweeps apply residual correction")
     configuration.meshSettings.meshFile =
         (root / "data/mesh/ACMVariable_verify2D.cgns").string();
     configuration.initialState = {0.4, -0.2, 0.1, 0.3};
-    configuration.boundaryValue = configuration.initialState;
-    configuration.acmSettings.farFieldValue = configuration.initialState;
+    std::copy_n(configuration.initialState.begin(), configuration.boundaryValue.size(), configuration.boundaryValue.begin());
+    std::copy_n(configuration.initialState.begin(), configuration.acmSettings.farFieldValue.size(), configuration.acmSettings.farFieldValue.begin());
     configuration.acmSettings.beta2 = 2.0;
     configuration.acmSettings.entropyFixRatio = 0;
     configuration.reconstructionSettings.type = ReconstructionType::FirstOrder;
@@ -396,4 +396,65 @@ TEST_CASE("ACM LU-SGS multiple sweeps apply residual correction")
     CHECK(correctionNorm > 1e-10 * std::max(real(1), oneSweep.norm2()));
     CHECK(firstResidualNorm < rhsNorm);
     CHECK(secondResidualNorm < firstResidualNorm);
+}
+
+using ACMUnifiedSA2D = std::integral_constant<ACMModel, ACMModel::ConstantDensitySA2D>;
+using ACMUnifiedSA3D = std::integral_constant<ACMModel, ACMModel::ConstantDensitySA3D>;
+using ACMUnified2EQ2D = std::integral_constant<ACMModel, ACMModel::ConstantDensity2EQ2D>;
+using ACMUnified2EQ3D = std::integral_constant<ACMModel, ACMModel::ConstantDensity2EQ3D>;
+
+TEST_CASE_TEMPLATE("ACM unified conservative transport uses the same face mass flux across MPI partitions",
+                   TModel, ACMUnifiedSA2D, ACMUnifiedSA3D, ACMUnified2EQ2D, ACMUnified2EQ3D)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    constexpr auto model = TModel::value;
+    using Traits = ModelTraits<model>;
+    using TSolver = ACMSolver<model>;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    KernelConfiguration cfg;
+    cfg.solver = ModelSelection<model>();
+    cfg.meshSettings.meshFile = (root / (Traits::gDim == 2 ? "data/mesh/ACMVariable_verify2D.cgns"
+                                                          : "data/mesh/ACMVariable_verify3D.cgns")).string();
+    cfg.defaultBoundaryType = BoundaryType::BCOut;
+    cfg.acmSettings.rho0 = 2.7;
+    cfg.acmSettings.enableViscousFlux = true;
+    cfg.acmSettings.dynamicViscosity = 0.001;
+    cfg.turbulenceSettings.model = Traits::nExtraVars == 1 ? TurbulenceModel::SpalartAllmaras
+                                                         : TurbulenceModel::KOmegaSST;
+    cfg.turbulenceSettings.enableSourceTerms = false;
+    cfg.turbulenceSettings.farFieldValue = {0.002, 3.2};
+    cfg.turbulenceSettings.transportSubsteps = 1;
+    cfg.initialState = {0.3, -0.2, 0, 0.1, 2.7 * 0.002};
+    if constexpr (Traits::nExtraVars == 2)
+        cfg.initialState.push_back(2.7 * 3.2);
+    cfg.reconstructionSettings.type = ReconstructionType::Variational;
+    cfg.reconstructionSettings.variationalIterations = 12;
+    cfg.reconstructionSettings.resetVariationalCoefficients = true;
+    cfg.reconstructionSettings.enableLimiter = false;
+    cfg.vfvSettings.maxOrder = 2;
+    cfg.vfvSettings.intOrder = 4;
+    TSolver solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+    {
+        const auto center = solver.GetReconstruction()->GetCellBary(cell);
+        solver.GetState()[cell](0) = 0.3 + 0.1 * std::sin(2 * 3.141592653589793 * center(0));
+        solver.GetState()[cell](3) = 0.1 + 0.01 * std::cos(2 * 3.141592653589793 * center(1));
+    }
+    typename TSolver::TDof rhs;
+    solver.GetReconstruction()->BuildUDof(rhs, Traits::nVarsFixed);
+    solver.EvaluateRHS(rhs);
+    DNDS::real localError = 0, localSignal = 0;
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+    {
+        localSignal = std::max(localSignal, std::abs(rhs[cell](3)));
+        for (int variable = 4; variable < Traits::nVarsFixed; variable++)
+            localError = std::max(localError, std::abs(rhs[cell](variable) - cfg.initialState[variable] * rhs[cell](3)));
+    }
+    DNDS::real error = 0, signal = 0;
+    MPI::Allreduce(&localError, &error, 1, DNDS_MPI_REAL, MPI_MAX, mpi.comm);
+    MPI::Allreduce(&localSignal, &signal, 1, DNDS_MPI_REAL, MPI_MAX, mpi.comm);
+    CHECK(signal > 1e-4);
+    CHECK(error < 1e-9 * std::max(DNDS::real(1), signal));
 }

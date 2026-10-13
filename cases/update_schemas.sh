@@ -19,13 +19,15 @@ CPU_BUILD_DIR="${2:-build}"
 [[ "$CPU_BUILD_DIR" = /* ]] || CPU_BUILD_DIR="${PROJECT_DIR}/${CPU_BUILD_DIR}"
 
 VARIANTS=(euler euler2D euler3D eulerSA eulerSA3D euler2EQ euler2EQ3D eulerEX eulerEX3D
-    acm2D acm3D acmVariable2D acmVariable3D ncfv_euler2D ncfv_euler3D)
+    acm2D acm3D acmSA2D acmSA3D acm2EQ2D acm2EQ3D acmVariable2D acmVariable3D ncfv_euler2D ncfv_euler3D)
 declare -A CASE_DIRECTORIES=(
     [euler]=euler/2D [euler2D]=euler/2D [euler3D]=euler/3D
     [eulerSA]=euler/2D/SA [eulerSA3D]=euler/3D/SA
     [euler2EQ]=euler/2D/2EQ [euler2EQ3D]=euler/3D/2EQ
     [eulerEX]=euler/2D/EX [eulerEX3D]=euler/3D/EX
     [acm2D]=acm/2D [acm3D]=acm/3D
+    [acmSA2D]=acm/2D/SA [acmSA3D]=acm/3D/SA
+    [acm2EQ2D]=acm/2D/2EQ [acm2EQ3D]=acm/3D/2EQ
     [acmVariable2D]=acm/2D/variable_density [acmVariable3D]=acm/3D/variable_density
     [ncfv_euler2D]=ncfv_euler/2D [ncfv_euler3D]=ncfv_euler/3D)
 

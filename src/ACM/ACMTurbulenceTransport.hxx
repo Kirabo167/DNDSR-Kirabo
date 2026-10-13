@@ -894,6 +894,11 @@ namespace DNDS::ACM
                          std::max(std::abs(normalVelocityLeft),
                                   std::abs(normalVelocityRight)) *
                              (rightTurbulence - leftTurbulence));
+                    if (_faceVolumeFlux)
+                    {
+                        const real volumeFlux = _faceVolumeFlux(iFace, iG, time);
+                        advectiveFlux = volumeFlux * (volumeFlux >= 0 ? leftTurbulence : rightTurbulence);
+                    }
                     if (faceToCell[1] == UnInitIndex)
                     {
                         const BoundaryType boundaryType =
@@ -943,6 +948,84 @@ namespace DNDS::ACM
             DNDS_check_throw_info(
                 rhs[iCell].allFinite(),
                 "ACM turbulence transport produced a non-finite total residual");
+        }
+    }
+
+    template <int gDim>
+    /** @copydoc ACMTurbulenceTransport::EvaluateImplicitDiagonal */
+    void ACMTurbulenceTransport<gDim>::EvaluateImplicitDiagonal(
+        TFlowDof &flow,
+        std::vector<Eigen::Matrix<real, 2, 2>> &diagonal,
+        real time)
+    {
+        Prepare(flow, time);
+        diagonal.assign(static_cast<std::size_t>(_mesh->NumCell()), Eigen::Matrix<real, 2, 2>::Zero());
+        const int active = ActiveVariableCount();
+        for (index cell = 0; cell < _mesh->NumCell(); cell++)
+        {
+            const TurbulenceState state = _state[cell];
+            const auto source = [&](const TurbulenceState &value)
+            {
+                return TurbulenceSource(value, CellVelocityGradient(cell), CellTurbulenceGradient(cell),
+                    _cellWallDistance[static_cast<std::size_t>(cell)], _flowSettings.rho0,
+                    _flowSettings.dynamicViscosity, _turbulenceSettings);
+            };
+            for (int variable = 0; variable < active; variable++)
+            {
+                const real epsilon = std::sqrt(std::numeric_limits<real>::epsilon()) *
+                    std::max(std::abs(state(variable)), _turbulenceSettings.minimumValue[variable]);
+                TurbulenceState plus = state, minus = state;
+                plus(variable) += epsilon;
+                minus(variable) = std::max(state(variable) - epsilon, _turbulenceSettings.minimumValue[variable]);
+                const real width = plus(variable) - minus(variable);
+                DNDS_check_throw_info(width > 0, "ACM turbulence source linearization has a zero perturbation");
+                diagonal[static_cast<std::size_t>(cell)].col(variable) = -(source(plus) - source(minus)) / width;
+            }
+        }
+        for (index face = 0; face < _mesh->NumFaceProc(); face++)
+        {
+            const auto cells = _mesh->face2cell[face];
+            TurbulenceState rate = TurbulenceState::Zero();
+            auto quadrature = _vfv->GetFaceQuad(face);
+            quadrature.IntegrationSimple(rate, [&](TurbulenceState &contribution, int pointIndex, real)
+            {
+                const Vector3 normal = ToVector3(_vfv->GetFaceNorm(face, pointIndex));
+                const State left = ReconstructFlowState(flow, cells[0], face, 0, pointIndex);
+                State right = left;
+                Vector3 displacement;
+                const auto center = _vfv->GetCellQuadraturePPhys(cells[0], -1);
+                if (cells[1] != UnInitIndex)
+                {
+                    right = ReconstructFlowState(flow, cells[1], face, 1, pointIndex);
+                    Eigen::RowVector<real, 4> row = right.transpose();
+                    _vfv->ApplyPeriodicTransform(1, _mesh->GetFaceZone(face), row);
+                    right = row.transpose();
+                    displacement = ToVector3(_vfv->GetOtherCellPointFromCell(
+                        cells[0], cells[1], face, 0, _vfv->GetCellQuadraturePPhys(cells[1], -1)) - center);
+                }
+                else
+                    displacement = 2 * (ToVector3(_vfv->GetFaceQuadraturePPhys(face, pointIndex)) - ToVector3(center));
+                const real distance = std::max(std::abs(displacement.dot(normal)), _turbulenceSettings.minimumWallDistance);
+                const real advection = _faceVolumeFlux ? std::abs(_faceVolumeFlux(face, pointIndex, time))
+                    : std::max(std::abs(left.template head<3>().dot(normal)), std::abs(right.template head<3>().dot(normal)));
+                contribution.setZero();
+                for (int variable = 0; variable < active; variable++)
+                {
+                    TurbulenceGradient gradient = TurbulenceGradient::Zero();
+                    gradient.col(variable) = normal;
+                    const TurbulenceState diffusion = TurbulenceDiffusiveFlux(
+                        TurbulenceState(_state[cells[0]]), gradient, normal,
+                        _faceWallDistance[static_cast<std::size_t>(face)], _flowSettings.rho0,
+                        _flowSettings.dynamicViscosity, FaceEddyViscosity(face, pointIndex), _turbulenceSettings);
+                    contribution(variable) = (advection + 2 * std::abs(diffusion(variable)) / distance) *
+                                             _vfv->GetFaceJacobiDet(face, pointIndex);
+                }
+            });
+            for (int side = 0; side < 2; side++)
+                if (cells[side] != UnInitIndex && cells[side] < _mesh->NumCell())
+                    for (int variable = 0; variable < active; variable++)
+                        diagonal[static_cast<std::size_t>(cells[side])](variable, variable) +=
+                            rate(variable) / _vfv->GetCellVol(cells[side]);
         }
     }
 

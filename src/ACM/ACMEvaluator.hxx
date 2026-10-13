@@ -587,6 +587,26 @@ namespace DNDS::ACM
     }
 
     template <int gDim>
+    real ACMEvaluator<gDim>::FaceVolumeFlux(const TDof &u, index face, int point, real time) const
+    {
+        const auto cells = _mesh->face2cell[face];
+        const Vector3 normal = ToVector3(_vfv->GetFaceNorm(face, point));
+        const State left = ReconstructFaceState(u, cells[0], face, 0, point);
+        State right;
+        if (cells[1] != UnInitIndex)
+        {
+            right = ReconstructFaceState(u, cells[1], face, 1, point);
+            Eigen::RowVector<real, 4> row = right.transpose();
+            _vfv->ApplyPeriodicTransform(1, _mesh->GetFaceZone(face), row);
+            right = row.transpose();
+        }
+        else
+            right = GenerateBoundaryForFace(_mesh->GetFaceZone(face), left, normal,
+                ToVector3(_vfv->GetFaceQuadraturePPhys(face, point)), time);
+        return InviscidFlux(_settings.riemannSolverType, left, right, normal, _settings).flux(3);
+    }
+
+    template <int gDim>
     void ACMEvaluator<gDim>::EvaluateRHS(TDof &rhs, TDof &u, real time)
     {
         Reconstruct(u, time);

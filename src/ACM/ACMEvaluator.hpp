@@ -125,6 +125,9 @@ namespace DNDS::ACM
          */
         void EvaluateRHS(TDof &rhs, TDof &u, real time = 0);
 
+        /** @brief Continuity flux from the same reconstructed face states as EvaluateRHS. */
+        real FaceVolumeFlux(const TDof &u, index face, int point, real time = 0) const;
+
         /**
          * @brief Assemble a frozen-reconstruction approximation to each residual diagonal block.
          * @param u Current distributed cell means.

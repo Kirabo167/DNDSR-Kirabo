@@ -86,6 +86,9 @@
  *
  * - @subpage user_guide
  * - @subpage solver_config
+ * - @subpage acm_model_state_zh
+ * - @subpage all_solvers_json_configuration_manual_zh
+ * - @subpage acm_json_configuration_manual_zh
  * - @subpage troubleshooting
  */
 

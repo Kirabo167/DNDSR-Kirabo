@@ -186,13 +186,11 @@
                 },
                 "dualTimeConvergenceCriterion": {
                     "type": "string",
-                    "default": "Both",
-                    "description": "BDF convergence selection: Both groups, Either active group, Flow only, or Turbulence only",
+                    "default": "Absolute",
+                    "description": "BDF defect convergence criterion: Absolute uses implicitTolerance; Relative uses this physical step's initial defects",
                     "enum": [
-                        "Both",
-                        "Either",
-                        "Flow",
-                        "Turbulence"
+                        "Absolute",
+                        "Relative"
                     ]
                 },
                 "dualTimeFlowRelativeTolerance": {
@@ -319,7 +317,7 @@
         },
         "turbulenceSettings": {
             "type": "object",
-            "description": "Segregated constant-density ACM turbulence settings",
+            "description": "Constant-density ACM turbulence closure settings",
             "properties": {
                 "model": {
                     "type": "string",
@@ -331,7 +329,8 @@
                         "KOmegaWilcox",
                         "KOmegaSST",
                         "RealizableKEpsilon"
-                    ]
+                    ],
+                    "const": "Laminar"
                 },
                 "initialValue": {
                     "type": "array",
@@ -1019,7 +1018,9 @@
                 0.0,
                 0.0
             ],
-            "description": "Uniform initial ACM state [u,v,w,p]"
+            "description": "Uniform model state [u,v,w,p,rho*q...] for the compiled ACM model",
+            "minItems": 4,
+            "maxItems": 4
         },
         "boundaryValue": {
             "type": "array",

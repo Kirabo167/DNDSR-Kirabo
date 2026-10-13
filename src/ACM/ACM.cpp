@@ -647,7 +647,9 @@ namespace DNDS::ACM
         DNDS_check_throw_info(
             std::abs(projectedDistance) >
                 100 * std::numeric_limits<real>::epsilon() * displacementNorm,
-            "ACM corrected face gradient has a center displacement tangent to the face");
+            fmt::format("ACM corrected face gradient has a center displacement tangent to the face: "
+                        "normal=[{},{},{}], displacement=[{},{},{}]",
+                        normal(0), normal(1), normal(2), centerDisplacement(0), centerDisplacement(1), centerDisplacement(2)));
 
         Eigen::Matrix<real, 3, 4> faceGradient =
             0.5 * (leftGradient + rightGradient);
@@ -977,9 +979,7 @@ namespace DNDS::ACM
         acmSettings.Validate();
         timeMarchSettings.Validate();
         turbulenceSettings.Validate();
-        DNDS_check_throw_info(timeMarchSettings.dualTimeConvergenceCriterion != "Turbulence" ||
-                                  TurbulenceVariableCount(turbulenceSettings.model) > 0,
-                              "ACM Turbulence convergence requires an active turbulence model");
+        timeMarchSettings.ValidateDualTimeConvergence(4 + TurbulenceVariableCount(turbulenceSettings.model));
         DNDS_check_throw_info(
             !IsBDF2DualTimeIntegrator(timeMarchSettings.integrator) ||
                 SupportsBDF2TurbulenceModel(turbulenceSettings.model),
@@ -995,6 +995,11 @@ namespace DNDS::ACM
                 "ACM turbulence models require positive dynamicViscosity");
         }
         const State left = LeftState();
+        DNDS_check_throw_info(initialState.size() == static_cast<std::size_t>(solver.fieldNVariables) &&
+                                  initialState.size() >= 4 && initialState.size() <= 6,
+                              "ACM initialState length must equal solver.fieldNVariables (4, 5 or 6)");
+        for (real value : initialState)
+            DNDS_check_throw_info(std::isfinite(value), "ACM initialState contains a non-finite value");
         const State right = RightState();
         const State initial = InitialState();
         const State boundary = BoundaryValue();

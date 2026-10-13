@@ -63,7 +63,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    ACMSolver<model>::ACMSolver(
+    ACMSolver<model, false>::ACMSolver(
         const MPIInfo &mpi,
         const KernelConfiguration &configuration)
         : _mpi(mpi), _configuration(configuration)
@@ -72,7 +72,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model>::ReadMeshAndInitialize()
+    void ACMSolver<model, false>::ReadMeshAndInitialize()
     {
         DNDS_check_throw_info(
             !_configuration.meshSettings.meshFile.empty(),
@@ -190,7 +190,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model>::CopyOwnedToStateField(
+    void ACMSolver<model, false>::CopyOwnedToStateField(
         const TDof &source,
         StateField &destination) const
     {
@@ -203,7 +203,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model>::CopyStateFieldToOwned(
+    void ACMSolver<model, false>::CopyStateFieldToOwned(
         const StateField &source,
         TDof &destination) const
     {
@@ -218,7 +218,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model>::ReadInitialFlowField()
+    void ACMSolver<model, false>::ReadInitialFlowField()
     {
         const auto &restart = _configuration.restartSettings;
         if (restart.flowFile.empty())
@@ -337,7 +337,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model>::WriteFlowField(int iStep, real outputTime)
+    void ACMSolver<model, false>::WriteFlowField(int iStep, real outputTime)
     {
         const auto &output = _configuration.outputSettings;
         DNDS_check_throw_info(output.interval > 0, "ACM flow-field output is disabled");
@@ -397,7 +397,7 @@ namespace DNDS::ACM
 
     template <ACMModel model>
     /** @copydoc ACMSolver::SolveImplicitCorrection */
-    void ACMSolver<model>::SolveImplicitCorrection(
+    void ACMSolver<model, false>::SolveImplicitCorrection(
         const MatrixField &diagonal,
         const typename TEvaluator::FaceJacobianField &faceJacobians,
         bool useLUSGS)
@@ -462,7 +462,7 @@ namespace DNDS::ACM
 
     template <ACMModel model>
     /** @copydoc ACMSolver::AdvanceImplicitDistributed */
-    TimeStepReport ACMSolver<model>::AdvanceImplicitDistributed(
+    TimeStepReport ACMSolver<model, false>::AdvanceImplicitDistributed(
         StateField &states,
         const ScalarField &pseudoTimeStep,
         real time)
@@ -560,7 +560,7 @@ namespace DNDS::ACM
 
     template <ACMModel model>
     /** @copydoc ACMSolver::AdvanceBDF2DualTimeDistributed */
-    TimeStepReport ACMSolver<model>::AdvanceBDF2DualTimeDistributed(
+    TimeStepReport ACMSolver<model, false>::AdvanceBDF2DualTimeDistributed(
         StateField &states,
         const BDF2History &history,
         const ScalarField &pseudoTimeStep,
@@ -690,7 +690,7 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model>::Run()
+    void ACMSolver<model, false>::Run()
     {
         DNDS_check_throw_info(_evaluator != nullptr, "ACM Run requires ReadMeshAndInitialize first");
 

@@ -128,7 +128,7 @@ namespace DNDS::ACM
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
         real implicitTolerance = 1e-10;                                     ///< Global RMS steady or physical defect tolerance.
-        std::string dualTimeConvergenceCriterion = "Both";                  ///< Combine flow/RANS convergence: Both, Either, Flow, or Turbulence.
+        std::string dualTimeConvergenceCriterion = "Absolute";              ///< Select Absolute or Relative physical-defect convergence.
         real dualTimeFlowRelativeTolerance = 0;                            ///< Flow RMS target relative to this physical step's initial defect; zero uses equation targets.
         real dualTimeTurbulenceRelativeTolerance = 0;                      ///< Active RANS RMS target relative to its own initial physical defect.
         std::array<real, 6> dualTimeResidualScales{1, 1, 1, 1, 1, 1};         ///< Characteristic residual scales for [u,v,w,p,q1,q2].
@@ -167,8 +167,8 @@ namespace DNDS::ACM
                        DNDS::Config::range(1));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
-            DNDS_FIELD(dualTimeConvergenceCriterion, "BDF convergence selection: Both groups, Either active group, Flow only, or Turbulence only",
-                       DNDS::Config::enum_values({"Both", "Either", "Flow", "Turbulence"}));
+            DNDS_FIELD(dualTimeConvergenceCriterion, "BDF defect convergence criterion: Absolute uses implicitTolerance; Relative uses this physical step's initial defects",
+                       DNDS::Config::enum_values({"Absolute", "Relative"}));
             DNDS_FIELD(dualTimeFlowRelativeTolerance, "BDF flow RMS target relative to this physical step's initial flow defect; zero uses per-equation targets",
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(dualTimeTurbulenceRelativeTolerance, "BDF active RANS RMS target relative to its own initial physical defect; zero uses per-equation targets",
@@ -199,14 +199,16 @@ namespace DNDS::ACM
          * @throws std::runtime_error If a count, time step, tolerance, or relaxation is invalid.
          */
         void Validate() const;
-        /** @brief Combine the raw absolute tolerance with one group's own initial physical RMS. */
+        /** @brief Validate the relative targets of all active physical equations or their RMS groups. */
+        void ValidateDualTimeConvergence(int activeEquations) const;
+        /** @brief Return the selected absolute or relative RMS target for one group. */
         real DualTimeGroupTarget(real initialDefect, bool turbulence) const;
-        /** @brief Raw per-equation physical defect targets, combining scaled absolute and relative criteria. */
+        /** @brief Raw per-equation targets for the selected absolute or relative criterion. */
         std::array<real, 6> DualTimeTargets(const std::array<real, 6> &initialDefects) const;
-        /** @brief Apply the selected group combination to per-equation targets; all active defects must be finite. */
+        /** @brief Require every active group to pass the selected criterion, using grouped RMS where enabled. */
         bool DualTimeConverged(const std::array<real, 6> &initialDefects,
                                const std::array<real, 6> &finalDefects, int activeEquations) const;
-        /** @brief Apply the selected group combination using grouped RMS where enabled, otherwise equation targets. */
+        /** @brief Use grouped RMS where enabled, otherwise per-equation targets; all active groups must pass. */
         bool DualTimeConverged(const TimeStepReport &report, int activeEquations) const;
         /** @brief Absolute/relative target for one steady implicit pseudo-time step. */
         real SteadyImplicitTarget(real initialSpatialResidual) const;

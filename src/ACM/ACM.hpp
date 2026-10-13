@@ -22,6 +22,10 @@ namespace DNDS::ACM
     {
         ConstantDensity2D,
         ConstantDensity3D,
+        ConstantDensitySA2D,
+        ConstantDensitySA3D,
+        ConstantDensity2EQ2D,
+        ConstantDensity2EQ3D,
     };
 
     /// Policy used to store the pressure-like component in an ACM state.
@@ -133,7 +137,48 @@ namespace DNDS::ACM
         static constexpr int nExtraVars = 0;
     };
 
-    using State = Eigen::Vector<real, 4>;      ///< ACM state or flux vector `[u, v, w, p]`.
+    /** @brief Compile-time extension of the four-equation ACM flow block. */
+    template <int dimension, int turbulenceVariables>
+    struct RANSModelTraits
+    {
+        static constexpr int dim = dimension;
+        static constexpr int gDim = dimension;
+        static constexpr int nExtraVars = turbulenceVariables;
+        static constexpr int nVarsFixed = 4 + turbulenceVariables;
+        static constexpr int velocityBegin = 0;
+        static constexpr int pressureIndex = 3;
+        static constexpr int turbulenceBegin = 4;
+        static constexpr bool hasSA = turbulenceVariables == 1;
+        static constexpr bool has2EQ = turbulenceVariables == 2;
+    };
+
+    template <>
+    struct ModelTraits<ACMModel::ConstantDensitySA2D> : RANSModelTraits<2, 1> {};
+    template <>
+    struct ModelTraits<ACMModel::ConstantDensitySA3D> : RANSModelTraits<3, 1> {};
+    template <>
+    struct ModelTraits<ACMModel::ConstantDensity2EQ2D> : RANSModelTraits<2, 2> {};
+    template <>
+    struct ModelTraits<ACMModel::ConstantDensity2EQ3D> : RANSModelTraits<3, 2> {};
+
+    constexpr const char *ModelName(ACMModel model)
+    {
+        switch (model)
+        {
+        case ACMModel::ConstantDensity2D: return "ConstantDensity2D";
+        case ACMModel::ConstantDensity3D: return "ConstantDensity3D";
+        case ACMModel::ConstantDensitySA2D: return "ConstantDensitySA2D";
+        case ACMModel::ConstantDensitySA3D: return "ConstantDensitySA3D";
+        case ACMModel::ConstantDensity2EQ2D: return "ConstantDensity2EQ2D";
+        case ACMModel::ConstantDensity2EQ3D: return "ConstantDensity2EQ3D";
+        }
+        return "UnknownACMModel";
+    }
+
+    template <ACMModel model>
+    using ModelState = Eigen::Vector<real, ModelTraits<model>::nVarsFixed>;
+
+    using State = Eigen::Vector<real, 4>;      ///< ACM flow block `[u, v, w, p]`.
     using Vector3 = Eigen::Vector<real, 3>;    ///< Three-dimensional geometry or velocity vector.
     using Matrix3 = Eigen::Matrix<real, 3, 3>; ///< Three-dimensional rotation or tensor matrix.
     using Matrix4 = Eigen::Matrix<real, 4, 4>; ///< Four-variable ACM operator matrix.

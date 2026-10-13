@@ -17,6 +17,8 @@ Linux 可执行文件位于所选构建目录的 `app/` 下，文件名带 `.exe
 | `euler2EQ` / `euler2EQ3D` | `Euler` | `NS_2EQ` / `NS_2EQ_3D` | 2D / 3D | 7 |
 | `eulerEX` / `eulerEX3D` | `Euler` | `NS_EX` / `NS_EX_3D` | 2D / 3D | JSON 指定的动态长度 |
 | `acm2D` / `acm3D` | `ACM` | `ConstantDensity2D` / `ConstantDensity3D` | 2D / 3D | 4 |
+| `acmSA2D` / `acmSA3D` | `ACM` | `ConstantDensitySA2D` / `ConstantDensitySA3D` | 2D / 3D | 5 |
+| `acm2EQ2D` / `acm2EQ3D` | `ACM` | `ConstantDensity2EQ2D` / `ConstantDensity2EQ3D` | 2D / 3D | 6 |
 | `acmVariable2D` / `acmVariable3D` | `ACMVariable` | `VariableDensity2D` / `VariableDensity3D` | 2D / 3D | 5 |
 | `ncfv_euler2D` / `ncfv_euler3D` | `ncfv_euler` | `IdealGas` | 2D / 3D | 4 / 5 |
 
@@ -26,7 +28,8 @@ Euler 和 ACM 的 `solver.discretization` 为 `CFV`，NCFV Euler 为 `NCFV`。
 
 `euler` 保持上游 NS 模型的二维几何、三个速度分量、五个守恒变量约定；
 `euler2D` 使用两个速度分量和四个守恒变量。二维网格不能作为互换两个入口的充分条件。
-常密度 ACM 始终存储 `[u,v,w,p]`，变密度 ACM 始终存储 `[rho,mx,my,mz,p]`。
+常密度ACM层流入口存储`[u,v,w,p]`；SA及两方程入口分别追加`rho*nuTilde`和两个RANS守恒输运量。
+参见[统一状态与模型入口](../solver-guide/acm_model_state_zh.md)。变密度ACM维持`[rho,mx,my,mz,p]`。
 
 ## 2. 按需要构建
 

@@ -22,6 +22,7 @@
 #include "Geom/Mesh/Mesh.hpp"
 
 #include <vector>
+#include <functional>
 
 namespace DNDS::ACM
 {
@@ -85,6 +86,9 @@ namespace DNDS::ACM
          */
         void EvaluateRHS(TTurbulenceDof &rhs, TFlowDof &flow, real time = 0);
 
+        /** @brief Use the ACM continuity flux for conservative upwind RANS advection. */
+        void SetFaceVolumeFlux(std::function<real(index, int, real)> flux) { _faceVolumeFlux = std::move(flux); }
+
         /**
          * @brief Advance turbulence variables with positivity-preserving substepped SSPRK3.
          * @param flow Flow field frozen over this segregated turbulence update.
@@ -147,6 +151,15 @@ namespace DNDS::ACM
             return TurbulenceVariableCount(_turbulenceSettings.model);
         }
 
+        /**
+         * @brief Approximate -dR/dq by a local source Jacobian and positive transport spectra.
+         * @details For constant density this is also the Jacobian of rho*R with
+         * respect to rho*q. Closure gradients and face diffusivities are frozen.
+         */
+        void EvaluateImplicitDiagonal(TFlowDof &flow,
+                                      std::vector<Eigen::Matrix<real, 2, 2>> &diagonal,
+                                      real time = 0);
+
     private:
         ssp<Geom::UnstructuredMesh> _mesh;          ///< Prepared distributed mesh.
         TpVFV _vfv;                                 ///< Existing CFV metrics and periodic maps.
@@ -162,6 +175,7 @@ namespace DNDS::ACM
         std::vector<real> _cellWallDistance;         ///< One positive value per owned/ghost cell.
         std::vector<real> _faceWallDistance;         ///< One positive value per process face.
         std::vector<std::vector<real>> _faceEddyViscosity; ///< Frozen values at face quadrature points.
+        std::function<real(index, int, real)> _faceVolumeFlux; ///< Optional shared ACM continuity flux.
         bool _initialized = false;                   ///< Wall-distance/state initialization guard.
         bool _prepared = false;                      ///< Frozen-viscosity cache validity guard.
         BDF2TurbulenceHistory _physicalHistory;       ///< Active-variable-aware completed physical levels.

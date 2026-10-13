@@ -41,6 +41,25 @@ static auto dvinit(int n)
 // GMRES: solve 3x3 SPD system
 // ===================================================================
 
+TEST_CASE("GMRES: first-column happy breakdown still applies the solution without restarts")
+{
+    for (uint32_t restarts : {0U, 2U})
+    {
+        DVec b(6), x(6);
+        b.data(4) = 1;
+        Linear::GMRES_LeftPreconditioned<DVec> gmres(6, dvinit(6));
+        const bool converged = gmres.solve(
+            [](DVec &input, DVec &output) { output.data = 4 * input.data; },
+            [](DVec &input, DVec &output) { output.data = input.data / 4; },
+            [](DVec &left, DVec &right) -> double { return left.data.dot(right.data); },
+            b, x, restarts,
+            [](uint32_t, double residual, double initial) { return residual <= 1e-12 * initial; });
+        CHECK(converged);
+        CHECK((4 * x.data - b.data).norm() < 1e-12);
+        CHECK(x.data(4) == doctest::Approx(0.25));
+    }
+}
+
 TEST_CASE("GMRES: solve 3x3 SPD system exactly")
 {
     const int n = 3;

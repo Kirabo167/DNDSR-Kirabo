@@ -26,8 +26,11 @@ namespace DNDS::ACM
      * @tparam model Two- or three-dimensional constant-density ACM model.
      * @note Modifier: Runzhi Ma.
      */
+    template <ACMModel model, bool unifiedRANS = (ModelTraits<model>::nExtraVars > 0)>
+    class ACMSolver;
+
     template <ACMModel model>
-    class ACMSolver
+    class ACMSolver<model, false>
     {
     public:
         using Traits = ModelTraits<model>;                ///< Compile-time ACM model traits.
@@ -71,6 +74,12 @@ namespace DNDS::ACM
 
         /** @brief Access the constant-density spatial evaluator for implicit-operator tests. */
         const ssp<TEvaluator> &GetEvaluator() const { return _evaluator; }
+
+        /** @brief Closure/primitive scratch evaluator reused by unified model solvers. */
+        const ssp<TTurbulence> &GetTurbulenceTransport() const { return _turbulence; }
+
+        /** @brief Write the prepared flow and primitive closure scratch fields. */
+        void WriteOutput(int step, real time) { WriteFlowField(step, time); }
 
         /**
          * @brief Access the optional segregated turbulence state.
@@ -160,3 +169,5 @@ namespace DNDS::ACM
     extern template class ACMSolver<ACMModel::ConstantDensity2D>;
     extern template class ACMSolver<ACMModel::ConstantDensity3D>;
 }
+
+#include "ACMRANSSolver.hpp"

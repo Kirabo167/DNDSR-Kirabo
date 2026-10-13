@@ -22,11 +22,12 @@
 using namespace DNDS;
 using namespace DNDS::ACM;
 
-/// @test Flow and RANS each use their own physical-step reference; Both remains the default combination.
+/// @test Relative convergence keeps independent physical-step references and does not use absolute fallback.
 TEST_CASE("ACM BDF2 grouped relative convergence keeps independent flow and RANS references")
 {
     TimeMarchSettings settings;
     settings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
+    settings.dualTimeConvergenceCriterion = "Relative";
     settings.implicitTolerance = 1e-8;
     settings.dualTimeFlowRelativeTolerance = 1e-3;
     settings.dualTimeTurbulenceRelativeTolerance = 1e-3;
@@ -53,12 +54,17 @@ TEST_CASE("ACM BDF2 grouped relative convergence keeps independent flow and RANS
     report.initialDefectNorm = report.initialTurbulenceDefectNorm = 0;
     report.finalDefectNorm = report.turbulenceDefectNorm = 5e-9;
     report.equationDefectNorms.fill(5e-9);
+    CHECK_FALSE(settings.DualTimeConverged(report, 6)); // A zero reference has a zero relative target.
+    settings.dualTimeConvergenceCriterion = "Absolute";
     CHECK(settings.DualTimeConverged(report, 6));
+    CHECK(settings.DualTimeGroupTarget(0, false) == doctest::Approx(1e-8));
     CHECK(std::isinf(report.FlowDefectRatio()));
     CHECK(std::isinf(report.TurbulenceDefectRatio()));
     report.finalDefectNorm = 2e-8;
     CHECK_FALSE(settings.DualTimeConverged(report, 6));
     report.finalDefectNorm = report.turbulenceDefectNorm = 0;
+    report.equationDefectNorms.fill(0);
+    settings.dualTimeConvergenceCriterion = "Relative";
     CHECK(report.FlowDefectRatio() == 0);
     CHECK(report.TurbulenceDefectRatio() == 0);
     report.turbulenceDefectNorm = std::numeric_limits<DNDS::real>::infinity();
@@ -70,8 +76,8 @@ TEST_CASE("ACM BDF2 grouped relative convergence keeps independent flow and RANS
     CHECK_FALSE(settings.DualTimeConverged(report, 6));
 }
 
-/// @test Group selection follows its truth table for both grouped RMS and per-equation convergence.
-TEST_CASE("ACM BDF2 convergence criterion selects flow turbulence both or either")
+/// @test The explicit criterion uses only its selected threshold, for group and per-equation interfaces.
+TEST_CASE("ACM BDF2 explicitly selects absolute or relative convergence")
 {
     TimeMarchSettings settings;
     settings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
@@ -81,36 +87,42 @@ TEST_CASE("ACM BDF2 convergence criterion selects flow turbulence both or either
     TimeStepReport report;
     report.initialDefectNorm = report.initialTurbulenceDefectNorm = 1;
     report.initialEquationDefectNorms.fill(1);
-    for (const std::string criterion : {"Both", "Either", "Flow", "Turbulence"})
+    for (const std::string criterion : {"Absolute", "Relative"})
     {
         settings.dualTimeConvergenceCriterion = criterion;
         CHECK_NOTHROW(settings.Validate());
         const nlohmann::ordered_json serialized = settings;
         CHECK(serialized.at("dualTimeConvergenceCriterion") == criterion);
         CHECK(serialized.get<TimeMarchSettings>().dualTimeConvergenceCriterion == criterion);
-        for (const bool flow : {false, true})
-            for (const bool turbulence : {false, true})
-            {
-                CAPTURE(criterion);
-                CAPTURE(flow);
-                CAPTURE(turbulence);
-                const bool expected = criterion == "Both" ? flow && turbulence
-                                    : criterion == "Either" ? flow || turbulence
-                                    : criterion == "Flow" ? flow : turbulence;
-                report.finalDefectNorm = flow ? 5e-4 : 0.2;
-                report.turbulenceDefectNorm = turbulence ? 5e-4 : 0.3;
-                report.equationDefectNorms = {report.finalDefectNorm, report.finalDefectNorm,
-                                            report.finalDefectNorm, report.finalDefectNorm,
-                                            report.turbulenceDefectNorm, report.turbulenceDefectNorm};
-                CHECK(settings.DualTimeConverged(report, 6) == expected);
-                for (auto &value : report.equationDefectNorms)
-                    value = value < 1e-3 ? 5e-9 : value;
-                auto equations = settings;
-                equations.dualTimeFlowRelativeTolerance = equations.dualTimeTurbulenceRelativeTolerance = 0;
-                CHECK(equations.DualTimeConverged(report, 6) == expected);
-                CHECK(equations.DualTimeConverged(report.initialEquationDefectNorms,
-                                                 report.equationDefectNorms, 6) == expected);
-            }
+        for (const bool smallInitial : {false, true})
+        {
+            CAPTURE(criterion);
+            CAPTURE(smallInitial);
+            report.initialDefectNorm = report.initialTurbulenceDefectNorm = smallInitial ? 1e-10 : 1;
+            report.initialEquationDefectNorms.fill(report.initialDefectNorm);
+            report.finalDefectNorm = report.turbulenceDefectNorm = smallInitial ? 5e-9 : 5e-4;
+            report.equationDefectNorms.fill(report.finalDefectNorm);
+            const bool expected = (criterion == "Absolute") == smallInitial;
+            CHECK(settings.DualTimeConverged(report, 6) == expected);
+            CHECK(settings.DualTimeConverged(report.initialEquationDefectNorms,
+                                             report.equationDefectNorms, 6) == expected);
+            auto equations = settings;
+            equations.dualTimeFlowRelativeTolerance = equations.dualTimeTurbulenceRelativeTolerance = 0;
+            equations.dualTimeRelativeTolerances.fill(1e-3);
+            CHECK(equations.DualTimeConverged(report, 6) == expected);
+            CHECK(equations.DualTimeConverged(report.initialEquationDefectNorms,
+                                             report.equationDefectNorms, 6) == expected);
+        }
+        report.initialDefectNorm = report.initialTurbulenceDefectNorm = 1;
+        report.initialEquationDefectNorms.fill(1);
+        report.finalDefectNorm = 0;
+        report.turbulenceDefectNorm = 0.3;
+        report.equationDefectNorms = {0, 0, 0, 0, 0.3, 0.3};
+        CHECK_FALSE(settings.DualTimeConverged(report, 6)); // Flow success never bypasses SST.
+        report.finalDefectNorm = 0.2;
+        report.turbulenceDefectNorm = 0;
+        report.equationDefectNorms = {0.2, 0.2, 0.2, 0.2, 0, 0};
+        CHECK_FALSE(settings.DualTimeConverged(report, 6));
         report.finalDefectNorm = report.turbulenceDefectNorm = 0;
         report.equationDefectNorms.fill(0);
         report.equationDefectNorms[0] = std::numeric_limits<DNDS::real>::quiet_NaN();
@@ -121,40 +133,44 @@ TEST_CASE("ACM BDF2 convergence criterion selects flow turbulence both or either
     }
 }
 
-/// @test Unknown options and inactive turbulence are rejected, while Either cannot pass vacuously in laminar flow.
-TEST_CASE("ACM BDF2 convergence selection validates JSON and active groups")
+/// @test Relative mode requires configured thresholds only for active equations; old group-combination names are rejected.
+TEST_CASE("ACM BDF2 convergence selection validates JSON and relative targets")
 {
     TimeMarchSettings settings;
-    settings.dualTimeConvergenceCriterion = "Either";
+    settings.dualTimeConvergenceCriterion = "Relative";
     CHECK_THROWS(settings.Validate());
     settings.integrator = TimeIntegratorType::BDF2DualTimeGMRES;
-    CHECK_NOTHROW(settings.Validate());
-    settings.dualTimeConvergenceCriterion = "All";
     CHECK_THROWS(settings.Validate());
-    settings.dualTimeConvergenceCriterion = "Both";
+    settings.dualTimeFlowRelativeTolerance = 1e-3;
+    CHECK_NOTHROW(settings.Validate());
+    for (const std::string invalidCriterion : {"All", "Both", "Either", "Flow", "Turbulence"})
+    {
+        settings.dualTimeConvergenceCriterion = invalidCriterion;
+        CHECK_THROWS(settings.Validate());
+    }
+    settings.dualTimeConvergenceCriterion = "Absolute";
     nlohmann::ordered_json invalid = settings;
     invalid["dualTimeConvergenceCriterion"] = "All";
     CHECK_THROWS(invalid.get<TimeMarchSettings>());
     invalid["dualTimeConvergenceCriterion"] = 1;
     CHECK_THROWS(invalid.get<TimeMarchSettings>());
-    TimeStepReport report;
-    report.equationDefectNorms[0] = 1;
-    for (const std::string criterion : {"Both", "Either", "Flow"})
-    {
-        settings.dualTimeConvergenceCriterion = criterion;
-        CHECK_FALSE(settings.DualTimeConverged(report, 4));
-        report.equationDefectNorms[0] = 0;
-        CHECK(settings.DualTimeConverged(report, 4));
-        report.equationDefectNorms[0] = 1;
-    }
-    settings.dualTimeConvergenceCriterion = "Turbulence";
-    CHECK_THROWS(settings.DualTimeConverged(report, 4));
+    settings.dualTimeConvergenceCriterion = "Relative";
     KernelConfiguration configuration;
     configuration.timeMarchSettings = settings;
-    CHECK_THROWS(configuration.Validate());
+    CHECK_NOTHROW(configuration.Validate()); // Laminar flow needs no turbulence relative target.
     configuration.turbulenceSettings.model = TurbulenceModel::KOmegaSST;
     configuration.acmSettings.enableViscousFlux = true;
     configuration.acmSettings.dynamicViscosity = 0.001;
+    CHECK_THROWS(configuration.Validate());
+    configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance = 1e-3;
+    CHECK_NOTHROW(configuration.Validate());
+    configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance = 0;
+    configuration.timeMarchSettings.dualTimeRelativeTolerances[4] = 1e-3;
+    configuration.turbulenceSettings.model = TurbulenceModel::SpalartAllmaras;
+    CHECK_NOTHROW(configuration.Validate()); // The second turbulence slot is inactive for SA.
+    configuration.turbulenceSettings.model = TurbulenceModel::KOmegaSST;
+    CHECK_THROWS(configuration.Validate());
+    configuration.timeMarchSettings.dualTimeRelativeTolerances[5] = 1e-3;
     CHECK_NOTHROW(configuration.Validate());
 }
 
@@ -205,6 +221,8 @@ TEST_CASE("ACM dual-time convergence uses separate scaled equation targets")
     CHECK(settings.DualTimeConverged(initial, final, 4));
     CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
     settings.dualTimeResidualScales[5] = 1e6;
+    settings.dualTimeConvergenceCriterion = "Relative";
+    settings.dualTimeRelativeTolerances.fill(1e-3);
     settings.dualTimeRelativeTolerances[5] = 1e-3;
     settings.dualTimeRelativeTolerances[4] = 1e-2;
     settings.Validate();
@@ -776,7 +794,7 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     CHECK(loaded.configuration.timeMarchSettings.dualTimeRelativeTolerances[5] == 0);
     CHECK(loaded.configuration.timeMarchSettings.dualTimeFlowRelativeTolerance == 0);
     CHECK(loaded.configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance == 0);
-    CHECK(loaded.configuration.timeMarchSettings.dualTimeConvergenceCriterion == "Both");
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeConvergenceCriterion == "Absolute");
     CHECK(loaded.configuration.reconstructionSettings.variationalTolerance == 0);
     REQUIRE(loaded.resolvedJson.contains("timeMarchSettings"));
     CHECK(loaded.resolvedJson.at("timeMarchSettings").contains("physicalTimeStep"));
