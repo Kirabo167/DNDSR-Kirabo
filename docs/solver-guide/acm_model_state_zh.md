@@ -46,6 +46,8 @@ k/omega/epsilon或nuTilde决定涡黏度，涡黏度反馈到流场黏性残差�
 
 六种现有推进名称全部保留：ExplicitSSPRK3、ImplicitEulerBlockJacobi、ImplicitEulerLUSGS、ImplicitEulerGMRES、BDF2DualTimeLUSGS、BDF2DualTimeGMRES。
 
+共享GMRES接口保留Euler的总轮数预算：传入N最多执行N轮。ACM/ACMVariable的gmresRestarts和常密度ACM的variationalGMRESRestarts表示首轮之后允许的重启次数，调用端换算为1+该值；配置0仍执行首轮，配置3最多执行4轮，达到容差时可提前结束。Euler的nGmresIter仍按总轮数解释。
+
 ExplicitSSPRK3同时推进所有主状态分量。隐式主状态修正采用5/6分量向量：流场部分复用4×4人工压缩算子和分布式面耦合；湍流部分采用局部源项Jacobian、正的对流/扩散谱半径近似，以及伪时间/物理时间对角项。两方程的局部源项块包括变量之间的耦合。
 
 当前线性化冻结流场与闭合的交叉导数，也没有建立湍流空间非对角Jacobian。因此这是分块近似/Picard耦合，不能解释成完整全耦合Newton系统。GMRES向量、点积和修正量包含全部5/6个分量，LU-SGS用于流场子块，湍流子块在单元内求解。

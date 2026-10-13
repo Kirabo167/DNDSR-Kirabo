@@ -1040,7 +1040,7 @@ ReadMesh当前默认：`periodic_tolerance=1e-9`、`read_mode=null`（按.cgns/.
 | `implicitRelaxation` | `1` | 实数 | 隐式流场修正的松弛系数，范围(0,1]。 schema约束：≥0；≤1。 |
 | `lusgsSweeps` | `2` | 整数 | 每次LU-SGS线性修正的固定残差校正次数，至少1；不是每步内迭代上限。 schema约束：≥1。 |
 | `gmresSubspace` | `10` | 整数 | GMRES的Arnoldi子空间维数，至少2；仅用于相应GMRES路径。 schema约束：≥2。 |
-| `gmresRestarts` | `3` | 整数 | GMRES重启次数上限，非负。 schema约束：≥0。 |
+| `gmresRestarts` | `3` | 整数 | 首轮之后的GMRES重启次数上限；0仍执行首轮，3最多执行4轮。 schema约束：≥0。 |
 | `gmresRelativeTolerance` | `1e-06` | 实数 | GMRES线性预条件残差的相对阈值；与物理步收敛阈值分别设置。 schema约束：≥0。 |
 | `gmresPreconditioner` | `"LUSGS"` | 字符串 | GMRES左预条件器LUSGS或BlockJacobi。 schema约束：枚举："BlockJacobi"、"LUSGS"。 |
 
@@ -1108,7 +1108,7 @@ ReadMesh当前默认：`periodic_tolerance=1e-9`、`read_mode=null`（按.cgns/.
 | `variationalRelaxation` | `0.7` | 实数 | 受控缺陷更新松弛，范围(0,1]；固定扫描采用vfvSettings松弛。 schema约束：≥0；≤1。 |
 | `variationalUseGMRES` | `false` | 布尔 | 受控重构启用GMRES线性求解。 |
 | `variationalGMRESSubspace` | `20` | 整数 | 重构GMRES子空间维数，至少2；与流场GMRES参数分别设置。 schema约束：≥2。 |
-| `variationalGMRESRestarts` | `2` | 整数 | 重构GMRES重启次数，非负。 schema约束：≥0。 |
+| `variationalGMRESRestarts` | `2` | 整数 | 首轮之后的重构GMRES重启次数；0仍执行首轮，2最多执行3轮。 schema约束：≥0。 |
 | `variationalGMRESRelativeTolerance` | `0.1` | 实数 | 每次重构GMRES线性求解的相对阈值，位于(0,1]；不是BDF2物理步阈值。 schema约束：≥0；≤1。 |
 | `resetVariationalCoefficients` | `false` | 布尔 | 每次残差求值前清零VR系数；常密度BDF2固定扫描模式会强制清零。 |
 | `enableLimiter` | `true` | 布尔 | 启用选定的重构限制器。 |
@@ -1292,7 +1292,7 @@ ACM新入口的initialState长度、闭合模型、transportSubsteps及黏性开
 | `implicitRelaxation` | `1` | 实数 | 隐式流场修正的松弛系数，范围(0,1]。 schema约束：≥0；≤1。 |
 | `lusgsSweeps` | `2` | 整数 | 每次LU-SGS线性修正的固定残差校正次数，至少1；不是每步内迭代上限。 schema约束：≥1。 |
 | `gmresSubspace` | `10` | 整数 | GMRES的Arnoldi子空间维数，至少2；仅用于相应GMRES路径。 schema约束：≥2。 |
-| `gmresRestarts` | `3` | 整数 | GMRES重启次数上限，非负。 schema约束：≥0。 |
+| `gmresRestarts` | `3` | 整数 | 首轮之后的GMRES重启次数上限；0仍执行首轮，3最多执行4轮。 schema约束：≥0。 |
 | `gmresRelativeTolerance` | `1e-06` | 实数 | GMRES线性预条件残差的相对阈值；与物理步收敛阈值分别设置。 schema约束：≥0。 |
 | `gmresPreconditioner` | `"LUSGS"` | 字符串 | GMRES左预条件器LUSGS或BlockJacobi。 schema约束：枚举："BlockJacobi"、"LUSGS"。 |
 

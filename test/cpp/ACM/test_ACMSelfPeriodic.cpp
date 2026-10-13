@@ -20,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 using namespace DNDS;
 
@@ -834,11 +835,15 @@ TEST_CASE("ACM unified two-equation BDF2 reproduces conservative Wilcox decay wi
     mpi.setWorld();
     TempMeshFile mesh;
     WritePeriodicQuadGrid(mesh.path);
-    for (auto integrator : {ACM::TimeIntegratorType::BDF2DualTimeLUSGS,
-                            ACM::TimeIntegratorType::BDF2DualTimeGMRES})
+    for (const auto &[integrator, restarts] : {std::pair{ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 3},
+                                             std::pair{ACM::TimeIntegratorType::BDF2DualTimeGMRES, 3},
+                                             std::pair{ACM::TimeIntegratorType::BDF2DualTimeGMRES, 0}})
     {
+        CAPTURE(static_cast<int>(integrator));
+        CAPTURE(restarts);
         auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
         cfg.timeMarchSettings.integrator = integrator;
+        cfg.timeMarchSettings.gmresRestarts = restarts;
         cfg.turbulenceSettings.enableSourceTerms = true;
         cfg.timeMarchSettings.nSteps = 4;
         ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);

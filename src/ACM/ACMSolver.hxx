@@ -447,7 +447,8 @@ namespace DNDS::ACM
             { return left.dot(right); },
             _linearRhs,
             _linearIncrement,
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts),
+            // ACM counts restarts; shared GMRES takes the total cycle budget.
+            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts) + 1U,
             [&](uint32_t restart, real residual, real initialResidual)
             {
                 if (_mpi.rank == 0 && restart > 0)

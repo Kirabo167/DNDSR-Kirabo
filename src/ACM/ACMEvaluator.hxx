@@ -296,7 +296,8 @@ namespace DNDS::ACM
                             { return left.dot(right); },
                             _uRecWork,
                             _uRecCorrection,
-                            static_cast<uint32_t>(_reconstructionSettings.variationalGMRESRestarts),
+                            // Include the initial cycle in the shared GMRES budget.
+                            static_cast<uint32_t>(_reconstructionSettings.variationalGMRESRestarts) + 1U,
                             [&](uint32_t, real residual, real initialResidual)
                             {
                                 return residual <=

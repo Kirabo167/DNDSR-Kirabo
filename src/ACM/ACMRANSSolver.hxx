@@ -407,7 +407,9 @@ namespace DNDS::ACM
                     _configuration.timeMarchSettings.gmresPreconditioner == GMRESPreconditionerType::LUSGS);
             },
             [](TDof &left, TDof &right) -> real { return left.dot(right); },
-            _defect, _increment, static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts),
+            _defect, _increment,
+            // ACM counts restarts; shared GMRES takes the total cycle budget.
+            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts) + 1U,
             [this](uint32_t, real residual, real initial)
             {
                 return residual <= _configuration.timeMarchSettings.gmresRelativeTolerance *

@@ -13,6 +13,7 @@
 #include <Eigen/Dense>
 #include <iostream>
 #include <iomanip>
+#include <vector>
 
 using namespace DNDS;
 
@@ -41,9 +42,54 @@ static auto dvinit(int n)
 // GMRES: solve 3x3 SPD system
 // ===================================================================
 
-TEST_CASE("GMRES: first-column happy breakdown still applies the solution without restarts")
+TEST_CASE("GMRES: total cycle budget preserves zero one and two Euler iterations")
 {
-    for (uint32_t restarts : {0U, 2U})
+    for (uint32_t budget : {0U, 1U, 2U})
+    {
+        CAPTURE(budget);
+        DVec b(2), x(2);
+        b.data.setOnes();
+        int operatorCalls = 0;
+        std::vector<uint32_t> residualChecks;
+        Linear::GMRES_LeftPreconditioned<DVec> gmres(1, dvinit(2));
+        const bool converged = gmres.solve(
+            [&](DVec &input, DVec &output)
+            {
+                operatorCalls++;
+                output.data(0) = 2 * input.data(0);
+                output.data(1) = 3 * input.data(1);
+            },
+            [](DVec &input, DVec &output) { output = input; },
+            [](DVec &left, DVec &right) -> double { return left.data.dot(right.data); },
+            b, x, budget,
+            [&](uint32_t iteration, double, double)
+            {
+                residualChecks.push_back(iteration);
+                return false; // Euler flow GMRES uses its fixed iteration budget.
+            });
+        CHECK_FALSE(converged);
+        CHECK(operatorCalls == 2 * budget + 1);
+        REQUIRE(residualChecks.size() == budget + 1);
+        for (uint32_t iteration = 0; iteration <= budget; iteration++)
+            CHECK(residualChecks[iteration] == iteration);
+        if (budget == 0)
+            CHECK(x.data.norm() == 0);
+        else if (budget == 1)
+        {
+            CHECK(x.data(0) == doctest::Approx(5.0 / 13));
+            CHECK(x.data(1) == doctest::Approx(5.0 / 13));
+        }
+        else
+        {
+            CHECK(x.data(0) == doctest::Approx(25.0 / 52));
+            CHECK(x.data(1) == doctest::Approx(25.0 / 78));
+        }
+    }
+}
+
+TEST_CASE("GMRES: first-column happy breakdown still applies the solution within one cycle")
+{
+    for (uint32_t budget : {1U, 3U})
     {
         DVec b(6), x(6);
         b.data(4) = 1;
@@ -52,7 +98,7 @@ TEST_CASE("GMRES: first-column happy breakdown still applies the solution withou
             [](DVec &input, DVec &output) { output.data = 4 * input.data; },
             [](DVec &input, DVec &output) { output.data = input.data / 4; },
             [](DVec &left, DVec &right) -> double { return left.data.dot(right.data); },
-            b, x, restarts,
+            b, x, budget,
             [](uint32_t, double residual, double initial) { return residual <= 1e-12 * initial; });
         CHECK(converged);
         CHECK((4 * x.data - b.data).norm() < 1e-12);

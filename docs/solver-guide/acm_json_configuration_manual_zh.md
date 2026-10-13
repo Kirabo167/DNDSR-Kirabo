@@ -121,7 +121,7 @@ Absolute:
 | `implicitRelaxation` | `0.7` | `1.0` | 流场隐式修正松弛系数，位于(0,1]；当前每次加入0.7倍修正。 |
 | `lusgsSweeps` | `2` | `2` | 每次LU-SGS线性修正的固定残差校正次数，至少1；不是每步内迭代上限。 |
 | `gmresSubspace` | `20` | `10` | GMRES的Arnoldi子空间维数，至少2；当前LU-SGS模式不启用。 |
-| `gmresRestarts` | `3` | `3` | GMRES重启次数上限，非负；当前LU-SGS模式不启用。 |
+| `gmresRestarts` | `3` | `3` | 首轮之后的GMRES重启次数上限，非负；0仍执行首轮，3最多执行4轮；当前LU-SGS模式不启用。 |
 | `gmresRelativeTolerance` | `0.0001` | `1e-06` | GMRES线性预条件残差的相对阈值；与物理步收敛阈值分别设置。 |
 | `gmresPreconditioner` | `"LUSGS"` | `"LUSGS"` | GMRES左预条件器，可选 LUSGS 或 BlockJacobi；当前仅保留配置。 |
 
@@ -213,7 +213,7 @@ MPI进程数通过 `mpirun -np N` 指定，不由 `metisNcuts` 或 `nFacesPerRan
 | `variationalRelaxation` | `0.7` | `0.7` | 受控重构缺陷更新的松弛系数，位于(0,1]；当前固定扫描走vfvSettings的SOR设置。 |
 | `variationalUseGMRES` | `false` | `false` | 受控重构中使用GMRES；当前false。 |
 | `variationalGMRESSubspace` | `20` | `20` | 重构GMRES子空间维数，至少2；与流场GMRES参数分别设置。 |
-| `variationalGMRESRestarts` | `2` | `2` | 重构GMRES重启次数，非负。 |
+| `variationalGMRESRestarts` | `2` | `2` | 首轮之后的重构GMRES重启次数，非负；0仍执行首轮，2最多执行3轮。 |
 | `variationalGMRESRelativeTolerance` | `0.1` | `0.1` | 每次重构GMRES线性求解的相对阈值，位于(0,1]；不是BDF2物理步阈值。 |
 | `resetVariationalCoefficients` | `false` | `false` | 每次残差求值前是否清零VR系数。当前BDF2固定扫描模式由程序强制设true，即使JSON为false。 |
 | `enableLimiter` | `true` | `true` | 是否启用所选重构限制器；当前true。 |

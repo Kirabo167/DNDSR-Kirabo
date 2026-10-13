@@ -40,18 +40,18 @@ namespace DNDS::Linear
          * @param FML void FML(TDATA &x, TDATA &MLx)
          * @param b   rhs
          * @param x   input and output
-         * @param nRestart
+         * @param nIterations Maximum total Krylov cycles, including the initial cycle; zero performs no update.
          * @param FStop bool FStop(iRestart, res, resB)
          */
         template <class TFA, class TFML, class TFDot, class TFstop>
-        bool solve(TFA &&FA, TFML &&FML, TFDot &&fDot, TDATA &b, TDATA &x, uint32_t nRestart, TFstop &&FStop)
+        bool solve(TFA &&FA, TFML &&FML, TFDot &&fDot, TDATA &b, TDATA &x, uint32_t nIterations, TFstop &&FStop)
         {
             FML(b, MLb); // MLb = ML * b
             real scale_MLb = std::sqrt(fDot(MLb, MLb));
             MatrixXR h;
             h.setZero(kSubspace + 1, kSubspace);
             uint32_t iRestart = 0;
-            for (iRestart = 0; iRestart <= nRestart; iRestart++)
+            for (iRestart = 0; iRestart < nIterations; iRestart++)
             {
                 FA(x, V_temp);          // V_temp = A * x
                 FML(V_temp, Vs[0]);     // Vs[0] = ML * A * x
