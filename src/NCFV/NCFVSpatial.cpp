@@ -1008,6 +1008,14 @@ namespace DNDS::NCFV
             phaseStart = MPI_Wtime();
             if (_mode == IntegrationMode::EfficientDifferential)
             {
+                // Point recovery combines neighboring gradients. Barth factors
+                // limit the interface correction, so they cannot repair a
+                // nonphysical point anchor. Limit that recovery toward the
+                // conservative mean before sharing anchors or evaluating fluxes.
+                // Physical point values and the evolved means remain unchanged.
+                for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                    _pointValues[iNode] = PreservePhysical(
+                        State(_pointValues[iNode]), State(means[iNode]));
                 // Pairwise bounds in thesis (3-97) use both endpoint point
                 // values, including a ghost endpoint on partition edges.
                 const double haloStart = MPI_Wtime();

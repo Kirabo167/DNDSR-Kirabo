@@ -71,9 +71,8 @@ namespace DNDS::NCFV
         }
         catch (const std::exception &exception)
         {
-            if (mpi.rank == 0)
-                std::cerr << "DNDS NCFV top-level exception: "
-                          << exception.what() << std::endl;
+            std::cerr << "DNDS NCFV top-level exception on rank " << mpi.rank
+                      << ": " << exception.what() << std::endl;
             return 1;
         }
         return 0;

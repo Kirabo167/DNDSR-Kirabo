@@ -1075,6 +1075,69 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
     }
 }
 
+TEST_CASE("NCFV limited efficient anchors stay physical without changing conservative means")
+{
+    Configuration configuration = MakeConfiguration(IntegrationMode::EfficientDifferential);
+    configuration.reconstruction.enableLimiter = true;
+    configuration.physics.viscous.enabled = false;
+    configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
+    configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    const auto &mesh = solver.Mesh();
+    const auto &halo = solver.NodeCommunication();
+    NodeStatePair means, rhs, rawPoints;
+    const auto allocate = [&](NodeStatePair &field, const std::string &name)
+    {
+        field.InitPair(name, gMPI);
+        field.father->Resize(mesh->NumNode(), 5, 1);
+        field.son->Resize(halo.NumNodeGhost(), 5, 1);
+        field.BorrowSetup(halo.Layout());
+        field.trans.initPersistentPull();
+        for (DNDS::index i = 0; i < field.Size(); i++)
+            field[i].setZero();
+    };
+    allocate(means, "NCFV.test.positiveMeans");
+    allocate(rhs, "NCFV.test.positiveRhs");
+    allocate(rawPoints, "NCFV.test.rawPointRecovery");
+    for (DNDS::index i = 0; i < mesh->NumNode(); i++)
+    {
+        means[i](0) = 1;
+        // Positive high-contrast means produce negative point energies through
+        // the neighboring-gradient recovery, before any interface correction.
+        means[i](4) = mesh->node2nodeOrig(i, 0) % 5 == 0 ? 10.0 : 0.01;
+    }
+    SpatialOperator<3> spatial(
+        gMPI, mesh, solver.EdgeTopology(), solver.Geometry(), solver.ReconstructionData(),
+        solver.Boundaries(), configuration.algorithm.mode, configuration.reconstruction,
+        configuration.physics, configuration.time, halo);
+    spatial.Initialize();
+    CHECK(std::isfinite(spatial.EvaluateRHS(means, rhs)));
+    solver.ReconstructionData().RecoverPointValues(
+        means, spatial.Gradients(), spatial.Coefficients(), rawPoints);
+    DNDS::index localUnphysicalRawPoints = 0;
+    for (DNDS::index i = 0; i < mesh->NumNode(); i++)
+    {
+        localUnphysicalRawPoints += rawPoints[i](4) <= 0;
+        const auto point = spatial.PointValues()[i];
+        CHECK(point.allFinite());
+        CHECK(point(0) > 1e-12);
+        const DNDS::real pressure = (configuration.physics.gamma - 1) *
+                                    (point(4) - 0.5 * point.template segment<3>(1).squaredNorm() / point(0));
+        CHECK(pressure > 1e-12);
+        CHECK(rhs[i].allFinite());
+        CHECK(means[i](0) == 1);
+        CHECK(means[i].template segment<3>(1).squaredNorm() == 0);
+        CHECK(means[i](4) == (mesh->node2nodeOrig(i, 0) % 5 == 0 ? 10.0 : 0.01));
+        if (rawPoints[i](4) > 1e-12)
+            CHECK((point - rawPoints[i]).squaredNorm() == 0);
+    }
+    DNDS::index globalUnphysicalRawPoints = 0;
+    MPI_Allreduce(&localUnphysicalRawPoints, &globalUnphysicalRawPoints, 1,
+                  DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    CHECK(globalUnphysicalRawPoints > 0);
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
