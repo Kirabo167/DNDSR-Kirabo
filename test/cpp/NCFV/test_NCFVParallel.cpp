@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <map>
 
 namespace
 {
@@ -836,6 +837,81 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
     }
 }
 
+TEST_CASE("NCFV fixed-size compact stencils preserve coordinate-plane fields")
+{
+    for (const auto mode : {IntegrationMode::EfficientDifferential,
+                           IntegrationMode::TraditionalQuadrature})
+    for (const auto method : {ReconstructionMethod::SVDLeastSquares,
+                             ReconstructionMethod::LeastSquares})
+    {
+        auto configuration = MakeExactPeriodicConfiguration(mode);
+        configuration.reconstruction.method = method;
+        Solver<3> solver(gMPI, configuration);
+        solver.Initialize();
+        const auto &halo = solver.NodeCommunication();
+        DNDS::real localMaximum[3]{};
+        DNDS::index wrongSizes = 0;
+        for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); node++)
+        {
+            const auto &op = solver.ReconstructionData().Operator(node);
+            wrongSizes += op.stencil.size() != 16;
+            Eigen::MatrixXd matrix(op.stencil.size(), 9);
+            std::vector<Vector3> directions;
+            for (std::size_t j = 0; j < op.stencil.size(); j++)
+            {
+                matrix.row(j) = (Reconstruction::MeanBasis(
+                                     halo.MomentsRelative(node, op.stencil[j]),
+                                     Vector3::Zero(), op.referenceLengths, 3) -
+                                 op.targetBasisMean).transpose();
+                directions.push_back(halo.Displacement(node, op.stencil[j])
+                                         .cwiseQuotient(op.referenceLengths).normalized());
+            }
+            // Includes z, xz, yz and z^2: genuine 3-D quadratic data must
+            // retain their derivatives while arbitrary planar data cancel.
+            localMaximum[0] = std::max(localMaximum[0],
+                (op.inverseRows * matrix - Eigen::MatrixXd::Identity(op.inverseRows.rows(), 9)).cwiseAbs().maxCoeff());
+            for (int normal = 0; normal < 3; normal++)
+            {
+                std::map<std::array<long long, 2>, DNDS::real> columnWeights;
+                DNDS::real anchorWeight = 0;
+                for (std::size_t j = 0; j < op.stencil.size(); j++)
+                {
+                    const Vector3 offset = halo.Displacement(node, op.stencil[j])
+                                               .cwiseQuotient(op.referenceLengths);
+                    const std::array<long long, 2> key{
+                        std::llround(offset((normal + 1) % 3) * 1e9),
+                        std::llround(offset((normal + 2) % 3) * 1e9)};
+                    const DNDS::real weight = op.inverseRows(normal, j) / op.referenceLengths(normal);
+                    columnWeights[key] += weight;
+                    anchorWeight -= weight;
+                }
+                columnWeights[{0, 0}] += anchorWeight;
+                for (const auto &[key, weight] : columnWeights)
+                    localMaximum[1] = std::max(localMaximum[1], std::abs(weight));
+            }
+            for (int x = -1; x <= 1; x++)
+                for (int y = -1; y <= 1; y++)
+                    for (int z = -1; z <= 1; z++)
+                        if (x || y || z)
+                        {
+                            const Vector3 probe = Vector3(x, y, z).normalized();
+                            DNDS::real cosine = -1;
+                            for (const auto &direction : directions)
+                                cosine = std::max(cosine, probe.dot(direction));
+                            localMaximum[2] = std::max(localMaximum[2], 1 - cosine);
+                        }
+        }
+        DNDS::real maximum[3]{};
+        DNDS::index globalWrongSizes = 0;
+        MPI_Allreduce(localMaximum, maximum, 3, DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        MPI_Allreduce(&wrongSizes, &globalWrongSizes, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(globalWrongSizes == 0);
+        CHECK(maximum[0] < 2e-10);
+        CHECK(maximum[1] < 2e-10);
+        CHECK(maximum[2] < .25);
+    }
+}
+
 TEST_CASE("NCFV z-only periodic topology supports limited efficient reconstruction")
 {
     auto configuration = MakeExactPeriodicConfiguration(IntegrationMode::EfficientDifferential);
@@ -1350,6 +1426,199 @@ TEST_CASE("NCFV limited efficient anchors stay physical without changing conserv
     MPI_Allreduce(&localUnphysicalRawPoints, &globalUnphysicalRawPoints, 1,
                   DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
     CHECK(globalUnphysicalRawPoints > 0);
+}
+
+TEST_CASE("NCFV binary Barth fallback preserves shared gradients and uses zeroth-order fluxes")
+{
+    using State = Eigen::Vector<double, 5>;
+    bool periodic = false;
+    SUBCASE("constant extrapolation boundary")
+    {
+    }
+    SUBCASE("fully periodic conservation")
+    {
+        periodic = true;
+    }
+    auto configuration = periodic
+                             ? MakeExactPeriodicConfiguration(IntegrationMode::EfficientDifferential)
+                             : MakeConfiguration(IntegrationMode::EfficientDifferential);
+    configuration.reconstruction.method = ReconstructionMethod::SVDLeastSquares;
+    configuration.reconstruction.enableLimiter = true;
+    configuration.reconstruction.limitPointRecovery = true;
+    configuration.reconstruction.barthZeroOrderFallback = true;
+    configuration.reconstruction.sharedGradientFaceSweep = false;
+    configuration.reconstruction.limitFluxCorrection = false;
+    configuration.physics.viscous.enabled = false;
+    configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
+    if (!periodic)
+        configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
+    configuration.Validate();
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    const auto &mesh = solver.Mesh();
+    const auto &halo = solver.NodeCommunication();
+    NodeStatePair means, rhs;
+    for (auto *field : {&means, &rhs})
+    {
+        field->InitPair(field == &means ? "NCFV.test.binaryMeans" : "NCFV.test.binaryRhs", gMPI);
+        field->father->Resize(mesh->NumNode(), 5, 1);
+        field->son->Resize(halo.NumNodeGhost(), 5, 1);
+        field->BorrowSetup(halo.Layout());
+        field->trans.initPersistentPull();
+    }
+    NodeMatrixPair rawGradients, rawCoefficients;
+    const auto allocateMatrix = [&](NodeMatrixPair &field, const std::string &name, int rows)
+    {
+        field.InitPair(name, gMPI);
+        field.father->Resize(mesh->NumNode(), rows, 5);
+        field.son->Resize(halo.NumNodeGhost(), rows, 5);
+        field.BorrowSetup(halo.Layout());
+        field.trans.initPersistentPull();
+    };
+    allocateMatrix(rawGradients, "NCFV.test.binaryRawGradients", 3);
+    allocateMatrix(rawCoefficients, "NCFV.test.binaryRawCoefficients", 9);
+    SpatialOperator<3> spatial(
+        gMPI, mesh, solver.EdgeTopology(), solver.Geometry(), solver.ReconstructionData(),
+        solver.Boundaries(), configuration.algorithm.mode, configuration.reconstruction,
+        configuration.physics, configuration.time, halo);
+    spatial.Initialize();
+    const Vector3 velocity{.3, -.2, .1};
+    Vector3 gridVelocity = Vector3::Zero();
+    const auto state = [&](DNDS::real density, DNDS::real pressure) -> State
+    {
+        State result;
+        result << density, density * velocity,
+            pressure / (configuration.physics.gamma - 1) + .5 * density * velocity.squaredNorm();
+        return result;
+    };
+    const auto physicalFlux = [&](const State &u, const Vector3 &area) -> State
+    {
+        const Vector3 momentum = u.segment<3>(1);
+        const DNDS::real pressure = (configuration.physics.gamma - 1) *
+                                    (u(4) - .5 * momentum.squaredNorm() / u(0));
+        const DNDS::real normalVelocity = momentum.dot(area) / u(0);
+        State flux;
+        flux << momentum.dot(area), momentum * normalVelocity + pressure * area,
+            (u(4) + pressure) * normalVelocity;
+        return flux;
+    };
+    // The affine case checks smooth interior anchors without requiring a
+    // discontinuous periodic affine extension or unlimited smooth extrema.
+    for (int fieldKind = 0; fieldKind < 3; fieldKind++)
+    {
+        if (periodic && fieldKind == 1)
+            continue;
+        const auto expectedState = [&](DNDS::index node) -> State
+        {
+            if (fieldKind == 0)
+                return state(1, 1);
+            if (fieldKind == 1)
+            {
+                const auto &moments = solver.Geometry().NodeVolume(node).moments;
+                const Vector3 centroid = mesh->coords[node] + moments.first / moments.measure;
+                return state(1 + Vector3(.04, .03, .02).dot(centroid),
+                             1 + Vector3(.01, -.02, .03).dot(centroid));
+            }
+            const auto original = mesh->node2nodeOrig(node, 0);
+            return state(original % 5 == 0 ? 2 : 1, original % 7 == 0 ? 4 : .2);
+        };
+        for (DNDS::index node = 0; node < mesh->NumNode(); node++)
+            means[node] = expectedState(node);
+        CHECK(std::isfinite(spatial.EvaluateRHS(means, rhs)));
+        solver.ReconstructionData().ComputeCoefficients(means, rawGradients, rawCoefficients);
+        rawGradients.trans.startPersistentPull();
+        rawGradients.trans.waitPersistentPull();
+        const auto &factors = spatial.LimiterFactors();
+        for (DNDS::index node = 0; node < halo.NumNodeProc(); node++)
+        {
+            CHECK((factors[node](0) == 0 || factors[node](0) == 1));
+            CHECK((spatial.Gradients()[node] - rawGradients[node]).cwiseAbs().maxCoeff() < 1e-12);
+            if (fieldKind == 0)
+                CHECK(factors[node](0) == 1);
+        }
+        // Counts ensure that the discontinuous test actually exercises
+        // both-sided zero-order Riemann fluxes and physical boundary fallback.
+        std::array<DNDS::index, 5> localCounts{}, counts{};
+        State localTotal = State::Zero(), total;
+        for (DNDS::index node = 0; node < mesh->NumNode(); node++)
+        {
+            const State mean = means[node];
+            const auto &volume = solver.Geometry().NodeVolume(node);
+            const DNDS::real factor = factors[node](0);
+            CHECK((mean - expectedState(node)).cwiseAbs().maxCoeff() == 0);
+            CHECK(rhs[node].allFinite());
+            localTotal += volume.moments.measure * rhs[node];
+            localCounts[4] += rawGradients[node].cwiseAbs().maxCoeff() > 1e-12;
+            if (fieldKind == 0)
+                CHECK(rhs[node].cwiseAbs().maxCoeff() < 2e-10);
+            if (fieldKind == 1 && volume.boundaryPieces.empty())
+            {
+                CHECK(factor == 1);
+                localCounts[3]++;
+            }
+            if (factor != 0)
+                continue;
+            localCounts[0]++;
+            CHECK((State(spatial.PointValues()[node]) - mean).cwiseAbs().maxCoeff() == 0);
+            for (const auto &incidence : solver.EdgeTopology().Node2Edge(node))
+            {
+                const auto &surface = solver.Geometry().EdgeSurface(incidence.edge);
+                const int side = surface.nodes[0] == node ? 0 : 1;
+                State correction = State::Zero();
+                for (const auto &entry : surface.efficientStencil)
+                    correction += spatial.Gradients()[entry.node].transpose() *
+                                  entry.stateGradientWeights[side].head<3>();
+                const State faceMean = State(spatial.PointValues()[node]) +
+                                       factor * correction / surface.measure;
+                CHECK((faceMean - mean).cwiseAbs().maxCoeff() == 0);
+            }
+            if (!periodic && !volume.boundaryPieces.empty())
+            {
+                // Recover the boundary flux from the actual residual rather
+                // than repeating the production boundary integration path.
+                State actual = -volume.moments.measure * rhs[node];
+                for (const auto &incidence : solver.EdgeTopology().Node2Edge(node))
+                    actual -= incidence.outwardSign * State(spatial.EdgeFluxes()[incidence.edge]);
+                State expected = State::Zero();
+                for (const auto &piece : volume.boundaryPieces)
+                    expected += physicalFlux(mean, piece.vectorMeasure);
+                CHECK((actual - expected).cwiseAbs().maxCoeff() < 5e-11);
+                localCounts[2]++;
+            }
+        }
+        for (DNDS::index edge = 0; edge < solver.EdgeTopology().NumEdge(); edge++)
+        {
+            const auto &surface = solver.Geometry().EdgeSurface(edge);
+            if (factors[surface.nodes[0]](0) != 0 || factors[surface.nodes[1]](0) != 0)
+                continue;
+            const State left = means[surface.nodes[0]], right = means[surface.nodes[1]];
+            const Vector3 normal = surface.vectorMeasure.normalized();
+            CHECK(std::abs(surface.vectorMeasure.norm() - surface.measure) < 1e-12);
+            State flux = State::Zero();
+            DNDS::real acousticMinus = 0, contact = 0, acousticPlus = 0;
+            Euler::Gas::InviscidFlux_IdealGas_Dispatcher<3>(
+                configuration.physics.riemannSolver, left, right, left, right,
+                gridVelocity, normal, configuration.physics.gamma, configuration.physics.gamma,
+                flux, 0.0, 1.0, 1.0, []() {}, acousticMinus, contact, acousticPlus);
+            const State expected = surface.measure * flux;
+            CHECK((State(spatial.EdgeFluxes()[edge]) - expected).cwiseAbs().maxCoeff() < 5e-11);
+            localCounts[1]++;
+        }
+        MPI_Allreduce(localCounts.data(), counts.data(), 5, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        MPI_Allreduce(localTotal.data(), total.data(), 5, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+        if (periodic)
+            CHECK(total.cwiseAbs().maxCoeff() < 1e-9);
+        if (fieldKind == 1)
+            CHECK(counts[3] > 0);
+        if (fieldKind == 2)
+        {
+            CHECK(counts[0] > 0);
+            CHECK(counts[1] > 0);
+            CHECK(counts[4] > 0);
+            if (!periodic)
+                CHECK(counts[2] > 0);
+        }
+    }
 }
 
 TEST_CASE("NCFV conservative flux correction preserves entropy bounds and periodic conservation")

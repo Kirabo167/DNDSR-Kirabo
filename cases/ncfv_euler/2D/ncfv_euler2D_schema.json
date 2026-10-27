@@ -266,6 +266,11 @@
                     "default": false,
                     "description": "Efficient mode: limit point recovery and complete interface increments about conservative means"
                 },
+                "barthZeroOrderFallback": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use a binary mean-anchored Barth decision: keep the high-order side or fall back to a constant conservative mean; absolute bound tolerance 1e-10"
+                },
                 "sharedGradientFaceSweep": {
                     "type": "boolean",
                     "default": false,

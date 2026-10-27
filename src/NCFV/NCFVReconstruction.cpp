@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <set>
 
 namespace DNDS::NCFV
@@ -717,13 +718,190 @@ namespace DNDS::NCFV
                 select(candidate);
             }
 
-            // Extra points are deterministic rank/condition fallbacks. They are appended
-            // by the same cubic-balance criterion rather than traversal order.
-            while (selectionOrder.size() < pool.size())
+            if (dimension == 3 && !_settings.completeStencilRings)
             {
-                const int candidate = bestSingleton();
-                DNDS_assert(candidate >= 0);
-                select(candidate);
+                // Select complete directional groups within the original point
+                // budget. In particular, centrosymmetric pairs alone need not
+                // preserve a field independent of one coordinate. Available
+                // coordinate reflections form groups of at most eight points;
+                // their members consume the same fixed stencil budget.
+                const std::vector<int> compactFallback = selectionOrder;
+                std::vector<Vector3> directions(candidates.size());
+                std::vector<int> parent(candidates.size());
+                std::map<std::array<long long, 3>, int> position;
+                const auto positionKey = [](const Vector3 &point)
+                {
+                    return std::array<long long, 3>{
+                        std::llround(point(0) * 1e9),
+                        std::llround(point(1) * 1e9),
+                        std::llround(point(2) * 1e9)};
+                };
+                for (int candidate : pool)
+                {
+                    parent[static_cast<std::size_t>(candidate)] = candidate;
+                    const Vector3 offset = _nodeHalo.Displacement(
+                        iNode, candidates[static_cast<std::size_t>(candidate)].node)
+                                               .cwiseQuotient(result.referenceLengths);
+                    directions[static_cast<std::size_t>(candidate)] = offset.normalized();
+                    position.emplace(positionKey(offset), candidate);
+                }
+                const auto root = [&](int candidate)
+                {
+                    while (parent[static_cast<std::size_t>(candidate)] != candidate)
+                        candidate = parent[static_cast<std::size_t>(candidate)];
+                    return candidate;
+                };
+                for (const auto &[key, candidate] : position)
+                    for (int axis = 0; axis < dimension; axis++)
+                    {
+                        auto reflected = key;
+                        reflected[axis] = -reflected[axis];
+                        const auto found = position.find(reflected);
+                        if (found != position.end())
+                        {
+                            const int left = root(candidate), right = root(found->second);
+                            parent[static_cast<std::size_t>(std::max(left, right))] = std::min(left, right);
+                        }
+                    }
+                std::map<int, std::vector<int>> grouped;
+                for (int candidate : pool)
+                    grouped[root(candidate)].push_back(candidate);
+                std::vector<std::vector<int>> groups;
+                int mandatoryCount = 0;
+                const auto isMandatory = [&](const std::vector<int> &group)
+                {
+                    return std::any_of(group.begin(), group.end(), [&](int candidate)
+                                       { return candidates[static_cast<std::size_t>(candidate)].ring == 1; });
+                };
+                for (const auto &[key, group] : grouped)
+                {
+                    groups.push_back(group);
+                    if (isMandatory(group))
+                        mandatoryCount += static_cast<int>(group.size());
+                }
+                // A nonsymmetric first ring may already consume the budget.
+                // Keep its mandatory nodes and score the other nodes singly.
+                if (mandatoryCount > initialStencilSize)
+                {
+                    groups.clear();
+                    for (int candidate : pool)
+                        groups.push_back({candidate});
+                }
+                selectionOrder.clear();
+                std::fill(selected.begin(), selected.end(), false);
+                displacementBalance.setZero();
+                cubicBalance.setZero();
+                std::vector<bool> used(groups.size(), false);
+                for (std::size_t group = 0; group < groups.size(); group++)
+                    if (isMandatory(groups[group]))
+                    {
+                        used[group] = true;
+                        for (int candidate : groups[group])
+                            select(candidate);
+                    }
+                std::vector<Vector3> probes;
+                for (int x = -1; x <= 1; x++)
+                    for (int y = -1; y <= 1; y++)
+                        for (int z = -1; z <= 1; z++)
+                            if (x || y || z)
+                                probes.push_back(Vector3(x, y, z).normalized());
+
+                while (static_cast<int>(selectionOrder.size()) < initialStencilSize)
+                {
+                    const int remaining = initialStencilSize - static_cast<int>(selectionOrder.size());
+                    std::vector<std::size_t> available;
+                    for (std::size_t group = 0; group < groups.size(); group++)
+                        if (!used[group])
+                            available.push_back(group);
+                    // Prefix/suffix subset sums ensure that choosing a group
+                    // still permits filling the budget exactly, without
+                    // truncating its reflected directions or adding points.
+                    std::vector<std::vector<bool>> prefix(available.size() + 1, std::vector<bool>(remaining + 1));
+                    auto suffix = prefix;
+                    prefix.front()[0] = suffix.back()[0] = true;
+                    for (std::size_t j = 0; j < available.size(); j++)
+                    {
+                        const int count = static_cast<int>(groups[available[j]].size());
+                        prefix[j + 1] = prefix[j];
+                        for (int total = count; total <= remaining; total++)
+                            prefix[j + 1][total] = prefix[j + 1][total] || prefix[j][total - count];
+                    }
+                    for (std::size_t j = available.size(); j-- > 0;)
+                    {
+                        const int count = static_cast<int>(groups[available[j]].size());
+                        suffix[j] = suffix[j + 1];
+                        for (int total = count; total <= remaining; total++)
+                            suffix[j][total] = suffix[j][total] || suffix[j + 1][total - count];
+                    }
+                    const Eigen::MatrixXd weak = weakDirections();
+                    std::vector<real> covered(probes.size(), -1);
+                    for (std::size_t probe = 0; probe < probes.size(); probe++)
+                        for (int candidate : selectionOrder)
+                            covered[probe] = std::max(covered[probe], probes[probe].dot(directions[static_cast<std::size_t>(candidate)]));
+                    std::size_t best = groups.size();
+                    std::array<long long, 6> bestScore;
+                    bestScore.fill(std::numeric_limits<long long>::max());
+                    for (std::size_t j = 0; j < available.size(); j++)
+                    {
+                        const auto &group = groups[available[j]];
+                        const int rest = remaining - static_cast<int>(group.size());
+                        if (rest < 0)
+                            continue;
+                        bool canFill = false;
+                        for (int total = 0; total <= rest; total++)
+                            canFill = canFill || (prefix[j][total] && suffix[j + 1][rest - total]);
+                        if (!canFill)
+                            continue;
+                        real maximumHole = 0, squaredHoles = 0, coverage = 0;
+                        for (std::size_t probe = 0; probe < probes.size(); probe++)
+                        {
+                            real cosine = covered[probe];
+                            for (int candidate : group)
+                                cosine = std::max(cosine, probes[probe].dot(directions[static_cast<std::size_t>(candidate)]));
+                            const real hole = std::max(real(0), 1 - cosine);
+                            maximumHole = std::max(maximumHole, hole);
+                            squaredHoles += hole * hole;
+                        }
+                        Eigen::VectorXd cubic = cubicBalance;
+                        Vector3 balance = displacementBalance;
+                        for (int candidate : group)
+                        {
+                            coverage += coverageScore(candidate, weak);
+                            cubic += candidateCubic.row(candidate).transpose();
+                            balance += _nodeHalo.Displacement(
+                                iNode, candidates[static_cast<std::size_t>(candidate)].node)
+                                           .cwiseQuotient(result.referenceLengths);
+                        }
+                        const auto score = std::array<long long, 6>{
+                            quantize(maximumHole), quantize(squaredHoles),
+                            quantize(1 / std::max(coverage, real(1e-30))),
+                            quantize(cubic.squaredNorm()), quantize(balance.squaredNorm()),
+                            static_cast<long long>(group.front())};
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            best = available[j];
+                        }
+                    }
+                    if (best == groups.size())
+                    {
+                        selectionOrder = compactFallback;
+                        break;
+                    }
+                    used[best] = true;
+                    for (int candidate : groups[best])
+                        select(candidate);
+                }
+            }
+            else
+            {
+                // Preserve the existing complete-ring and 2-D fallbacks.
+                while (selectionOrder.size() < pool.size())
+                {
+                    const int candidate = bestSingleton();
+                    DNDS_assert(candidate >= 0);
+                    select(candidate);
+                }
             }
 
             for (int count = initialStencilSize;
@@ -768,6 +946,19 @@ namespace DNDS::NCFV
                 accepted = acceptedRank == nBasis &&
                            acceptedCondition <=
                                _settings.maximumConditionNumber;
+                if (accepted && dimension == 3 && !_settings.completeStencilRings)
+                {
+                    // Normal-equation eigenvalues can report a spurious last
+                    // mode at roundoff on a directionally incomplete set.
+                    // Validate the complete quadratic operator, including the
+                    // Hessian rows used by traditional/variational recovery.
+                    // Search a larger candidate ring at the same point count
+                    // when this set cannot reproduce every polynomial mode.
+                    const real reproductionError =
+                        (acceptedInverse * matrix - Eigen::MatrixXd::Identity(nBasis, nBasis))
+                            .cwiseAbs().maxCoeff();
+                    accepted = reproductionError < 1e-8;
+                }
                 if (accepted)
                     break;
             }
@@ -782,6 +973,9 @@ namespace DNDS::NCFV
             fmt::format("NCFV node {} quadratic stencil condition number {} exceeds {}",
                         _mesh->NodeIndexLocal2Global(iNode), acceptedCondition,
                         _settings.maximumConditionNumber));
+        DNDS_check_throw_info(
+            accepted,
+            "NCFV fixed-size stencil cannot reproduce the quadratic basis; increase maximumStencilRings");
 
         result.numericalRank = acceptedRank;
         result.conditionNumber = acceptedCondition;
@@ -1168,6 +1362,15 @@ namespace DNDS::NCFV
                                        const Eigen::VectorXd &minimum,
                                        const Eigen::VectorXd &maximum)
                 {
+                    if (_settings.barthZeroOrderFallback)
+                    {
+                        constexpr real boundTolerance = 1e-10;
+                        if (!candidate.allFinite() ||
+                            (candidate.array() < minimum.array() - boundTolerance).any() ||
+                            (candidate.array() > maximum.array() + boundTolerance).any())
+                            factor = 0;
+                        return;
+                    }
                     for (int iVar = 0; iVar < nVars; iVar++)
                     {
                         const real increment = candidate(iVar) - anchor(iVar);
@@ -1208,6 +1411,17 @@ namespace DNDS::NCFV
                     else
                         limit(candidate, minimum, maximum);
                 }
+                if (_settings.barthZeroOrderFallback)
+                    for (const auto &piece : _geometry.NodeVolume(iNode).boundaryPieces)
+                    {
+                        if (Geom::FaceIDIsPeriodic(piece.zone))
+                            continue;
+                        Eigen::VectorXd candidate = Eigen::VectorXd::Zero(nVars);
+                        for (const auto &entry : piece.efficientStencil)
+                            candidate += entry.integrationWeight * pointValues[entry.node];
+                        candidate /= piece.measure;
+                        limit(candidate, meanMinimum, meanMaximum);
+                    }
                 factors[static_cast<std::size_t>(iNode)] =
                     std::clamp(factor, 0.0, 1.0);
             }

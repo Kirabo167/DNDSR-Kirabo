@@ -407,6 +407,9 @@ namespace DNDS::NCFV
         State integral = PhysicalFlux(
             State(_pointValues[anchorNode]),
             surface.vectorMeasure.template head<dimension>());
+        if (_reconstructionSettings.barthZeroOrderFallback &&
+            _limiterFactors[anchorNode](0, 0) == 0)
+            return integral;
         if (_detailedFluxTiming)
         {
             timing.zeroOrderFluxSeconds += MPI_Wtime() - phaseStart;
@@ -450,6 +453,9 @@ namespace DNDS::NCFV
                               "NCFV efficient surface has zero measure");
         const std::size_t sideIndex = static_cast<std::size_t>(side);
         const index anchorNode = surface.nodes[sideIndex];
+        if (_reconstructionSettings.barthZeroOrderFallback &&
+            _limiterFactors[anchorNode](0, 0) == 0)
+            return State(_pointValues[anchorNode]);
         State integral = surface.measure * State(_pointValues[anchorNode]);
         State correction = State::Zero();
         for (const EfficientSurfaceNode &entry : surface.efficientStencil)
@@ -959,6 +965,15 @@ namespace DNDS::NCFV
 
         // No Gaussian points: the initialization-built stencil already merges
         // every construction-point support into one sorted local/ghost node set.
+        State boundaryMinimum = means[iNode], boundaryMaximum = boundaryMinimum;
+        if (_reconstructionSettings.barthZeroOrderFallback)
+            for (const auto &incidence : _topology.Node2Edge(iNode))
+            {
+                const auto &surface = _geometry.EdgeSurface(incidence.edge);
+                const index neighbor = surface.nodes[surface.nodes[0] == iNode ? 1 : 0];
+                boundaryMinimum = boundaryMinimum.cwiseMin(State(means[neighbor]));
+                boundaryMaximum = boundaryMaximum.cwiseMax(State(means[neighbor]));
+            }
         for (const auto &piece : controlVolume.boundaryPieces)
         {
             const auto &boundary = _boundaries.Get(piece.zone);
@@ -966,6 +981,12 @@ namespace DNDS::NCFV
                 continue;
             const SpatialVector unitNormal =
                 piece.vectorMeasure.template head<dimension>() / piece.measure;
+            if (_reconstructionSettings.barthZeroOrderFallback &&
+                _limiterFactors[iNode](0, 0) == 0)
+            {
+                total += piece.measure * BoundaryNumericalFlux(State(means[iNode]), unitNormal, boundary);
+                continue;
+            }
             State insideIntegral = State::Zero();
             State inviscidIntegral = State::Zero();
             for (const EfficientBoundaryNode &entry : piece.efficientStencil)
@@ -979,8 +1000,19 @@ namespace DNDS::NCFV
                                     BoundaryNumericalFlux(
                                         nodalState, unitNormal, boundary);
             }
-            const State insideMean = PreservePhysical(
-                insideIntegral / piece.measure, State(_pointValues[iNode]));
+            const State candidate = insideIntegral / piece.measure;
+            if (_reconstructionSettings.barthZeroOrderFallback &&
+                (!IsPhysical(candidate) ||
+                 (candidate.array() < boundaryMinimum.array() - 1e-10).any() ||
+                 (candidate.array() > boundaryMaximum.array() + 1e-10).any()))
+            {
+                // Neighboring recovered points may have changed after the
+                // initial Barth test. Check the actual boundary mean once
+                // more and use a constant side when it is outside the bounds.
+                total += piece.measure * BoundaryNumericalFlux(State(means[iNode]), unitNormal, boundary);
+                continue;
+            }
+            const State insideMean = PreservePhysical(candidate, State(_pointValues[iNode]));
             total += inviscidIntegral;
             if (_physics.viscous.enabled)
                 total -= piece.measure * BoundaryViscousFlux(
@@ -1242,6 +1274,22 @@ namespace DNDS::NCFV
                             }
                         const auto limitPhysical = [&](const State &candidate)
                         {
+                            if (_reconstructionSettings.barthZeroOrderFallback)
+                            {
+                                DNDS_check_throw_info(IsPhysical(mean),
+                                                      "NCFV binary Barth fallback requires physical conservative means");
+                                if (factor == 0)
+                                    return;
+                                if (!IsPhysical(candidate))
+                                {
+                                    factor = 0;
+                                    return;
+                                }
+                                if (_reconstructionSettings.limitPressure)
+                                    factor = LimitIdealGasPressureFactor<dimension>(
+                                        mean, candidate, _physics.gamma, pressureMinimum, pressureMaximum, factor);
+                                return;
+                            }
                             DNDS_check_throw_info(candidate.allFinite() && IsPhysical(mean),
                                                   "NCFV mean-anchored limiter requires finite reconstruction and physical means");
                             if (!IsPhysical(mean + factor * (candidate - mean)))
@@ -1274,7 +1322,13 @@ namespace DNDS::NCFV
                         }
                         // One factor scales the entire mean-to-point/surface
                         // increment. Shared source gradients remain unscaled.
-                        _pointValues[iNode] = mean + factor * (rawPoint - mean);
+                        if (_reconstructionSettings.barthZeroOrderFallback)
+                        {
+                            factor = factor < 1 ? 0 : 1;
+                            _pointValues[iNode] = factor == 0 ? mean : rawPoint;
+                        }
+                        else
+                            _pointValues[iNode] = mean + factor * (rawPoint - mean);
                     }
                     _pointValues.trans.startPersistentPull();
                     _pointValues.trans.waitPersistentPull();

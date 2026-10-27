@@ -84,6 +84,10 @@ namespace DNDS::NCFV
         DNDS_check_throw_info(!reconstruction.limitPointRecovery ||
                                   (reconstruction.enableLimiter && algorithm.mode == IntegrationMode::EfficientDifferential),
                               "NCFV limitPointRecovery requires efficient mode with the limiter enabled");
+        DNDS_check_throw_info(!reconstruction.barthZeroOrderFallback ||
+                                  (reconstruction.limitPointRecovery && !reconstruction.sharedGradientFaceSweep &&
+                                   !reconstruction.limitFluxCorrection && !physics.viscous.enabled),
+                              "NCFV barthZeroOrderFallback requires mean-anchored efficient inviscid limiting without shared-gradient sweeps or flux correction");
         DNDS_check_throw_info(!reconstruction.sharedGradientFaceSweep ||
                                   (reconstruction.enableLimiter && algorithm.mode == IntegrationMode::EfficientDifferential),
                               "NCFV sharedGradientFaceSweep requires efficient mode with the limiter enabled");

@@ -182,6 +182,7 @@ namespace DNDS::NCFV
         real variationalWeight = 1.0;
         bool enableLimiter = true;
         bool limitPointRecovery = false;
+        bool barthZeroOrderFallback = false;
         bool sharedGradientFaceSweep = false;
         bool limitPressure = false;
         bool directionalPairBounds = false;
@@ -218,6 +219,8 @@ namespace DNDS::NCFV
             DNDS_FIELD(enableLimiter, "Enable one-coefficient Barth--Jespersen limiting");
             DNDS_FIELD(limitPointRecovery,
                        "Efficient mode: limit point recovery and complete interface increments about conservative means");
+            DNDS_FIELD(barthZeroOrderFallback,
+                       "Use a binary mean-anchored Barth decision: keep the high-order side or fall back to a constant conservative mean; absolute bound tolerance 1e-10");
             DNDS_FIELD(sharedGradientFaceSweep,
                        "Single sequential sweep over owned interface means; update every contributing shared gradient in place; MPI rank blocks ordered");
             DNDS_FIELD(limitPressure,
