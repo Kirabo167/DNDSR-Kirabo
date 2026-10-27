@@ -17,6 +17,10 @@ namespace DNDS::NCFV
         constexpr int SecondOffset = 7;
         constexpr int ReferenceLengthOffset = 13;
 
+        /**
+         * @brief Sort global dependency IDs and erase duplicates in place.
+         * @param [in,out] values Node-ID list to canonicalize into ascending unique order.
+         */
         void SortUnique(std::vector<index> &values)
         {
             std::sort(values.begin(), values.end());

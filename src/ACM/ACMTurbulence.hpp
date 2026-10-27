@@ -136,7 +136,13 @@ namespace DNDS::ACM
      */
     const char *TurbulenceModelName(TurbulenceModel model);
 
-    /** @brief Return the VTK-HDF field name for an active turbulence variable. */
+    /**
+     *  @brief Return the VTK-HDF field name for an active turbulence variable.
+     * @param model Runtime closure determining whether the variable is nuTilde, k/omega, or k/epsilon.
+     * @param variable Zero-based active primitive turbulence-variable index.
+     * @return Static TurbulenceNuTilde, TurbulenceK, TurbulenceOmega, or TurbulenceEpsilon field name.
+     * @throws std::runtime_error If variable is outside the active range of the selected model.
+     */
     const char *TurbulenceVariableName(TurbulenceModel model, int variable);
 
     /**
@@ -149,7 +155,15 @@ namespace DNDS::ACM
         const TurbulenceState &state,
         const TurbulenceSettings &settings);
 
-    /** @brief Bound each active SSPRK increment independently; a blocked variable cannot freeze another equation. */
+    /**
+     *  @brief Bound each active SSPRK increment independently; a blocked variable cannot freeze another equation.
+     * @param state Current finite primitive turbulence state before the SSPRK stage.
+     * @param residual Finite primitive turbulence rate for the same state.
+     * @param requestedTimeStep Positive stage interval before component-wise bound restriction.
+     * @param settings Closure selection and primitive lower/upper bounds.
+     * @return Component-wise dt*residual correction limited to 90% of the remaining bound distance; inactive
+     *     entries are zero.
+     */
     TurbulenceState BoundedTurbulenceStageIncrement(
         const TurbulenceState &state,
         const TurbulenceState &residual,

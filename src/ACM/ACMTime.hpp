@@ -36,7 +36,13 @@ namespace DNDS::ACM
         BDF2DualTimeGMRES,
     };
 
-    /** @brief Serialize an ACM time integrator without permitting an invalid enum value. */
+    /**
+     *  @brief Serialize an ACM time integrator without permitting an invalid enum value.
+     * @param [out] json JSON value replaced by the canonical time-integrator string.
+     * @param integrator Supported ACM integrator to serialize.
+     * @tparam BasicJsonType nlohmann-compatible JSON value type.
+     * @throws std::invalid_argument If integrator is not a supported enumeration value.
+     */
     template <typename BasicJsonType>
     void to_json(BasicJsonType &json, const TimeIntegratorType &integrator)
     {
@@ -64,7 +70,13 @@ namespace DNDS::ACM
         throw std::invalid_argument("unknown ACM time-integrator enum value");
     }
 
-    /** @brief Deserialize an ACM time integrator and reject unknown JSON strings. */
+    /**
+     *  @brief Deserialize an ACM time integrator and reject unknown JSON strings.
+     * @param json JSON string containing an exact supported ACM time-integrator name.
+     * @param [out] integrator Selected integrator, assigned after validating the input name.
+     * @tparam BasicJsonType nlohmann-compatible JSON value type.
+     * @throws std::invalid_argument If the input is not a string or its name is unsupported.
+     */
     template <typename BasicJsonType>
     void from_json(const BasicJsonType &json, TimeIntegratorType &integrator)
     {
@@ -127,8 +139,10 @@ namespace DNDS::ACM
         real cfl = 0.5;                                                     ///< CFL multiplier for spectral-radius stepping.
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
-        real implicitTolerance = 1e-10;                                     ///< Global RMS steady or physical defect tolerance.
-        std::string dualTimeConvergenceCriterion = "Absolute";              ///< Select Absolute or Relative physical-defect convergence.
+        real implicitTolerance = 1e-8;                                      ///< Global RMS steady or physical defect absolute tolerance.
+        std::string dualTimeConvergenceCriterion = "Absolute";              ///< Defect criterion, or RelativeUpdate for laminar flow.
+        real dualTimeUpdateRelativeTolerance = 1e-5;                       ///< Applied-update L2 / updated-state L2; zero disables early exit.
+        int dualTimeUpdateMinimumIterations = 2;                           ///< Minimum corrections before testing RelativeUpdate.
         real dualTimeFlowRelativeTolerance = 0;                            ///< Flow RMS target relative to this physical step's initial defect; zero uses equation targets.
         real dualTimeTurbulenceRelativeTolerance = 0;                      ///< Active RANS RMS target relative to its own initial physical defect.
         std::array<real, 6> dualTimeResidualScales{1, 1, 1, 1, 1, 1};         ///< Characteristic residual scales for [u,v,w,p,q1,q2].
@@ -141,10 +155,11 @@ namespace DNDS::ACM
         real steadyCFLGrowth = 1.5;                                        ///< Maximum increase per successful outer step.
         real steadyCFLReduction = 0.5;                                    ///< Reduction after residual growth or inner failure.
         real implicitRelaxation = 1.0;                                      ///< Damping applied to every implicit correction.
-        int lusgsSweeps = 2;                                                ///< Fixed SGS residual-correction applications per solve.
+        int lusgsSweeps = 2;                                                ///< Maximum standalone SGS sweeps; fixed GMRES preconditioner sweeps.
         int gmresSubspace = 10;                                             ///< Arnoldi vectors per GMRES restart.
         int gmresRestarts = 3;                                              ///< Maximum generic-GMRES restart count.
-        real gmresRelativeTolerance = 1e-6;                                 ///< Relative preconditioned linear residual target.
+        real linearRelativeTolerance = 1e-6;                                ///< Relative true linear RMS target for LU-SGS and GMRES.
+        real linearAbsoluteTolerance = 1e-10;                               ///< Absolute true linear RMS target; combined with relative tolerance by OR.
         GMRESPreconditionerType gmresPreconditioner =
             GMRESPreconditionerType::LUSGS; ///< Left preconditioner used by GMRES.
 
@@ -167,8 +182,12 @@ namespace DNDS::ACM
                        DNDS::Config::range(1));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
-            DNDS_FIELD(dualTimeConvergenceCriterion, "BDF defect convergence criterion: Absolute uses implicitTolerance; Relative uses this physical step's initial defects",
-                       DNDS::Config::enum_values({"Absolute", "Relative"}));
+            DNDS_FIELD(dualTimeConvergenceCriterion, "BDF convergence: Absolute, Relative, AbsoluteOrRelative, or laminar RelativeUpdate; residuals remain reported",
+                       DNDS::Config::enum_values({"Absolute", "Relative", "AbsoluteOrRelative", "RelativeUpdate"}));
+            DNDS_FIELD(dualTimeUpdateRelativeTolerance, "Laminar BDF applied-update L2 / updated-state L2 threshold; zero disables update early exit",
+                       DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(dualTimeUpdateMinimumIterations, "Minimum BDF corrections before testing RelativeUpdate",
+                       DNDS::Config::range(0));
             DNDS_FIELD(dualTimeFlowRelativeTolerance, "BDF flow RMS target relative to this physical step's initial flow defect; zero uses per-equation targets",
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(dualTimeTurbulenceRelativeTolerance, "BDF active RANS RMS target relative to its own initial physical defect; zero uses per-equation targets",
@@ -184,10 +203,11 @@ namespace DNDS::ACM
             DNDS_FIELD(steadyCFLGrowth, "Maximum steady CFL growth factor", DNDS::Config::range(1.0));
             DNDS_FIELD(steadyCFLReduction, "Steady CFL reduction factor", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(implicitRelaxation, "Implicit correction relaxation", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(lusgsSweeps, "ACM fixed LU-SGS residual-correction applications", DNDS::Config::range(1));
+            DNDS_FIELD(lusgsSweeps, "Maximum standalone LU-SGS sweeps; fixed sweeps for GMRES preconditioning", DNDS::Config::range(1));
             DNDS_FIELD(gmresSubspace, "ACM GMRES Krylov subspace size", DNDS::Config::range(2));
             DNDS_FIELD(gmresRestarts, "ACM GMRES restart count", DNDS::Config::range(0));
-            DNDS_FIELD(gmresRelativeTolerance, "ACM GMRES relative residual tolerance", DNDS::Config::range(0.0));
+            DNDS_FIELD(linearRelativeTolerance, "True linear RMS target relative to the initial right-hand side; OR with linearAbsoluteTolerance", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(linearAbsoluteTolerance, "Absolute true linear RMS target for LU-SGS and GMRES; OR with linearRelativeTolerance", DNDS::Config::range(0.0));
             DNDS_FIELD(gmresPreconditioner, "ACM GMRES left preconditioner",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(GMRESPreconditionerType)));
             config.post_read([](T &settings)
@@ -199,20 +219,70 @@ namespace DNDS::ACM
          * @throws std::runtime_error If a count, time step, tolerance, or relaxation is invalid.
          */
         void Validate() const;
-        /** @brief Validate the relative targets of all active physical equations or their RMS groups. */
+        /**
+         *  @brief Validate the relative targets of all active physical equations or their RMS groups.
+         * @param activeEquations Number of active state equations, from four flow equations to six with RANS.
+         * @throws std::runtime_error If active equation/group settings cannot define the selected convergence
+         *     criterion.
+         */
         void ValidateDualTimeConvergence(int activeEquations) const;
-        /** @brief Return the selected absolute or relative RMS target for one group. */
+        /**
+         *  @brief Return the absolute, relative, or maximum of both RMS targets for one group.
+         * @param initialDefect Initial global RMS defect of the selected flow or turbulence group.
+         * @param turbulence True to use the turbulence-group relative tolerance; false for the flow group.
+         * @return Group RMS threshold for the configured absolute, relative, or absolute-or-relative criterion.
+         */
         real DualTimeGroupTarget(real initialDefect, bool turbulence) const;
-        /** @brief Raw per-equation targets for the selected absolute or relative criterion. */
+        /**
+         *  @brief Per-equation targets, including the scaled absolute fallback in OR mode.
+         * @param initialDefects Initial equation RMS defects ordered [u,v,w,p,q1,q2]; inactive entries may be
+         *     zero.
+         * @return Six equation thresholds formed from characteristic scales, absolute tolerance, and enabled
+         *     relative tolerances.
+         */
         std::array<real, 6> DualTimeTargets(const std::array<real, 6> &initialDefects) const;
-        /** @brief Require every active group to pass the selected criterion, using grouped RMS where enabled. */
+        /**
+         *  @brief Require every active group to pass the selected criterion, using grouped RMS where enabled.
+         * @param initialDefects Initial physical-defect RMS values in [u,v,w,p,q1,q2] order.
+         * @param finalDefects Current physical-defect RMS values in the same order.
+         * @param activeEquations Number of active entries, four to six.
+         * @return True if every active equation or enabled RMS group satisfies its selected defect criterion.
+         */
         bool DualTimeConverged(const std::array<real, 6> &initialDefects,
                                const std::array<real, 6> &finalDefects, int activeEquations) const;
-        /** @brief Use grouped RMS where enabled, otherwise per-equation targets; all active groups must pass. */
+        /**
+         *  @brief Use grouped RMS where enabled, otherwise per-equation targets; all active groups must pass.
+         * @param report Physical-step report with initial/current equation and group norms and any applied-update
+         *     diagnostics.
+         * @param activeEquations Number of active flow-plus-turbulence equations, four to six.
+         * @return True when the configured stopping criterion passes, including RelativeUpdate when selected.
+         */
         bool DualTimeConverged(const TimeStepReport &report, int activeEquations) const;
-        /** @brief Absolute/relative target for one steady implicit pseudo-time step. */
+        /**
+         *  @brief Defect-only diagnostic; RelativeUpdate uses the absolute-or-relative residual targets.
+         * @param report Physical-step report with initial/current equation and group norms and any applied-update
+         *     diagnostics.
+         * @param activeEquations Number of active flow-plus-turbulence equations, four to six.
+         * @return True when residual-based targets pass; RelativeUpdate is evaluated using absolute-or-relative
+         *     residual targets.
+         */
+        bool DualTimeResidualConverged(const TimeStepReport &report, int activeEquations) const;
+        /**
+         *  @brief Absolute/relative target for one steady implicit pseudo-time step.
+         * @param initialSpatialResidual Global spatial RMS at the start of this outer steady iteration.
+         * @return Maximum of the absolute tolerance and the enabled relative tolerance times the initial spatial
+         *     RMS.
+         */
         real SteadyImplicitTarget(real initialSpatialResidual) const;
-        /** @brief Bounded CFL update; stalled steps cannot trigger a CFL increase. */
+        /**
+         *  @brief Bounded CFL update; stalled steps cannot trigger a CFL increase.
+         * @param currentCFL CFL used for the just-completed steady iteration.
+         * @param before Global spatial residual norm before the step.
+         * @param after Global spatial residual norm after the step.
+         * @param innerConverged Whether the implicit inner defect solve met its target.
+         * @return Next CFL, adjusted for actual progress and bounded by the configured limits when adaptation is
+         *     active.
+         */
         real NextSteadyCFL(real currentCFL, real before, real after, bool innerConverged) const;
     };
 
@@ -241,13 +311,23 @@ namespace DNDS::ACM
         int iterations = 0;         ///< Explicit stages or implicit nonlinear iterations.
         real initialDefectNorm = 0; ///< Global RMS derivative/defect before updating.
         real finalDefectNorm = 0;   ///< Global RMS derivative/defect after updating.
-        bool converged = false;     ///< True when the configured defect tolerance was reached.
+        bool converged = false;     ///< True when the selected stopping criterion was reached.
+        real appliedUpdateNorm = std::numeric_limits<real>::infinity(); ///< Global owned-cell L2 of the actual damped flow update.
+        real updatedStateNorm = 0;  ///< Global owned-cell L2 of [u,v,w,p] after the update.
         real defectTolerance = 0;   ///< Actual absolute or combined steady inner target.
         real turbulenceDefectNorm = 0; ///< Active RANS physical-time defect during BDF2 marching.
         real initialTurbulenceDefectNorm = 0; ///< RANS RMS before any update in this physical step.
         real turbulenceDefectTolerance = 0;   ///< Absolute/relative RANS group target fixed for this physical step.
         std::array<real, 6> initialEquationDefectNorms{}; ///< Raw initial RMS values [u,v,w,p,q1,q2].
         std::array<real, 6> equationDefectNorms{};        ///< Raw final RMS values; inactive entries remain zero.
+
+        /** @brief Relative applied update; zero/zero is zero, an unavailable or nonzero/zero update is infinity. */
+        real RelativeUpdateNorm() const
+        {
+            return updatedStateNorm > 0 ? appliedUpdateNorm / updatedStateNorm
+                                        : (updatedStateNorm == 0 && appliedUpdateNorm == 0
+                                               ? 0 : std::numeric_limits<real>::infinity());
+        }
 
         /** @brief Ratio to this step's initial flow RMS; zero/zero is zero, nonzero/zero is infinity. */
         real FlowDefectRatio() const

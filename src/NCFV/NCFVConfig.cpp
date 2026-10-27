@@ -11,6 +11,12 @@ namespace DNDS::NCFV
 {
     namespace
     {
+        /**
+         * @brief Recursively overlay supplied object members onto typed default configuration data.
+         * @param [in,out] destination Defaults/resolved JSON object whose matching leaves are replaced.
+         * @param source User JSON values; nested objects are merged and non-object values replace their
+         *     destinations.
+         */
         void MergeJsonObject(
             nlohmann::ordered_json &destination,
             const nlohmann::ordered_json &source)
@@ -30,6 +36,13 @@ namespace DNDS::NCFV
             }
         }
 
+        /**
+         * @brief Fill optional fields of each configured array item from a typed default object.
+         * @param [in,out] array JSON array whose items are normalized against defaults; non-array input is
+         *     returned unchanged and non-object items are preserved for later validation.
+         * @param defaults Default configuration item serialized as the initial value for each normalized object.
+         * @tparam T Serializable configuration-item type, such as a boundary zone or region initializer.
+         */
         template <class T>
         void MergeArrayItemDefaults(
             nlohmann::ordered_json &array,
@@ -68,29 +81,63 @@ namespace DNDS::NCFV
                               "NCFV dimension must be 2 or 3");
         DNDS_check_throw_info(!mesh.meshFile.empty(),
                               "NCFV mesh.meshFile must name a CGNS mesh");
+        DNDS_check_throw_info(!reconstruction.limitPointRecovery ||
+                                  (reconstruction.enableLimiter && algorithm.mode == IntegrationMode::EfficientDifferential),
+                              "NCFV limitPointRecovery requires efficient mode with the limiter enabled");
+        DNDS_check_throw_info(!reconstruction.sharedGradientFaceSweep ||
+                                  (reconstruction.enableLimiter && algorithm.mode == IntegrationMode::EfficientDifferential),
+                              "NCFV sharedGradientFaceSweep requires efficient mode with the limiter enabled");
+        DNDS_check_throw_info(!reconstruction.sharedGradientFaceSweep ||
+                                  (!reconstruction.limitFluxCorrection && !reconstruction.directionalPairBounds),
+                              "NCFV sharedGradientFaceSweep cannot be combined with limitFluxCorrection or directionalPairBounds");
+        DNDS_check_throw_info(!reconstruction.limitPressure || reconstruction.limitPointRecovery,
+                              "NCFV limitPressure requires mean-anchored point recovery limiting");
+        DNDS_check_throw_info(!reconstruction.directionalPairBounds || reconstruction.limitPointRecovery,
+                              "NCFV directionalPairBounds requires mean-anchored point recovery limiting");
+        DNDS_check_throw_info(!reconstruction.limitFluxCorrection ||
+                                  (algorithm.mode == IntegrationMode::EfficientDifferential && algorithm.checkGeometryClosure &&
+                                   !physics.viscous.enabled && time.useCFLTimeStep &&
+                                   !time.useLocalTimeStep && time.cfl <= 1.0),
+                              "NCFV limitFluxCorrection requires efficient inviscid integration with global CFL time steps and CFL <= 1");
+        DNDS_check_throw_info(std::isfinite(reconstruction.maximumFluxCorrection) &&
+                                  reconstruction.maximumFluxCorrection >= 0 && reconstruction.maximumFluxCorrection <= 1,
+                              "NCFV maximumFluxCorrection must be finite and between zero and one");
+        DNDS_check_throw_info(!reconstruction.fluxCorrectionPairBounds || reconstruction.limitFluxCorrection,
+                              "NCFV fluxCorrectionPairBounds requires limitFluxCorrection");
+        DNDS_check_throw_info(!time.rejectNonPhysicalSteps || !time.useLocalTimeStep,
+                              "NCFV positivity step retries require a global physical time step");
         DNDS_check_throw_info(mesh.periodicLengths.size() == 3,
                               "NCFV periodicLengths must have three entries");
-        const bool periodic = mesh.periodicLengths[0] > 0;
+        std::size_t periodicAxisCount = 0;
+        for (real length : mesh.periodicLengths)
+        {
+            DNDS_check_throw_info(std::isfinite(length) && length >= 0,
+                                  "NCFV periodicLengths must be finite and nonnegative");
+            if (length > 0)
+                periodicAxisCount++;
+        }
+        const bool periodic = periodicAxisCount > 0;
         if (periodic)
         {
-            DNDS_check_throw_info(dimension == 3 && mesh.periodicLengths[1] > 0 && mesh.periodicLengths[2] > 0,
-                                  "NCFV translational quotient currently requires a fully periodic 3-D box");
-            DNDS_check_throw_info(!reconstruction.enableLimiter,
-                                  "NCFV periodic reconstruction currently requires limiter disabled");
+            DNDS_check_throw_info(dimension == 3,
+                                  "NCFV translational quotient currently requires a 3-D mesh");
+            DNDS_check_throw_info(!reconstruction.enableLimiter ||
+                                      algorithm.mode == IntegrationMode::EfficientDifferential,
+                                  "NCFV periodic limiting requires efficient integration");
             DNDS_check_throw_info(physics.requireBoundaryZoneCoverage && !physics.boundaryZones.empty(),
                                   "NCFV periodic box requires explicit complete boundary coverage");
+            std::vector<std::string> periodicZoneNames;
             for (const auto &boundary : physics.boundaryZones)
-                DNDS_check_throw_info(boundary.mode == BoundaryMode::Periodic,
-                                      "NCFV fully periodic box requires every boundary to be Periodic");
+                if (boundary.mode == BoundaryMode::Periodic)
+                    periodicZoneNames.push_back(boundary.name);
+            DNDS_check_throw_info(
+                periodicZoneNames.size() == 2 * periodicAxisCount,
+                "NCFV requires exactly two Periodic boundary zones for each active periodic axis");
             DNDS_check_throw_info(
                 mesh.periodicBoundaryPairs.empty() ||
-                    mesh.periodicBoundaryPairs.size() == 6,
-                "NCFV exact periodic topology requires three main/donor boundary pairs");
-            if (mesh.periodicBoundaryPairs.empty())
-                DNDS_check_throw_info(
-                    physics.boundaryZones.size() == 6,
-                    "NCFV infers exact periodic pairs only when exactly six Periodic boundaryZones are listed");
-            else
+                    mesh.periodicBoundaryPairs.size() == 2 * periodicAxisCount,
+                "NCFV exact periodic topology requires one main/donor pair per active axis, ordered x,y,z");
+            if (!mesh.periodicBoundaryPairs.empty())
             {
                 std::set<std::string> pairNames;
                 for (const std::string &name : mesh.periodicBoundaryPairs)
@@ -111,8 +158,8 @@ namespace DNDS::NCFV
         }
         else
         {
-            for (real length : mesh.periodicLengths)
-                DNDS_check_throw_info(length == 0, "NCFV partial periodic boxes are not implemented");
+            DNDS_check_throw_info(mesh.periodicBoundaryPairs.empty(),
+                                  "NCFV periodicBoundaryPairs requires positive periodicLengths");
             for (const auto &boundary : physics.boundaryZones)
                 DNDS_check_throw_info(boundary.mode != BoundaryMode::Periodic,
                                       "NCFV Periodic boundary requires periodicLengths");
@@ -227,6 +274,8 @@ namespace DNDS::NCFV
                                   "NCFV CFL must be positive when CFL stepping is enabled");
         DNDS_check_throw_info(time.reportInterval > 0 && time.iterations >= 0,
                               "NCFV iterations/report interval is invalid");
+        DNDS_check_throw_info(time.maximumStepRetries >= 0 && time.maximumStepRetries <= 40,
+                              "NCFV maximumStepRetries must be between zero and forty");
         DNDS_check_throw_info(time.endTime < 0 || !time.useCFLTimeStep || !time.useLocalTimeStep,
                               "NCFV physical endTime cannot be used with local pseudo-time stepping");
         DNDS_check_throw_info(time.minimumTimeStep > 0 &&

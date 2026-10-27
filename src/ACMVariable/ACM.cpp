@@ -1067,10 +1067,21 @@ namespace DNDS::ACMVariable
         std::ifstream input(jsonName);
         DNDS_check_throw_info(input.good(), "ACM case configuration file does not exist: " + jsonName);
         nlohmann::ordered_json resolved = nlohmann::ordered_json::parse(input, nullptr, true, true);
+        if (resolved.at("timeMarchSettings").contains("gmresRelativeTolerance"))
+        {
+            auto &timeMarch = resolved.at("timeMarchSettings");
+            DNDS_check_throw_info(!timeMarch.contains("linearRelativeTolerance") ||
+                                      timeMarch.at("linearRelativeTolerance") == timeMarch.at("gmresRelativeTolerance"),
+                                  "Specify only linearRelativeTolerance; the legacy gmresRelativeTolerance conflicts");
+            timeMarch["linearRelativeTolerance"] = timeMarch.at("gmresRelativeTolerance");
+            timeMarch.erase("gmresRelativeTolerance");
+        }
 
         for (std::size_t i = 0; i < overwriteKeys.size(); i++)
         {
-            const nlohmann::ordered_json::json_pointer key(overwriteKeys[i]);
+            const std::string keyName = overwriteKeys[i] == "/timeMarchSettings/gmresRelativeTolerance"
+                                            ? "/timeMarchSettings/linearRelativeTolerance" : overwriteKeys[i];
+            const nlohmann::ordered_json::json_pointer key(keyName);
             try
             {
                 resolved[key] = nlohmann::ordered_json::parse(overwriteValues[i]);
@@ -1091,6 +1102,10 @@ namespace DNDS::ACMVariable
             timeMarch["physicalODECode"] = TimeMarchSettings{}.physicalODECode;
         if (!timeMarch.contains("pseudoODECode"))
             timeMarch["pseudoODECode"] = TimeMarchSettings{}.pseudoODECode;
+        const nlohmann::ordered_json timeDefaults = TimeMarchSettings{};
+        for (const char *key : {"implicitRelativeTolerance", "linearRelativeTolerance", "linearAbsoluteTolerance"})
+            if (!timeMarch.contains(key))
+                timeMarch[key] = timeDefaults.at(key);
 
         KernelConfiguration configuration = resolved.get<KernelConfiguration>();
         configuration.Validate();

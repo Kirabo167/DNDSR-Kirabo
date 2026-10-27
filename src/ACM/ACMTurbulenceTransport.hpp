@@ -86,7 +86,11 @@ namespace DNDS::ACM
          */
         void EvaluateRHS(TTurbulenceDof &rhs, TFlowDof &flow, real time = 0);
 
-        /** @brief Use the ACM continuity flux for conservative upwind RANS advection. */
+        /**
+         *  @brief Use the ACM continuity flux for conservative upwind RANS advection.
+         * @param flux Optional callback (face, quadrature point, time) returning the ACM continuity flux per unit
+         *     area; empty restores the local advection flux.
+         */
         void SetFaceVolumeFlux(std::function<real(index, int, real)> flux) { _faceVolumeFlux = std::move(flux); }
 
         /**
@@ -107,14 +111,34 @@ namespace DNDS::ACM
         /** @brief Validate active RANS entries and shift histories after a completed physical step. */
         void CommitPhysicalStep();
 
-        /** @brief Evaluate the MPI-global RMS active RANS spatial-minus-BDF physical defect. */
+        /**
+         *  @brief Evaluate the MPI-global RMS active RANS spatial-minus-BDF physical defect.
+         * @param flow Distributed [u,v,w,p] flow state used for advection, gradients, and closure coefficients.
+         * @param coefficients Nominal physical-step BDF coefficients; equation-specific positivity fallback uses
+         *     completed histories.
+         * @param physicalTimeStep Positive physical interval for BDF history terms.
+         * @param time Time passed to flow and turbulence boundary evaluation.
+         * @return Global RMS over the active primitive turbulence physical defect.
+         * @pre Physical history has been initialized before requesting BDF terms.
+         */
         real EvaluatePhysicalBDF2DefectNorm(
             TFlowDof &flow,
             const BDF2Coefficients &coefficients,
             real physicalTimeStep,
             real time);
 
-        /** @brief Relax active RANS variables in pseudo-time while holding physical histories fixed. */
+        /**
+         *  @brief Relax active RANS variables in pseudo-time while holding physical histories fixed.
+         * @param flow Distributed [u,v,w,p] flow state used for advection, gradients, and closure coefficients.
+         * @param coefficients Nominal physical-step BDF coefficients; equation-specific positivity fallback uses
+         *     completed histories.
+         * @param physicalTimeStep Positive physical interval for BDF history terms.
+         * @param time Time passed to flow and turbulence boundary evaluation.
+         * @param flowPseudoTimeStep Positive flow pseudo-time intervals in owned-cell order, scaled by
+         *     transportTimeScale for turbulence.
+         * @return Global RMS over the active primitive turbulence physical defect.
+         * @pre Physical history has been initialized before requesting BDF terms.
+         */
         real AdvancePhysicalBDF2(
             TFlowDof &flow,
             const ScalarField &flowPseudoTimeStep,
@@ -155,6 +179,10 @@ namespace DNDS::ACM
          * @brief Approximate -dR/dq by a local source Jacobian and positive transport spectra.
          * @details For constant density this is also the Jacobian of rho*R with
          * respect to rho*q. Closure gradients and face diffusivities are frozen.
+         * @param flow Current distributed flow state used to freeze transport and closure data.
+         * @param [out] diagonal One 2x2 negative-spatial-Jacobian approximation per owned cell; only the active
+         *     closure block is used.
+         * @param time Current time for boundary and coefficient preparation.
          */
         void EvaluateImplicitDiagonal(TFlowDof &flow,
                                       std::vector<Eigen::Matrix<real, 2, 2>> &diagonal,
@@ -182,13 +210,31 @@ namespace DNDS::ACM
         std::array<real, 2> _physicalEquationDefectNorms{};
         std::array<index, 2> _physicalBackwardEulerCounts{};
 
-        /** @brief Apply the active RANS BDF derivative and zero inactive residual entries. */
+        /**
+         *  @brief Apply the active RANS BDF derivative and zero inactive residual entries.
+         * @param [in,out] rhs Primitive turbulence spatial RHS updated by subtracting the physical BDF derivative.
+         * @param coefficients Nominal physical-step BDF coefficients; equation-specific positivity fallback uses
+         *     completed histories.
+         * @param physicalTimeStep Positive physical interval for BDF history terms.
+         * @pre Physical history has been initialized before requesting BDF terms.
+         */
         void ApplyPhysicalBDF2Defect(
             TTurbulenceDof &rhs,
             const BDF2Coefficients &coefficients,
             real physicalTimeStep) const;
 
-        /** @brief Shared SSPRK3 pseudo-time kernel for steady and physical BDF2 defects. */
+        /**
+         *  @brief Shared SSPRK3 pseudo-time kernel for steady and physical BDF2 defects.
+         * @param flow Distributed [u,v,w,p] flow state used for advection, gradients, and closure coefficients.
+         * @param coefficients Optional physical BDF coefficients; nullptr selects steady pseudo-time transport.
+         * @param physicalTimeStep Positive physical interval for BDF history terms; ignored when coefficients is
+         *     nullptr.
+         * @param time Time passed to flow and turbulence boundary evaluation.
+         * @param flowPseudoTimeStep Positive flow pseudo-time intervals in owned-cell order, scaled by
+         *     transportTimeScale for turbulence.
+         * @return Global RMS over the active primitive turbulence residual/physical defect after the update.
+         * @pre Physical history has been initialized before requesting BDF terms.
+         */
         real AdvanceImpl(
             TFlowDof &flow,
             const ScalarField &flowPseudoTimeStep,

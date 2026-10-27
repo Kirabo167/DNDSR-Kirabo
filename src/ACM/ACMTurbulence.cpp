@@ -483,7 +483,7 @@ namespace DNDS::ACM
         return flux;
     }
 
-    /** @copydoc TurbulenceSource */
+    // See ACMTurbulence.hpp for the function contract.
     TurbulenceState BoundedTurbulenceStageIncrement(
         const TurbulenceState &state,
         const TurbulenceState &residual,

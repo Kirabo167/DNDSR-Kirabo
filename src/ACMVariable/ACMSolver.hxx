@@ -8,6 +8,7 @@
 #pragma once
 
 #include "ACMSolver.hpp"
+#include "ACM/ACMLinear.hpp"
 
 #include "DNDS/Errors.hpp"
 #include "DNDS/OMP.hpp"
@@ -232,63 +233,32 @@ namespace DNDS::ACMVariable
         const typename TEvaluator::FaceJacobianField &faceJacobians,
         bool useLUSGS)
     {
-        _linearIncrement.setConstant(0.0);
-        if (useLUSGS)
-        {
-            _evaluator->SolveLUSGS(
-                _linearRhs,
-                diagonal,
-                faceJacobians,
-                _linearIncrement,
-                _configuration.timeMarchSettings.lusgsSweeps);
-            return;
-        }
-
-        Linear::GMRES_LeftPreconditioned<TDof> gmres(
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresSubspace),
+        const auto &settings = _configuration.timeMarchSettings;
+        const auto report = ACM::SolveImplicitLinearSystem(
+            _linearRhs, _linearIncrement, useLUSGS,
+            settings.lusgsSweeps, settings.gmresSubspace, settings.gmresRestarts,
+            settings.linearAbsoluteTolerance, settings.linearRelativeTolerance,
+            std::sqrt(static_cast<real>(_mesh->NumCellGlobal()) * Traits::nVarsFixed),
+            [&](TDof &input, TDof &output)
+            { _evaluator->ApplyImplicitLinearization(input, diagonal, faceJacobians, output); },
+            [&](TDof &input, TDof &output)
+            {
+                if (useLUSGS || settings.gmresPreconditioner == GMRESPreconditionerType::LUSGS)
+                    _evaluator->SolveLUSGS(input, diagonal, faceJacobians, output, useLUSGS ? 1 : settings.lusgsSweeps);
+                else
+                    _evaluator->ApplyBlockJacobi(input, diagonal, output);
+            },
             [this](TDof &field)
             {
                 _vfv->BuildUDof(field, Traits::nVarsFixed);
                 field.setConstant(0.0);
             });
-        gmres.solve(
-            [&](TDof &input, TDof &output)
-            {
-                _evaluator->ApplyImplicitLinearization(
-                    input,
-                    diagonal,
-                    faceJacobians,
-                    output);
-            },
-            [&](TDof &input, TDof &output)
-            {
-                if (_configuration.timeMarchSettings.gmresPreconditioner ==
-                    GMRESPreconditionerType::LUSGS)
-                    _evaluator->SolveLUSGS(
-                        input,
-                        diagonal,
-                        faceJacobians,
-                        output,
-                        _configuration.timeMarchSettings.lusgsSweeps);
-                else
-                    _evaluator->ApplyBlockJacobi(input, diagonal, output);
-            },
-            [](TDof &left, TDof &right)
-            { return left.dot(right); },
-            _linearRhs,
-            _linearIncrement,
-            // ACM counts restarts; shared GMRES takes the total cycle budget.
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts) + 1U,
-            [&](uint32_t restart, real residual, real initialResidual)
-            {
-                if (_mpi.rank == 0 && restart > 0)
-                    log() << "ACM GMRES restart=" << restart
-                          << " residual=" << residual
-                          << " initial=" << initialResidual << std::endl;
-                return residual <=
-                       _configuration.timeMarchSettings.gmresRelativeTolerance *
-                           std::max(initialResidual, verySmallReal);
-            });
+        if (_mpi.rank == 0)
+            log() << "ACMVariable linear solver=" << (useLUSGS ? "LUSGS" : "GMRES")
+                  << " iterations=" << report.iterations << " trueResidual=" << report.finalResidual
+                  << " initial=" << report.initialResidual << " target=" << report.tolerance
+                  << " relativeResidual=" << (report.initialResidual > 0 ? report.finalResidual / report.initialResidual : 0)
+                  << " converged=" << report.converged << std::endl;
     }
 
     template <ACMModel model>
@@ -333,11 +303,12 @@ namespace DNDS::ACMVariable
 
         report.initialDefectNorm = evaluateDefect();
         report.finalDefectNorm = report.initialDefectNorm;
+        const real target = _configuration.timeMarchSettings.ImplicitTarget(report.initialDefectNorm);
         for (int iteration = 0;
              iteration < _configuration.timeMarchSettings.maxImplicitIterations;
              iteration++)
         {
-            if (report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance)
+            if (report.finalDefectNorm <= target)
             {
                 report.converged = true;
                 break;
@@ -382,7 +353,7 @@ namespace DNDS::ACMVariable
             report.finalDefectNorm = evaluateDefect();
         }
         report.converged =
-            report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance;
+            report.finalDefectNorm <= target;
         return report;
     }
 
@@ -441,11 +412,12 @@ namespace DNDS::ACMVariable
 
         report.initialDefectNorm = evaluateDefect();
         report.finalDefectNorm = report.initialDefectNorm;
+        const real target = _configuration.timeMarchSettings.ImplicitTarget(report.initialDefectNorm);
         for (int iteration = 0;
              iteration < _configuration.timeMarchSettings.maxImplicitIterations;
              iteration++)
         {
-            if (report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance)
+            if (report.finalDefectNorm <= target)
             {
                 report.converged = true;
                 break;
@@ -484,7 +456,7 @@ namespace DNDS::ACMVariable
             report.finalDefectNorm = evaluateDefect();
         }
         report.converged =
-            report.finalDefectNorm <= _configuration.timeMarchSettings.implicitTolerance;
+            report.finalDefectNorm <= target;
         return report;
     }
 

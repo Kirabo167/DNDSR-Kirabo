@@ -1,4 +1,5 @@
 #include "NCFVSpatial.hpp"
+#include "NCFVPressureLimiter.hpp"
 
 #include "DNDS/Errors.hpp"
 
@@ -595,8 +596,143 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
+    real SpatialOperator<dimension>::LowOrderSpeed(
+        const State &left, const State &right, const SpatialVector &normal) const
+    {
+        const auto speed = [&](const State &state)
+        {
+            return std::abs(state.template segment<dimension>(1).dot(normal) / state(0)) +
+                   std::sqrt(_physics.gamma * Pressure(state) / state(0));
+        };
+        return std::max(speed(left), speed(right));
+    }
+
+    template <int dimension>
     typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::EvaluateOwnedEdgeFlux(index iEdge)
+    SpatialOperator<dimension>::LowOrderFlux(
+        const State &left, const State &right, const SpatialVector &normal, real measure) const
+    {
+        return .5 * measure * (PhysicalFlux(left, normal) + PhysicalFlux(right, normal) -
+                                LowOrderSpeed(left, right, normal) * (right - left));
+    }
+
+    template <int dimension>
+    void SpatialOperator<dimension>::PrepareFluxCorrectionBounds(const NodeStatePair &means)
+    {
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            const State self = means[iNode];
+            State minimum = self, maximum = self;
+            real pressureMinimum = Pressure(self);
+            const auto include = [&](const State &state)
+            {
+                DNDS_check_throw_info(IsPhysical(state), "NCFV LLF bar state must be physical");
+                minimum = minimum.cwiseMin(state);
+                maximum = maximum.cwiseMax(state);
+                pressureMinimum = std::min(pressureMinimum, Pressure(state));
+            };
+            for (const auto &incidence : _topology.Node2Edge(iNode))
+            {
+                const auto &surface = _geometry.EdgeSurface(incidence.edge);
+                const bool left = surface.nodes[0] == iNode;
+                const index neighbor = surface.nodes[left ? 1 : 0];
+                const SpatialVector normal = (left ? 1.0 : -1.0) *
+                                             surface.vectorMeasure.template head<dimension>() / surface.measure;
+                const State other = means[neighbor];
+                const real speed = LowOrderSpeed(self, other, normal);
+                include(other);
+                include(.5 * (self + other) -
+                        .5 / speed * (PhysicalFlux(other, normal) - PhysicalFlux(self, normal)));
+            }
+            for (const auto &piece : _geometry.NodeVolume(iNode).boundaryPieces)
+            {
+                const auto &boundary = _boundaries.Get(piece.zone);
+                if (boundary.mode == BoundaryMode::Periodic)
+                    continue;
+                const SpatialVector normal = piece.vectorMeasure.template head<dimension>() / piece.measure;
+                const State other = BoundaryExterior(self, normal, boundary);
+                const real speed = LowOrderSpeed(self, other, normal);
+                include(other);
+                include(.5 * (self + other) -
+                        .5 / speed * (PhysicalFlux(other, normal) - PhysicalFlux(self, normal)));
+            }
+            _fluxCorrectionBounds[iNode].template topRows<dimension + 2>().col(0) = minimum;
+            _fluxCorrectionBounds[iNode].template topRows<dimension + 2>().col(1) = maximum;
+            _fluxCorrectionBounds[iNode](dimension + 2, 0) = pressureMinimum;
+            _fluxCorrectionBounds[iNode](dimension + 2, 1) = pressureMinimum;
+        }
+        _fluxCorrectionBounds.trans.startPersistentPull();
+        _fluxCorrectionBounds.trans.waitPersistentPull();
+    }
+
+    template <int dimension>
+    typename SpatialOperator<dimension>::State
+    SpatialOperator<dimension>::LimitEdgeFluxCorrection(
+        index iEdge, const NodeStatePair &means, const State &highOrder)
+    {
+        const auto &surface = _geometry.EdgeSurface(iEdge);
+        const State left = means[surface.nodes[0]], right = means[surface.nodes[1]];
+        const SpatialVector normal = surface.vectorMeasure.template head<dimension>() / surface.measure;
+        const real speed = LowOrderSpeed(left, right, normal);
+        const real dissipation = speed * surface.measure;
+        const State lowOrder = LowOrderFlux(left, right, normal, surface.measure);
+        const State correction = highOrder - lowOrder;
+        const State bar = .5 * (left + right) -
+                          .5 / speed * (PhysicalFlux(right, normal) - PhysicalFlux(left, normal));
+        real factor = _reconstructionSettings.maximumFluxCorrection;
+        for (int side = 0; side < 2; side++)
+        {
+            const index node = surface.nodes[side];
+            const State increment = (side == 0 ? -1.0 : 1.0) * correction / dissipation;
+            Eigen::Matrix<real, dimension + 3, 2> bounds = _fluxCorrectionBounds[node];
+            if (_reconstructionSettings.fluxCorrectionPairBounds)
+            {
+                bounds.template topRows<dimension + 2>().col(0) = left.cwiseMin(right).cwiseMin(bar);
+                bounds.template topRows<dimension + 2>().col(1) = left.cwiseMax(right).cwiseMax(bar);
+                bounds(dimension + 2, 0) = std::min({Pressure(left), Pressure(right), Pressure(bar)});
+            }
+            for (int component = 0; component < dimension + 2; component++)
+            {
+                const real padding = 64 * std::numeric_limits<real>::epsilon() *
+                                     std::max({1.0, std::abs(bounds(component, 0)), std::abs(bounds(component, 1))});
+                if (increment(component) > 0)
+                    factor = std::min(factor, (bounds(component, 1) + padding - bar(component)) / increment(component));
+                else if (increment(component) < 0)
+                    factor = std::min(factor, (bounds(component, 0) - padding - bar(component)) / increment(component));
+            }
+            factor = std::clamp(factor, 0.0, _reconstructionSettings.maximumFluxCorrection);
+            // Pressure is concave along a conservative segment. Its lower
+            // superlevel set is convex; an upper pressure box is not.
+            const real pressureMinimum = bounds(dimension + 2, 0);
+            const real pressurePadding = 64 * std::numeric_limits<real>::epsilon() *
+                                         std::max(1.0, std::abs(pressureMinimum));
+            const auto admissible = [&](real theta)
+            {
+                const State candidate = bar + theta * increment;
+                return IsPhysical(candidate) && Pressure(candidate) >= pressureMinimum - pressurePadding;
+            };
+            if (!admissible(factor))
+            {
+                real lower = 0, upper = factor;
+                for (int iteration = 0; iteration < 48; iteration++)
+                {
+                    const real middle = .5 * (lower + upper);
+                    if (admissible(middle))
+                        lower = middle;
+                    else
+                        upper = middle;
+                }
+                factor = lower;
+            }
+        }
+        _edgeFluxCorrectionFactors[iEdge](0) = factor;
+        // A single owner-computed flux is shared by both incident volumes.
+        return lowOrder + factor * correction;
+    }
+
+    template <int dimension>
+    typename SpatialOperator<dimension>::State
+    SpatialOperator<dimension>::EvaluateOwnedEdgeFlux(index iEdge, const NodeStatePair &means)
     {
         const auto &surface = _geometry.EdgeSurface(iEdge);
         const index node0 = surface.nodes[0];
@@ -749,13 +885,19 @@ namespace DNDS::NCFV
                 _lastRhsTiming.edgeViscousFluxSeconds +=
                     MPI_Wtime() - phaseStart;
         }
+        if (_reconstructionSettings.limitFluxCorrection)
+            integral = LimitEdgeFluxCorrection(iEdge, means, integral);
         return integral;
     }
 
     template <int dimension>
-    real SpatialOperator<dimension>::EvaluateOwnedEdgeSpectralRadius(index iEdge) const
+    real SpatialOperator<dimension>::EvaluateOwnedEdgeSpectralRadius(index iEdge, const NodeStatePair &means) const
     {
         const auto &surface = _geometry.EdgeSurface(iEdge);
+        if (_reconstructionSettings.limitFluxCorrection)
+            return surface.measure * LowOrderSpeed(
+                       State(means[surface.nodes[0]]), State(means[surface.nodes[1]]),
+                       surface.vectorMeasure.template head<dimension>() / surface.measure);
         const State mean = PreservePhysical(
             0.5 * (State(_pointValues[surface.nodes[0]]) +
                    State(_pointValues[surface.nodes[1]])),
@@ -774,10 +916,23 @@ namespace DNDS::NCFV
 
     template <int dimension>
     typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::EvaluateOwnedBoundaryFlux(index iNode) const
+    SpatialOperator<dimension>::EvaluateOwnedBoundaryFlux(index iNode, const NodeStatePair &means) const
     {
         State total = State::Zero();
         const auto &controlVolume = _geometry.NodeVolume(iNode);
+        if (_reconstructionSettings.limitFluxCorrection)
+        {
+            const State inside = means[iNode];
+            for (const auto &piece : controlVolume.boundaryPieces)
+            {
+                const auto &boundary = _boundaries.Get(piece.zone);
+                if (boundary.mode == BoundaryMode::Periodic)
+                    continue;
+                const SpatialVector normal = piece.vectorMeasure.template head<dimension>() / piece.measure;
+                total += LowOrderFlux(inside, BoundaryExterior(inside, normal, boundary), normal, piece.measure);
+            }
+            return total;
+        }
         if (_mode == IntegrationMode::TraditionalQuadrature)
         {
             for (const auto &piece : controlVolume.boundaryPieces)
@@ -840,19 +995,21 @@ namespace DNDS::NCFV
 
     template <int dimension>
     real SpatialOperator<dimension>::EvaluateOwnedBoundarySpectralRadius(
-        index iNode) const
+        index iNode, const NodeStatePair &means) const
     {
         real total = 0;
         const auto &controlVolume = _geometry.NodeVolume(iNode);
-        const State state = _pointValues[iNode];
+        const State state = _reconstructionSettings.limitFluxCorrection ? State(means[iNode]) : State(_pointValues[iNode]);
         for (const auto &piece : controlVolume.boundaryPieces)
         {
-            if (_boundaries.Get(piece.zone).mode == BoundaryMode::Periodic)
+            const auto &boundary = _boundaries.Get(piece.zone);
+            if (boundary.mode == BoundaryMode::Periodic)
                 continue;
             const SpatialVector normal =
                 piece.vectorMeasure.template head<dimension>() / piece.measure;
-            total += SurfaceSpectralRadius(
-                state, normal, piece.measure, controlVolume.lengthScale);
+            total += _reconstructionSettings.limitFluxCorrection ?
+                         piece.measure * LowOrderSpeed(state, BoundaryExterior(state, normal, boundary), normal) :
+                         SurfaceSpectralRadius(state, normal, piece.measure, controlVolume.lengthScale);
         }
         return total;
     }
@@ -963,12 +1120,24 @@ namespace DNDS::NCFV
 
         AllocateEdgeField(_edgeFlux, "NCFV.edgeFlux", dimension + 2);
         AllocateEdgeField(_edgeSpectralRadius, "NCFV.edgeSpectralRadius", 1);
+        if (_reconstructionSettings.limitFluxCorrection)
+        {
+            AllocateNodeMatrix(_fluxCorrectionBounds, "NCFV.fluxCorrectionBounds", dimension + 3, 2);
+            AllocateEdgeField(_edgeFluxCorrectionFactors, "NCFV.edgeFluxCorrectionFactors", 1);
+        }
 
         _farField = PrimitiveToConservative(_physics.farFieldPrimitive);
         for (index iNode = 0; iNode < _limiterFactors.Size(); iNode++)
             _limiterFactors[iNode](0, 0) = 1.0;
         for (index iNode = 0; iNode < _localTimeSteps.Size(); iNode++)
             _localTimeSteps[iNode](0, 0) = _time.timeStep;
+        if (_reconstructionSettings.sharedGradientFaceSweep)
+        {
+            _sharedGradientFaceSweep =
+                std::make_unique<SharedGradientFaceSweep<dimension>>(
+                    _mpi, _mesh, _topology, _geometry, _nodeHalo);
+            _sharedGradientFaceSweep->Initialize();
+        }
     }
 
     template <int dimension>
@@ -1002,7 +1171,31 @@ namespace DNDS::NCFV
         _lastRhsTiming.pointRecoverySeconds += MPI_Wtime() - phaseStart;
         for (index iNode = 0; iNode < _limiterFactors.Size(); iNode++)
             _limiterFactors[iNode](0, 0) = 1.0;
+        if (_reconstructionSettings.sharedGradientFaceSweep)
+        {
+            phaseStart = MPI_Wtime();
+            _sharedGradientFaceSweep->Apply(
+                means, _stateGradients, _physics.gamma,
+                _reconstructionSettings.limitPressure);
+            _reconstruction.RecoverPointValues(
+                means, _stateGradients, _coefficients, _pointValues);
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                _pointValues[iNode] = PreservePhysical(
+                    State(_pointValues[iNode]), State(means[iNode]));
+            _pointValues.trans.startPersistentPull();
+            _pointValues.trans.waitPersistentPull();
+            _lastRhsTiming.limiterSeconds += MPI_Wtime() - phaseStart;
+            // Gradients now contain all interface factors. The subsequent
+            // chain-rule flux gradients use these final gradients and points;
+            // keep side factors at one to avoid limiting them a second time.
+            return;
+        }
         bool pointValuesSynchronized = false;
+        if (_reconstructionSettings.limitFluxCorrection && !_reconstructionSettings.enableLimiter)
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                // The high flux must exist before it can be limited. Retain
+                // only physical-state protection when Barth bounds are off.
+                _pointValues[iNode] = PreservePhysical(State(_pointValues[iNode]), State(means[iNode]));
         if (_reconstructionSettings.enableLimiter)
         {
             phaseStart = MPI_Wtime();
@@ -1013,9 +1206,10 @@ namespace DNDS::NCFV
                 // nonphysical point anchor. Limit that recovery toward the
                 // conservative mean before sharing anchors or evaluating fluxes.
                 // Physical point values and the evolved means remain unchanged.
-                for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
-                    _pointValues[iNode] = PreservePhysical(
-                        State(_pointValues[iNode]), State(means[iNode]));
+                if (!_reconstructionSettings.limitPointRecovery)
+                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                        _pointValues[iNode] = PreservePhysical(
+                            State(_pointValues[iNode]), State(means[iNode]));
                 // Pairwise bounds in thesis (3-97) use both endpoint point
                 // values, including a ghost endpoint on partition edges.
                 const double haloStart = MPI_Wtime();
@@ -1025,10 +1219,66 @@ namespace DNDS::NCFV
                     MPI_Wtime() - haloStart;
                 pointValuesSynchronized = true;
             }
-            const auto factors = _reconstruction.ComputeLimiterFactors(
+            auto factors = _reconstruction.ComputeLimiterFactors(
                 means, _pointValues, _stateGradients, _coefficients);
             if (_mode == IntegrationMode::EfficientDifferential)
             {
+                if (_reconstructionSettings.limitPointRecovery)
+                {
+                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                    {
+                        const State mean = means[iNode];
+                        const State rawPoint = _pointValues[iNode];
+                        real &factor = factors[static_cast<std::size_t>(iNode)];
+                        real pressureMinimum = Pressure(mean), pressureMaximum = pressureMinimum;
+                        if (_reconstructionSettings.limitPressure)
+                            for (const auto &incidence : _topology.Node2Edge(iNode))
+                            {
+                                const auto &surface = _geometry.EdgeSurface(incidence.edge);
+                                const index neighbor = surface.nodes[surface.nodes[0] == iNode ? 1 : 0];
+                                const real neighborPressure = Pressure(State(means[neighbor]));
+                                pressureMinimum = std::min(pressureMinimum, neighborPressure);
+                                pressureMaximum = std::max(pressureMaximum, neighborPressure);
+                            }
+                        const auto limitPhysical = [&](const State &candidate)
+                        {
+                            DNDS_check_throw_info(candidate.allFinite() && IsPhysical(mean),
+                                                  "NCFV mean-anchored limiter requires finite reconstruction and physical means");
+                            if (!IsPhysical(mean + factor * (candidate - mean)))
+                            {
+                                real lower = 0, upper = factor;
+                                for (int iteration = 0; iteration < 40; iteration++)
+                                {
+                                    const real middle = .5 * (lower + upper);
+                                    if (IsPhysical(mean + middle * (candidate - mean)))
+                                        lower = middle;
+                                    else
+                                        upper = middle;
+                                }
+                                factor = .95 * lower;
+                            }
+                            if (_reconstructionSettings.limitPressure)
+                                factor = LimitIdealGasPressureFactor<dimension>(
+                                    mean, candidate, _physics.gamma, pressureMinimum, pressureMaximum, factor);
+                        };
+                        limitPhysical(rawPoint);
+                        for (const auto &incidence : _topology.Node2Edge(iNode))
+                        {
+                            const auto &surface = _geometry.EdgeSurface(incidence.edge);
+                            const int side = surface.nodes[0] == iNode ? 0 : 1;
+                            State correction = State::Zero();
+                            for (const auto &entry : surface.efficientStencil)
+                                correction += _stateGradients[entry.node].transpose() *
+                                              entry.stateGradientWeights[side].template head<dimension>();
+                            limitPhysical(rawPoint + correction / surface.measure);
+                        }
+                        // One factor scales the entire mean-to-point/surface
+                        // increment. Shared source gradients remain unscaled.
+                        _pointValues[iNode] = mean + factor * (rawPoint - mean);
+                    }
+                    _pointValues.trans.startPersistentPull();
+                    _pointValues.trans.waitPersistentPull();
+                }
                 for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
                     _limiterFactors[iNode](0, 0) =
                         factors[static_cast<std::size_t>(iNode)];
@@ -1056,7 +1306,7 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
-    void SpatialOperator<dimension>::UpdateLocalTimeSteps()
+    void SpatialOperator<dimension>::UpdateLocalTimeSteps(const NodeStatePair &means)
     {
         std::vector<real> candidate(static_cast<std::size_t>(_mesh->NumNode()),
                                     _time.timeStep);
@@ -1064,7 +1314,7 @@ namespace DNDS::NCFV
         {
             if (!_time.useCFLTimeStep)
                 continue;
-            real spectralRadius = EvaluateOwnedBoundarySpectralRadius(iNode);
+            real spectralRadius = EvaluateOwnedBoundarySpectralRadius(iNode, means);
             for (const auto &incidence : _topology.Node2Edge(iNode))
                 spectralRadius += _edgeSpectralRadius[incidence.edge](0, 0);
             const real volume = _geometry.NodeVolume(iNode).moments.measure;
@@ -1179,13 +1429,15 @@ namespace DNDS::NCFV
             _lastRhsTiming.physicalFluxGradientComputeSeconds =
                 MPI_Wtime() - phaseStart;
         }
+        if (_reconstructionSettings.limitFluxCorrection)
+            PrepareFluxCorrectionBounds(means);
 
         phaseStart = MPI_Wtime();
         for (index iEdge = 0; iEdge < _topology.NumEdge(); iEdge++)
         {
-            _edgeFlux[iEdge] = EvaluateOwnedEdgeFlux(iEdge);
+            _edgeFlux[iEdge] = EvaluateOwnedEdgeFlux(iEdge, means);
             _edgeSpectralRadius[iEdge](0, 0) =
-                EvaluateOwnedEdgeSpectralRadius(iEdge);
+                EvaluateOwnedEdgeSpectralRadius(iEdge, means);
         }
         _lastRhsTiming.edgeFluxSeconds = MPI_Wtime() - phaseStart;
 
@@ -1199,14 +1451,32 @@ namespace DNDS::NCFV
         if (updateTimeSteps)
         {
             phaseStart = MPI_Wtime();
-            UpdateLocalTimeSteps();
+            UpdateLocalTimeSteps(means);
             _lastRhsTiming.localTimeStepSeconds = MPI_Wtime() - phaseStart;
+        }
+
+        if (_reconstructionSettings.limitFluxCorrection)
+        {
+            // SSPRK stages reuse the first stage's step. Check the actual
+            // convex-combination condition again with every stage's speeds.
+            real localMaximum = 0, globalMaximum = 0;
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            {
+                real spectralRadius = EvaluateOwnedBoundarySpectralRadius(iNode, means);
+                for (const auto &incidence : _topology.Node2Edge(iNode))
+                    spectralRadius += _edgeSpectralRadius[incidence.edge](0);
+                localMaximum = std::max(localMaximum, _localTimeSteps[iNode](0) * spectralRadius /
+                                                         _geometry.NodeVolume(iNode).moments.measure);
+            }
+            MPI_Allreduce(&localMaximum, &globalMaximum, 1, DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
+            DNDS_check_throw_info(globalMaximum <= 1 + 1e-12,
+                                  "NCFV flux correction stage violates the LLF convex CFL condition; reduce time.cfl or minimumTimeStep");
         }
 
         phaseStart = MPI_Wtime();
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
-            State residual = EvaluateOwnedBoundaryFlux(iNode);
+            State residual = EvaluateOwnedBoundaryFlux(iNode, means);
             for (const auto &incidence : _topology.Node2Edge(iNode))
                 residual += incidence.outwardSign * State(_edgeFlux[incidence.edge]);
             const real volume = _geometry.NodeVolume(iNode).moments.measure;

@@ -170,7 +170,8 @@
     },
     "timeMarchSettings": {
         "gmresPreconditioner": "LUSGS",
-        "gmresRelativeTolerance": 1e-06,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
         "gmresRestarts": 3,
         "gmresSubspace": 10,
         "lusgsSweeps": 2,
@@ -189,7 +190,7 @@
         "nSteps": 0,
         "pseudoTimeStep": 0.01,
         "maxImplicitIterations": 20,
-        "implicitTolerance": 1e-10,
+        "implicitTolerance": 1e-8,
         "implicitRelaxation": 1.0
     },
     "leftState": [1.0, 0.0, 0.0, 0.0],

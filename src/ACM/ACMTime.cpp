@@ -158,8 +158,9 @@ namespace DNDS::ACM
             "ACM BDF grouped relative tolerances must be finite and in [0,1)");
         const bool physicalBDF = integrator == TimeIntegratorType::BDF2DualTimeLUSGS ||
                                  integrator == TimeIntegratorType::BDF2DualTimeGMRES;
-        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
-                              "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
+        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative" ||
+                                  dualTimeConvergenceCriterion == "AbsoluteOrRelative" || dualTimeConvergenceCriterion == "RelativeUpdate",
+                              "ACM dualTimeConvergenceCriterion must be Absolute, Relative, AbsoluteOrRelative, or RelativeUpdate");
         DNDS_check_throw_info(physicalBDF || dualTimeConvergenceCriterion == "Absolute",
                               "ACM dual-time convergence selection requires a BDF2 dual-time integrator");
         DNDS_check_throw_info(physicalBDF || (dualTimeFlowRelativeTolerance == 0 && dualTimeTurbulenceRelativeTolerance == 0),
@@ -200,17 +201,34 @@ namespace DNDS::ACM
         DNDS_check_throw_info(gmresSubspace >= 2, "ACM gmresSubspace must be at least two");
         DNDS_check_throw_info(gmresRestarts >= 0, "ACM gmresRestarts must be non-negative");
         DNDS_check_throw_info(
-            std::isfinite(gmresRelativeTolerance) && gmresRelativeTolerance >= 0,
-            "ACM gmresRelativeTolerance must be finite and non-negative");
+            std::isfinite(linearRelativeTolerance) && linearRelativeTolerance >= 0 && linearRelativeTolerance < 1 &&
+                std::isfinite(linearAbsoluteTolerance) && linearAbsoluteTolerance >= 0 &&
+                (linearAbsoluteTolerance > 0 || linearRelativeTolerance > 0),
+            "ACM linear tolerances must be finite, non-negative, with rtol < 1 and at least one positive tolerance");
     }
 
     void TimeMarchSettings::ValidateDualTimeConvergence(int activeEquations) const
     {
         DNDS_check_throw_info(activeEquations >= 4 && activeEquations <= 6,
                               "ACM dual-time convergence requires four to six active equations");
-        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
-                              "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
-        if (dualTimeConvergenceCriterion == "Relative")
+        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative" ||
+                                  dualTimeConvergenceCriterion == "AbsoluteOrRelative" || dualTimeConvergenceCriterion == "RelativeUpdate",
+                              "ACM dualTimeConvergenceCriterion must be Absolute, Relative, AbsoluteOrRelative, or RelativeUpdate");
+        DNDS_check_throw_info(std::isfinite(dualTimeUpdateRelativeTolerance) &&
+                                  dualTimeUpdateRelativeTolerance >= 0 && dualTimeUpdateRelativeTolerance < 1 &&
+                                  dualTimeUpdateMinimumIterations >= 0,
+                              "ACM update tolerance must be finite and in [0,1), with a non-negative minimum iteration count");
+        if (dualTimeConvergenceCriterion == "RelativeUpdate")
+        {
+            DNDS_check_throw_info(activeEquations == 4,
+                                  "ACM RelativeUpdate currently supports laminar flow only");
+            DNDS_check_throw_info(dualTimeUpdateMinimumIterations <= maxImplicitIterations,
+                                  "ACM update minimum iterations cannot exceed the correction budget");
+            DNDS_check_throw_info(dualTimeUpdateRelativeTolerance > 0 || !dualTimeRequireConvergence,
+                                  "ACM zero update tolerance requires diagnostic budget-limited marching");
+        }
+        if (dualTimeConvergenceCriterion == "Relative" ||
+            (dualTimeConvergenceCriterion == "AbsoluteOrRelative" && implicitTolerance == 0))
             for (int equation = 0; equation < activeEquations; equation++)
             {
                 const real groupTolerance = equation < 4 ? dualTimeFlowRelativeTolerance : dualTimeTurbulenceRelativeTolerance;
@@ -225,9 +243,15 @@ namespace DNDS::ACM
         DNDS_check_throw_info(std::isfinite(initialDefect) && initialDefect >= 0,
                               "ACM initial physical group defect must be finite and non-negative");
         const real relativeTolerance = turbulence ? dualTimeTurbulenceRelativeTolerance : dualTimeFlowRelativeTolerance;
-        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
-                              "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
-        return dualTimeConvergenceCriterion == "Absolute" ? implicitTolerance : relativeTolerance * initialDefect;
+        DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative" ||
+                                  dualTimeConvergenceCriterion == "AbsoluteOrRelative" || dualTimeConvergenceCriterion == "RelativeUpdate",
+                              "ACM dualTimeConvergenceCriterion must be Absolute, Relative, AbsoluteOrRelative, or RelativeUpdate");
+        const real relativeTarget = relativeTolerance * initialDefect;
+        if (dualTimeConvergenceCriterion == "Absolute")
+            return implicitTolerance;
+        if (dualTimeConvergenceCriterion == "Relative")
+            return relativeTarget;
+        return std::max(implicitTolerance, relativeTarget);
     }
 
     std::array<real, 6> TimeMarchSettings::DualTimeTargets(const std::array<real, 6> &initialDefects) const
@@ -237,11 +261,14 @@ namespace DNDS::ACM
         {
             DNDS_check_throw_info(std::isfinite(initialDefects[equation]) && initialDefects[equation] >= 0,
                                   "ACM dual-time initial equation defect must be finite and non-negative");
-            DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative",
-                                  "ACM dualTimeConvergenceCriterion must be Absolute or Relative");
-            targets[equation] = dualTimeConvergenceCriterion == "Absolute"
-                                    ? implicitTolerance * dualTimeResidualScales[equation]
-                                    : dualTimeRelativeTolerances[equation] * initialDefects[equation];
+            DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative" ||
+                                      dualTimeConvergenceCriterion == "AbsoluteOrRelative" || dualTimeConvergenceCriterion == "RelativeUpdate",
+                                  "ACM dualTimeConvergenceCriterion must be Absolute, Relative, AbsoluteOrRelative, or RelativeUpdate");
+            const real absoluteTarget = implicitTolerance * dualTimeResidualScales[equation];
+            const real relativeTarget = dualTimeRelativeTolerances[equation] * initialDefects[equation];
+            targets[equation] = dualTimeConvergenceCriterion == "Absolute" ? absoluteTarget
+                                : dualTimeConvergenceCriterion == "Relative" ? relativeTarget
+                                                                           : std::max(absoluteTarget, relativeTarget);
             DNDS_check_throw_info(std::isfinite(targets[equation]), "ACM dual-time equation target overflowed");
         }
         return targets;
@@ -276,6 +303,11 @@ namespace DNDS::ACM
     bool TimeMarchSettings::DualTimeConverged(const TimeStepReport &report, int activeEquations) const
     {
         ValidateDualTimeConvergence(activeEquations);
+        if (dualTimeConvergenceCriterion == "RelativeUpdate")
+            return report.iterations >= dualTimeUpdateMinimumIterations && dualTimeUpdateRelativeTolerance > 0 &&
+                   std::isfinite(report.appliedUpdateNorm) && report.appliedUpdateNorm >= 0 &&
+                   std::isfinite(report.updatedStateNorm) && report.updatedStateNorm >= 0 &&
+                   report.RelativeUpdateNorm() < dualTimeUpdateRelativeTolerance;
         const auto targets = DualTimeTargets(report.initialEquationDefectNorms);
         bool flowConverged = true;
         bool turbulenceConverged = true;
@@ -301,6 +333,14 @@ namespace DNDS::ACM
             report.turbulenceDefectNorm > DualTimeGroupTarget(report.initialTurbulenceDefectNorm, true))
             turbulenceConverged = false;
         return flowConverged && turbulenceConverged;
+    }
+
+    bool TimeMarchSettings::DualTimeResidualConverged(const TimeStepReport &report, int activeEquations) const
+    {
+        auto residualSettings = *this;
+        if (residualSettings.dualTimeConvergenceCriterion == "RelativeUpdate")
+            residualSettings.dualTimeConvergenceCriterion = "AbsoluteOrRelative";
+        return residualSettings.DualTimeConverged(report, activeEquations);
     }
 
     real TimeMarchSettings::SteadyImplicitTarget(real initialSpatialResidual) const

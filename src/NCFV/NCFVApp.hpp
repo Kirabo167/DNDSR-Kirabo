@@ -10,6 +10,17 @@
 
 namespace DNDS::NCFV
 {
+    /**
+     * @brief Run the dimension-specific NCFV command-line application with MPI communicator setup and error
+     *     handling.
+     * @param argc Number of command-line arguments, including the executable name.
+     * @param argv Argument strings: case path or schema/config-check mode, followed by optional JSON-pointer/value
+     *     overrides.
+     * @return Zero after a successful run or configuration/schema request, or one after a caught top-level
+     *     exception.
+     * @tparam dimension Spatial dimension compiled into this executable, either 2 or 3.
+     * @pre MPI has been initialized by the application entry point.
+     */
     template <int dimension>
     int RunConsoleApp(int argc, char *argv[])
     {

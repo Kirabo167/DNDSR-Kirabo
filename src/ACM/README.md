@@ -189,9 +189,21 @@ existing case file):
   "nSteps": 4000,
   "physicalTimeStep": 0.01,
   "maxImplicitIterations": 20,
-  "implicitTolerance": 1e-10
+  "implicitTolerance": 1e-8,
+  "dualTimeConvergenceCriterion": "AbsoluteOrRelative",
+  "dualTimeFlowRelativeTolerance": 1e-4,
+  "linearAbsoluteTolerance": 1e-10,
+  "linearRelativeTolerance": 1e-6
 }
 ```
+
+Laminar BDF2 also accepts `dualTimeConvergenceCriterion="RelativeUpdate"`,
+`dualTimeUpdateRelativeTolerance=1e-5`, and `dualTimeUpdateMinimumIterations=2`.
+It tests the global owned-cell L2 norm of the applied damped update divided by the
+updated `[u,v,w,p]` state norm. A zero tolerance disables update-based early exit
+and requires diagnostic budget-limited advancement. Inner and physical-step logs
+keep the true BDF defect and a separate `residualConverged` flag; a small update
+does not certify that defect. Existing configurations retain their previous criterion.
 
 See `docs/solver-guide/acm_bdf2_dual_time_zh.md` for the governing defect, implicit matrix, source
 mapping, and usage details.
@@ -254,13 +266,39 @@ Relevant selections are:
   "lusgsSweeps": 2,
   "gmresSubspace": 10,
   "gmresRestarts": 3,
-  "gmresRelativeTolerance": 1e-6,
+  "linearRelativeTolerance": 1e-6,
+  "linearAbsoluteTolerance": 1e-10,
   "gmresPreconditioner": "LUSGS"
 }
 ```
 
 The source-level comparison and implemented integration route for WBAP/CWBAP and LU-SGS/GMRES
 is documented in `docs/dev/acm_euler_reuse_comparison.md`.
+
+## Absolute-or-relative residual convergence
+
+`AbsoluteOrRelative` accepts a physical defect when
+`R <= max(implicitTolerance, relativeTolerance * R_initial)`. The initial reference
+is reset at each physical step. Flow and active RANS groups must each pass one
+of their thresholds; one group's success never bypasses another group. Setting
+the grouped relative coefficient to zero selects the existing scaled per-equation
+controls. `Absolute` and `Relative` remain available for controlled comparisons.
+The supplied cases use nonlinear absolute RMS `1e-8` and relative reduction `1e-4`.
+
+GMRES and standalone LU-SGS check the unpreconditioned true linear RMS
+`||b-A*delta||_2/sqrt(N*nVars)` before nonlinear damping. Their OR target is
+`max(linearAbsoluteTolerance, linearRelativeTolerance * initialLinearRMS)`, with
+case values `1e-10` and `1e-6`. GMRES checks at cycle boundaries. Standalone
+LU-SGS checks after each sweep and uses `lusgsSweeps` as its maximum budget;
+GMRES preconditioning still applies that fixed sweep count. The linear log
+reports `converged=0` if its budget is spent without meeting either tolerance.
+An inexact correction may still be used by the outer nonlinear iteration;
+physical history acceptance remains controlled by `dualTimeRequireConvergence`.
+
+The legacy JSON key `gmresRelativeTolerance` and its CLI override are translated
+to `linearRelativeTolerance` on input. Conflicting old/new values are rejected.
+Threshold rationale and source links are in
+[`acm_residual_tolerances.txt`](../../docs/solver-guide/acm_residual_tolerances.txt).
 
 ## Converged reconstruction and steady pseudo-time efficiency
 

@@ -88,7 +88,7 @@ D_rhoq(U*) = rho0 * R_q(U*, q*, t[n+1])
 流场与闭合的交叉导数冻结，湍流空间非对角Jacobian尚未建立；这是分块近似。
 各守恒输运分量独立按rho0乘原始上下限约束增量，k触底不会把omega的修正一起置零。
 随后用完整新状态重新求流场和湍流缺陷。按 `dualTimeConvergenceCriterion`
-选择绝对或相对收敛方式，流场与活跃湍流方程均满足所选方式才结束内迭代。
+选择Absolute、Relative或AbsoluteOrRelative。当前算例采用OR方式：每个活跃组各自满足绝对或相对条件即可；流场与湍流组仍需分别达标。
 历史 `q[n]`、`q[n-1]` 在内迭代中保持不变，
 物理步结束后才移动。
 
@@ -113,7 +113,11 @@ BDF2 通过 `timeMarchSettings` 选择，可设置：
   "nSteps": 4000,
   "physicalTimeStep": 0.01,
   "maxImplicitIterations": 20,
-  "implicitTolerance": 1e-10
+  "implicitTolerance": 1e-8,
+  "dualTimeConvergenceCriterion": "AbsoluteOrRelative",
+  "dualTimeFlowRelativeTolerance": 1e-4,
+  "linearAbsoluteTolerance": 1e-10,
+  "linearRelativeTolerance": 1e-6
 }
 ```
 
@@ -143,19 +147,21 @@ BDF2 通过 `timeMarchSettings` 选择，可设置：
 | --- | --- |
 | `Absolute` | 绝对容差；逐方程模式为 `implicitTolerance * dualTimeResidualScales[i]` |
 | `Relative` | 本物理步初始残差乘相对阈值；逐方程模式为 `initialRMS[i] * dualTimeRelativeTolerances[i]` |
+| `AbsoluteOrRelative` | 以上两个目标的较大值，即绝对或相对条件满足其一即可 |
 
-缺少该字段的旧配置默认使用 `Absolute`。相对容差必须在 `Relative` 模式下显式启用，
-只判断所选方式，不对绝对、相对条件求“任一满足”。在逐方程模式下所有活跃方程都必须通过。
+缺少该字段的旧配置默认使用`Absolute`。`Relative`保留为不使用绝对兜底的严格相对对照；
+`AbsoluteOrRelative`采用`max(atol, rtol*本步初值)`，初值为零时仍保留绝对阈值。
+在逐方程模式下，每个活跃方程分别通过自己的OR条件；某个方程成功不能绕过其他方程。
 这些判据只控制内迭代；应另做加严目标和减半物理步长的精度验证。
 
-如果希望为流场和 SST 分别设置三个数量级的下降目标，在 `timeMarchSettings` 中设置：
+当前为流场和SST分别设置四个数量级的相对目标和`1e-8`绝对阈值：
 
 ```json
 {
   "implicitTolerance": 1e-8,
-  "dualTimeConvergenceCriterion": "Relative",
-  "dualTimeFlowRelativeTolerance": 1e-3,
-  "dualTimeTurbulenceRelativeTolerance": 1e-3,
+  "dualTimeConvergenceCriterion": "AbsoluteOrRelative",
+  "dualTimeFlowRelativeTolerance": 1e-4,
+  "dualTimeTurbulenceRelativeTolerance": 1e-4,
   "steadyRelativeTolerance": 0.0
 }
 ```
@@ -167,18 +173,16 @@ BDF2 通过 `timeMarchSettings` 选择，可设置：
 分别记录 `R_flow,0` 和 `R_turb,0`；两者在本步内固定，下一物理步重新记录。
 
 ```text
-Relative:
-  R_flow <= dualTimeFlowRelativeTolerance * R_flow,0
-  R_turb <= dualTimeTurbulenceRelativeTolerance * R_turb,0
-Absolute (when group RMS controls are configured):
-  R_flow <= implicitTolerance
-  R_turb <= implicitTolerance
+AbsoluteOrRelative:
+  R_flow <= max(implicitTolerance, dualTimeFlowRelativeTolerance * R_flow,0)
+  R_turb <= max(implicitTolerance, dualTimeTurbulenceRelativeTolerance * R_turb,0)
 ```
 
-上述示例及圆柱配置选择 `Relative`。流场与 SST 两组都必须达到各自相对目标。
-`implicitTolerance=1e-8` 仍保留在 JSON 中，切换为 `Absolute` 时使用；它不会在
-`Relative` 模式下提前触发收敛。`1e-3` 表示相对本物理步初值下降三个数量级，不能用
-`implicitTolerance=1e-3` 代替。初始 RMS 为零时相对目标也为零，只有当前残差为零才通过。
+上述示例及当前圆柱配置选择`AbsoluteOrRelative`。流场和SST分别达到任一阈值即可。
+`1e-4`是相对本物理步初值的四数量级下降，不可用`implicitTolerance=1e-4`替代。
+线性修正使用`linearAbsoluteTolerance=1e-10`和`linearRelativeTolerance=1e-6`，
+检查乘非线性松弛系数之前的真实`b-Aδ` RMS；不以预条件范数代替真实绝对残差。
+`lusgsSweeps`是独立LU-SGS的最大扫掠数，在GMRES预条件中仍是固定扫掠数。
 选择 `Relative` 时，每个活跃方程或其 RMS 组都必须配置正的相对阈值；缺少阈值会报错。
 层流不检查湍流组，SA 不检查第二个湍流存储分量。任一活跃残差非有限或负值都拒绝收敛。
 日志用 `convergenceCriterion=Absolute/Relative` 显示所选方式。
@@ -205,6 +209,16 @@ BDF2 的固定次数变分重构（`variationalTolerance=0`）现在每次 RHS �
 两种 BDF2 枚举值。
 
 ## 5. 输出和日志
+
+层流 BDF2 可选择 `dualTimeConvergenceCriterion="RelativeUpdate"`，以实际施加的松弛后更新量
+`||ΔU||₂/||U_new||₂ < dualTimeUpdateRelativeTolerance` 提前退出。范数对所有 MPI 分区的自有单元
+及 `[u,v,w,p]` 求和，不含幽灵单元；默认阈值 `1e-5`，最少修正次数由
+`dualTimeUpdateMinimumIterations` 设置，默认2。零状态且零更新的比值定义为0，非零更新除以
+零状态定义为无穷。阈值为0禁用更新量提前退出，此时需显式允许预算耗尽后推进。
+每轮新增 `ACM dual-time inner=...`，同时报告 `updateRatio`、真实 BDF 缺陷 `residual` 和
+相对缺陷 `residualRatio`。`updateConverged` 与 `residualConverged` 分别标记两种检查；物理步的
+`converged` 对应所选停止判据。更新量模式下的残差诊断仍使用原绝对或相对阈值，更新量达标
+不表示方程残差达标。现有 JSON 缺省字段在内存补齐，旧判据不变；该新模式目前限于层流。
 
 BDF2 模式的日志使用 `ACM physical step`，并显示物理时间、当前 BDF 阶数、初末缺陷、
 最小伪时间步和内迭代次数。第一个物理步显示 `BDF1`，第二步起显示 `BDF2`。流场输出

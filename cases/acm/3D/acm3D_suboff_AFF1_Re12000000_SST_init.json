@@ -30,11 +30,13 @@
         "maximumPseudoTimeStep": 0.005,
         "maxImplicitIterations": 5,
         "implicitTolerance": 1e-8,
+        "steadyRelativeTolerance": 1e-4,
         "implicitRelaxation": 0.7,
         "lusgsSweeps": 2,
         "gmresSubspace": 20,
         "gmresRestarts": 3,
-        "gmresRelativeTolerance": 1e-4,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
         "gmresPreconditioner": "LUSGS"
     },
     "turbulenceSettings": {

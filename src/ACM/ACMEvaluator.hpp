@@ -54,7 +54,17 @@ namespace DNDS::ACM
             real equationDefect = 0;
             bool converged = false; ///< True only after checking the VR equation defect.
         };
+        /**
+         * @brief Return read-only iteration count, checked equation defect, and convergence flag from the latest
+         *     reconstruction.
+         * @return Read-only iteration count, checked equation defect, and convergence flag from the latest
+         *     reconstruction.
+         */
         const ReconstructionReport &GetReconstructionReport() const { return _reconstructionReport; }
+        /**
+         * @brief Return cumulative number of reconstruction sweeps performed by this evaluator.
+         * @return Cumulative number of reconstruction sweeps performed by this evaluator.
+         */
         std::uint64_t GetTotalReconstructionSweeps() const { return _totalReconstructionSweeps; }
         using TurbulencePrepareFunction =
             std::function<void(TDof &, real)>; ///< Refresh segregated turbulence data for a flow state.
@@ -114,6 +124,7 @@ namespace DNDS::ACM
         /**
          * @brief Reconstruct the current distributed cell means.
          * @param u Cell means; owned values are pulled to ghost cells before reconstruction.
+         * @param time Time passed to boundary reconstruction and the optional turbulence preparation callback.
          */
         void Reconstruct(TDof &u, real time = 0);
 
@@ -125,7 +136,15 @@ namespace DNDS::ACM
          */
         void EvaluateRHS(TDof &rhs, TDof &u, real time = 0);
 
-        /** @brief Continuity flux from the same reconstructed face states as EvaluateRHS. */
+        /**
+         *  @brief Continuity flux from the same reconstructed face states as EvaluateRHS.
+         * @param u Distributed cell means corresponding to the currently prepared reconstruction coefficients.
+         * @param face Process-local face index, including boundary faces.
+         * @param point Zero-based quadrature-point index on the face.
+         * @param time Time used to construct any exterior boundary state.
+         * @return Oriented continuity flux per unit area, shared with turbulence advection.
+         * @pre Reconstruction and any coupled viscosity data must correspond to u.
+         */
         real FaceVolumeFlux(const TDof &u, index face, int point, real time = 0) const;
 
         /**
@@ -265,7 +284,11 @@ namespace DNDS::ACM
          */
         TBoundaryFunction GetBoundaryFunction(real time) const;
 
-        /** @brief Build the finite-increment boundary response used by reconstruction GMRES. */
+        /**
+         *  @brief Build the finite-increment boundary response used by reconstruction GMRES.
+         * @param time Boundary-evaluation time captured by the returned response callback.
+         * @return Callback that computes the boundary-state response to a finite interior-state increment.
+         */
         TBoundaryDiffFunction GetBoundaryDiffFunction(real time) const;
 
         /**

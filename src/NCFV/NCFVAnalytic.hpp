@@ -6,8 +6,18 @@
 
 namespace DNDS::NCFV
 {
-    /** Thesis (3-71), (3-72): exact Euler vortex and its conservative gradient.
+    /**
+     * @brief Thesis (3-71), (3-72): exact Euler vortex and its conservative gradient.
      * The primitive background is nondimensional, rho=p=T=1, w=0.
+     * @param configuration Vortex strength/center, periodic lengths, gamma, and nondimensional background
+     *     primitive state.
+     * @param point Physical evaluation coordinate; x/y offsets are mapped to the nearest periodic image.
+     * @param time Physical time used to advect the vortex center with the background velocity.
+     * @return Pair (state, gradient), with dimension+2 conservative entries and a dimension by dimension+2
+     *     derivative matrix.
+     * @tparam dimension Spatial dimension, 2 or 3; the 3-D solution is uniform along z.
+     * @pre The analytic background has rho=p=T=1 and zero spanwise velocity.
+     * @throws std::runtime_error If the vortex produces nonpositive temperature.
      */
     template <int dimension>
     auto IsentropicVortex(const Configuration &configuration,

@@ -28,10 +28,10 @@
 //   Unsteady BDF2 dual-time LU-SGS marching. The first physical step uses backward Euler,
 //   and subsequent steps use BDF2. With dt=0.01 and 10000 steps, t*=100.
 //   GMRES is disabled for both flow corrections and variational reconstruction.
-//   Relative mode requires both flow and SST defects to reach their respective relative targets.
-//   Each target is 1e-3 times that group's fixed physical-step initial RMS.
-//   Absolute mode instead uses the retained implicitTolerance=1e-8.
-//   Check converged=1, convergenceCriterion=Relative, and both residual diagnostics at every step.
+//   Each active flow/SST group passes when its absolute RMS is <=1e-8 OR its ratio is <=1e-4.
+//   The reference is fixed independently for each group at the start of each physical step.
+//   Linear solves use true residual RMS <= max(1e-10, 1e-6 * initial linear RMS).
+//   Check converged=1, convergenceCriterion=AbsoluteOrRelative, and both group diagnostics.
 //   The inner-iteration cap alone does not guarantee convergence.
 //
 // Intended launch from build/ with 32 MPI ranks:
@@ -77,11 +77,11 @@
         "maximumPseudoTimeStep": 0.005,
         "maxImplicitIterations": 100,
         "implicitTolerance": 1e-8,
-        // Explicitly choose Absolute (implicitTolerance) or Relative (per-step initial RMS ratios).
-        "dualTimeConvergenceCriterion": "Relative",
-        // Separate physical-step flow and SST RMS references, each with its own three-order target.
-        "dualTimeFlowRelativeTolerance": 1e-3,
-        "dualTimeTurbulenceRelativeTolerance": 1e-3,
+        // Either the absolute floor or this physical step's relative target is sufficient per group.
+        "dualTimeConvergenceCriterion": "AbsoluteOrRelative",
+        // Separate flow and SST RMS references, each with a four-order relative target.
+        "dualTimeFlowRelativeTolerance": 1e-4,
+        "dualTimeTurbulenceRelativeTolerance": 1e-4,
         // Steady-only controls are inactive during BDF2 physical-time marching.
         "steadyRelativeTolerance": 0.0,
         "steadyAdaptiveCFL": false,
@@ -91,10 +91,11 @@
         "steadyCFLReduction": 0.5,
         "implicitRelaxation": 0.7,
         "lusgsSweeps": 2,
-        // Retained for the complete shared schema; inactive with BDF2DualTimeLUSGS.
+        // GMRES dimensions are inactive with LU-SGS; true-residual tolerances below apply to both solvers.
         "gmresSubspace": 20,
         "gmresRestarts": 3,
-        "gmresRelativeTolerance": 1e-4,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
         "gmresPreconditioner": "LUSGS"
     },
 

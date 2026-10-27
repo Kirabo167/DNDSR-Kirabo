@@ -197,9 +197,16 @@
                 },
                 "implicitTolerance": {
                     "type": "number",
-                    "default": 1e-10,
+                    "default": 1e-08,
                     "description": "Implicit global RMS steady or physical defect tolerance",
                     "minimum": 0.0
+                },
+                "implicitRelativeTolerance": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Implicit nonlinear RMS target relative to this solve's initial defect; OR with implicitTolerance",
+                    "minimum": 0.0,
+                    "maximum": 1.0
                 },
                 "implicitRelaxation": {
                     "type": "number",
@@ -211,7 +218,7 @@
                 "lusgsSweeps": {
                     "type": "integer",
                     "default": 2,
-                    "description": "ACM fixed LU-SGS residual-correction applications",
+                    "description": "Maximum standalone LU-SGS sweeps; fixed sweeps for GMRES preconditioning",
                     "minimum": 1.0
                 },
                 "gmresSubspace": {
@@ -226,10 +233,17 @@
                     "description": "ACM GMRES restart count",
                     "minimum": 0.0
                 },
-                "gmresRelativeTolerance": {
+                "linearRelativeTolerance": {
                     "type": "number",
                     "default": 1e-06,
-                    "description": "ACM GMRES relative residual tolerance",
+                    "description": "True linear RMS target relative to the initial right-hand side; OR with linearAbsoluteTolerance",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                },
+                "linearAbsoluteTolerance": {
+                    "type": "number",
+                    "default": 1e-10,
+                    "description": "Absolute true linear RMS target for LU-SGS and GMRES; OR with linearRelativeTolerance",
                     "minimum": 0.0
                 },
                 "gmresPreconditioner": {

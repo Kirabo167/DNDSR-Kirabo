@@ -51,12 +51,15 @@ namespace DNDS::NCFV
         DNDS_MAKE_SSP(_reader, _mesh, 0);
 
         Geom::AutoAppendName2ID nameMapper;
-        const bool periodicRequested =
-            _configuration.mesh.periodicLengths[0] > 0;
+        const bool periodicRequested = std::any_of(
+            _configuration.mesh.periodicLengths.begin(),
+            _configuration.mesh.periodicLengths.end(),
+            [](real length) { return length > 0; });
         const std::array<Geom::t_index, 6> periodicPairIDs{
             Geom::BC_ID_PERIODIC_1, Geom::BC_ID_PERIODIC_1_DONOR,
             Geom::BC_ID_PERIODIC_2, Geom::BC_ID_PERIODIC_2_DONOR,
             Geom::BC_ID_PERIODIC_3, Geom::BC_ID_PERIODIC_3_DONOR};
+        std::array<bool, 6> activePeriodicSides{};
         if (periodicRequested)
         {
             _mesh->periodicInfo.translation[1].map() =
@@ -72,13 +75,27 @@ namespace DNDS::NCFV
             {
                 pairNames.reserve(6);
                 for (const auto &zone : _configuration.physics.boundaryZones)
-                    pairNames.push_back(zone.name);
+                    if (zone.mode == BoundaryMode::Periodic)
+                        pairNames.push_back(zone.name);
+            }
+            std::size_t pairOffset = 0;
+            for (std::size_t axis = 0; axis < 3; axis++)
+            {
+                if (_configuration.mesh.periodicLengths[axis] <= 0)
+                    continue;
+                DNDS_check_throw_info(
+                    pairOffset + 2 <= pairNames.size(),
+                    "NCFV requires one ordered main/donor boundary pair per active periodic axis");
+                for (std::size_t side = 0; side < 2; side++)
+                {
+                    const std::size_t sideIndex = 2 * axis + side;
+                    activePeriodicSides[sideIndex] = true;
+                    nameMapper.n2id_map[pairNames[pairOffset++]] = periodicPairIDs[sideIndex];
+                }
             }
             DNDS_check_throw_info(
-                pairNames.size() == 6,
-                "NCFV requires three ordered periodic boundary pairs");
-            for (std::size_t i = 0; i < pairNames.size(); i++)
-                nameMapper.n2id_map[pairNames[i]] = periodicPairIDs[i];
+                pairOffset == pairNames.size(),
+                "NCFV periodic boundary pairs include an inactive periodic axis");
         }
         Geom::t_FBCName_2_ID resolveBoundaryName =
             [&nameMapper](const std::string &name)
@@ -125,9 +142,9 @@ namespace DNDS::NCFV
                           DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
             for (std::size_t i = 0; i < globalPairCounts.size(); i++)
                 DNDS_check_throw_info(
-                    globalPairCounts[i] > 0,
+                    activePeriodicSides[i] ? globalPairCounts[i] > 0 : globalPairCounts[i] == 0,
                     fmt::format(
-                        "NCFV exact periodic topology did not find boundary side {} (periodic ID {})",
+                        "NCFV exact periodic topology has missing or unexpected boundary side {} (periodic ID {})",
                         i, periodicPairIDs[i]));
         }
 
@@ -192,9 +209,7 @@ namespace DNDS::NCFV
     }
 
     template <int dimension>
-    void Solver<dimension>::CheckOwnedState(
-        const NodeStatePair &state,
-        const std::string &where) const
+    index Solver<dimension>::CountNonphysicalOwnedStates(const NodeStatePair &state) const
     {
         index localBad = 0;
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
@@ -202,6 +217,15 @@ namespace DNDS::NCFV
         index globalBad = 0;
         MPI_Allreduce(&localBad, &globalBad, 1,
                       DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
+        return globalBad;
+    }
+
+    template <int dimension>
+    void Solver<dimension>::CheckOwnedState(
+        const NodeStatePair &state,
+        const std::string &where) const
+    {
+        const index globalBad = CountNonphysicalOwnedStates(state);
         DNDS_check_throw_info(
             globalBad == 0,
             fmt::format("NCFV has {} nonphysical owned states after {}",
@@ -724,7 +748,7 @@ namespace DNDS::NCFV
         _topology->Build();
         _geometry = std::make_unique<DualGeometry>(
             _mpi, _mesh, *_topology, _configuration.algorithm,
-            _configuration.reconstruction.enableLimiter,
+            _configuration.reconstruction.enableLimiter || _configuration.reconstruction.limitFluxCorrection,
             &_configuration.mesh);
         _geometry->Build();
         _nodeHalo = std::make_unique<NodeHalo>(
@@ -808,56 +832,96 @@ namespace DNDS::NCFV
                 break;
             _lastStepTiming = {};
             const double stepStart = MPI_Wtime();
-            _spatial->SetMaximumStep(_configuration.time.endTime >= 0 ?
-                _configuration.time.endTime - _simulationTime : veryLargeReal);
+            real maximumStep = _configuration.time.endTime >= 0 ?
+                                   _configuration.time.endTime - _simulationTime : veryLargeReal;
             const double baseCopyStart = MPI_Wtime();
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
                 _baseState[iNode] = _state[iNode];
             _lastStepTiming.baseStateCopySeconds = MPI_Wtime() - baseCopyStart;
 
-            _spatial->ResetRiemannSolverCallCount();
-            _spatial->EvaluateRHS(_state, _rhs, true, false);
-            _lastStepTiming.rhs += _spatial->LastRhsTiming();
-            const real physicalStep = _spatial->LastMinimumTimeStep();
-            std::vector<real> stepSize(static_cast<std::size_t>(_mesh->NumNode()));
-            double stageUpdateStart = MPI_Wtime();
-            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            real physicalStep = 0;
+            for (int retry = 0;; retry++)
             {
-                stepSize[static_cast<std::size_t>(iNode)] =
-                    _spatial->LocalTimeStep(iNode);
-                _stageState[iNode] =
-                    _baseState[iNode] +
-                    stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode];
+                _spatial->SetMaximumStep(maximumStep);
+                std::string rejectedStage;
+                const auto checkStage = [&](const NodeStatePair &state, const std::string &where)
+                {
+                    if (!_configuration.time.rejectNonPhysicalSteps)
+                    {
+                        CheckOwnedState(state, where);
+                        return true;
+                    }
+                    if (CountNonphysicalOwnedStates(state) == 0)
+                        return true;
+                    rejectedStage = where;
+                    return false;
+                };
+                const auto advance = [&]() -> bool
+                {
+                    _spatial->ResetRiemannSolverCallCount();
+                    _spatial->EvaluateRHS(_state, _rhs, true, false);
+                    _lastStepTiming.rhs += _spatial->LastRhsTiming();
+                    physicalStep = _spatial->LastMinimumTimeStep();
+                    std::vector<real> stepSize(static_cast<std::size_t>(_mesh->NumNode()));
+                    double stageUpdateStart = MPI_Wtime();
+                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                    {
+                        stepSize[static_cast<std::size_t>(iNode)] =
+                            _spatial->LocalTimeStep(iNode);
+                        _stageState[iNode] =
+                            _baseState[iNode] +
+                            stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode];
+                    }
+                    _spatial->ApplyStrongBoundaryConditions(_stageState);
+                    if (!checkStage(_stageState, "SSPRK3 stage 1"))
+                        return false;
+                    _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+
+                    _spatial->EvaluateRHS(_stageState, _rhs, false, false);
+                    _lastStepTiming.rhs += _spatial->LastRhsTiming();
+                    stageUpdateStart = MPI_Wtime();
+                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                        _stageState[iNode] =
+                            0.75 * _baseState[iNode] +
+                            0.25 * (_stageState[iNode] +
+                                    stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
+                    _spatial->ApplyStrongBoundaryConditions(_stageState);
+                    if (!checkStage(_stageState, "SSPRK3 stage 2"))
+                        return false;
+                    _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+
+                    residual = _spatial->EvaluateRHS(_stageState, _rhs, false, true);
+                    _lastStepTiming.rhs += _spatial->LastRhsTiming();
+                    stageUpdateStart = MPI_Wtime();
+                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                        _state[iNode] =
+                            (1.0 / 3.0) * _baseState[iNode] +
+                            (2.0 / 3.0) *
+                                (_stageState[iNode] +
+                                 stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
+                    _spatial->ApplyStrongBoundaryConditions(_state);
+                    if (!checkStage(_state, "SSPRK3 stage 3"))
+                        return false;
+                    _lastStepRiemannSolverCalls = _spatial->RiemannSolverCallCount();
+                    _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+                    return true;
+                };
+                if (advance())
+                    break;
+                // All ranks reject together. Restore the complete old state;
+                // reducing one common physical step preserves flux conservation.
+                for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                    _state[iNode] = _baseState[iNode];
+                DNDS_check_throw_info(retry < _configuration.time.maximumStepRetries,
+                                      "NCFV exhausted nonphysical-step retries at " + rejectedStage);
+                maximumStep = .5 * physicalStep;
+                DNDS_check_throw_info(maximumStep >= _configuration.time.minimumTimeStep,
+                                      "NCFV positivity retry fell below minimumTimeStep");
+                if (_mpi.rank == 0)
+                    log() << "NCFV rejected iteration=" << _currentIteration + 1
+                          << " after " << rejectedStage << "; retry dt <= "
+                          << maximumStep << std::endl;
             }
-            _spatial->ApplyStrongBoundaryConditions(_stageState);
-            CheckOwnedState(_stageState, "SSPRK3 stage 1");
-            _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
-
-            _spatial->EvaluateRHS(_stageState, _rhs, false, false);
-            _lastStepTiming.rhs += _spatial->LastRhsTiming();
-            stageUpdateStart = MPI_Wtime();
-            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
-                _stageState[iNode] =
-                    0.75 * _baseState[iNode] +
-                    0.25 * (_stageState[iNode] +
-                            stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
-            _spatial->ApplyStrongBoundaryConditions(_stageState);
-            CheckOwnedState(_stageState, "SSPRK3 stage 2");
-            _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
-
-            residual = _spatial->EvaluateRHS(_stageState, _rhs, false, true);
-            _lastStepTiming.rhs += _spatial->LastRhsTiming();
-            stageUpdateStart = MPI_Wtime();
-            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
-                _state[iNode] =
-                    (1.0 / 3.0) * _baseState[iNode] +
-                    (2.0 / 3.0) *
-                        (_stageState[iNode] +
-                         stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
-            _spatial->ApplyStrongBoundaryConditions(_state);
-            CheckOwnedState(_state, "SSPRK3 stage 3");
-            _lastStepRiemannSolverCalls = _spatial->RiemannSolverCallCount();
-            _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
             _lastStepTiming.totalSeconds = MPI_Wtime() - stepStart;
 
             _currentIteration++;
@@ -866,11 +930,21 @@ namespace DNDS::NCFV
                 (_currentIteration == 1 ||
                  _currentIteration % _configuration.time.reportInterval == 0 ||
                  additional + 1 == additionalIterations))
+            {
                 log() << "NCFV iteration=" << _currentIteration
                       << ", residual RMS=" << std::setprecision(12) << residual
                       << ", dt[min,max]=[" << _spatial->LastMinimumTimeStep()
                       << "," << _spatial->LastMaximumTimeStep() << "]"
+                      << ", time=" << _simulationTime
+                      << ", target=" << _configuration.time.endTime
+                      << ", step wall[s]=" << _lastStepTiming.totalSeconds
                       << std::endl;
+                if (const auto *sweep = _spatial->SharedGradientSweepDiagnostics())
+                    log() << "NCFV shared-gradient sweep: updated faces="
+                          << sweep->updatedFaces << ", zero-factor faces="
+                          << sweep->zeroFactorFaces << ", minimum theta="
+                          << sweep->minimumFaceFactor << std::endl;
+            }
 
             if (_configuration.io.writeVTK &&
                 _configuration.io.outputInterval > 0 &&

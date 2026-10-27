@@ -952,7 +952,7 @@ namespace DNDS::ACM
     }
 
     template <int gDim>
-    /** @copydoc ACMTurbulenceTransport::EvaluateImplicitDiagonal */
+    // See ACMTurbulenceTransport.hpp for the function contract.
     void ACMTurbulenceTransport<gDim>::EvaluateImplicitDiagonal(
         TFlowDof &flow,
         std::vector<Eigen::Matrix<real, 2, 2>> &diagonal,

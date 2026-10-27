@@ -1024,8 +1024,8 @@ ReadMesh当前默认：`periodic_tolerance=1e-9`、`read_mode=null`（按.cgns/.
 | `cfl` | `0.5` | 实数 | 伪时间CFL系数，必须为正；不直接等于物理时间步。 schema约束：≥0。 |
 | `maximumPseudoTimeStep` | `1e+100` | 实数 | CFL计算得到的伪时间步上限，必须为正。 schema约束：≥0。 |
 | `maxImplicitIterations` | `20` | 整数 | 每个物理步最多内迭代次数，必须为正；达到上限不等于收敛。 schema约束：≥1。 |
-| `implicitTolerance` | `1e-10` | 实数 | Absolute模式的绝对残差阈值，要求非负。Relative模式保留此值，但不拿它提前结束内迭代。 schema约束：≥0。 |
-| `dualTimeConvergenceCriterion` | `"Absolute"` | 字符串 | 只允许 Absolute 或 Relative。缺少字段时补入 Absolute；不是流场/SST组选择。 schema约束：枚举："Absolute"、"Relative"。 |
+| `implicitTolerance` | `1e-8` | 实数 | 非线性绝对RMS阈值；AbsoluteOrRelative模式与相对阈值按OR组合。 schema约束：≥0。 |
+| `dualTimeConvergenceCriterion` | `"Absolute"` | 字符串 | Absolute、Relative或AbsoluteOrRelative；OR模式使用max(atol, rtol*本步初值)，每个活跃组各自达标。旧文件缺少字段时补Absolute。 |
 | `dualTimeFlowRelativeTolerance` | `0` | 实数 | 正值启用流场 [u,v,w,p] 的组RMS；Relative目标为该值乘本物理步流场初值。范围[0,1)。 schema约束：≥0；≤1。 |
 | `dualTimeTurbulenceRelativeTolerance` | `0` | 实数 | 正值启用活跃湍流变量组RMS；SST为 [k,omega]，使用其独立的本步初值。范围[0,1)。 schema约束：≥0；≤1。 |
 | `dualTimeResidualScales` | `[1, 1, 1, 1, 1, 1]` | 数组 | 6个正的逐方程绝对残差尺度，顺序 [u,v,w,p,q1,q2]；对应组启用组RMS时必须保持1。 |
@@ -1038,13 +1038,14 @@ ReadMesh当前默认：`periodic_tolerance=1e-9`、`read_mode=null`（按.cgns/.
 | `steadyCFLGrowth` | `1.5` | 实数 | 稳态CFL最大增长倍数，至少1。 schema约束：≥1。 |
 | `steadyCFLReduction` | `0.5` | 实数 | 稳态失败/残差增长后的CFL缩小系数，范围(0,1)。 schema约束：≥0；≤1。 |
 | `implicitRelaxation` | `1` | 实数 | 隐式流场修正的松弛系数，范围(0,1]。 schema约束：≥0；≤1。 |
-| `lusgsSweeps` | `2` | 整数 | 每次LU-SGS线性修正的固定残差校正次数，至少1；不是每步内迭代上限。 schema约束：≥1。 |
+| `lusgsSweeps` | `2` | 整数 | 独立LU-SGS的最大扫掠数；每遍检查真实残差。GMRES预条件中仍为固定扫掠数。 schema约束：≥1。 |
 | `gmresSubspace` | `10` | 整数 | GMRES的Arnoldi子空间维数，至少2；仅用于相应GMRES路径。 schema约束：≥2。 |
 | `gmresRestarts` | `3` | 整数 | 首轮之后的GMRES重启次数上限；0仍执行首轮，3最多执行4轮。 schema约束：≥0。 |
-| `gmresRelativeTolerance` | `1e-06` | 实数 | GMRES线性预条件残差的相对阈值；与物理步收敛阈值分别设置。 schema约束：≥0。 |
+| `linearRelativeTolerance` | `1e-06` | 实数 | GMRES/LU-SGS真实线性RMS相对阈值，与线性绝对阈值按OR组合。 |
+| `linearAbsoluteTolerance` | `1e-10` | 实数 | 真实线性RMS绝对阈值，在非线性松弛之前评估；不使用预条件范数。 |
 | `gmresPreconditioner` | `"LUSGS"` | 字符串 | GMRES左预条件器LUSGS或BlockJacobi。 schema约束：枚举："BlockJacobi"、"LUSGS"。 |
 
-<!-- config-fields: acm|timeMarchSettings.integrator;timeMarchSettings.nSteps;timeMarchSettings.pseudoTimeStep;timeMarchSettings.physicalTimeStep;timeMarchSettings.useCFLTimeStep;timeMarchSettings.useLocalTimeStep;timeMarchSettings.cfl;timeMarchSettings.maximumPseudoTimeStep;timeMarchSettings.maxImplicitIterations;timeMarchSettings.implicitTolerance;timeMarchSettings.dualTimeConvergenceCriterion;timeMarchSettings.dualTimeFlowRelativeTolerance;timeMarchSettings.dualTimeTurbulenceRelativeTolerance;timeMarchSettings.dualTimeResidualScales;timeMarchSettings.dualTimeRelativeTolerances;timeMarchSettings.dualTimeRequireConvergence;timeMarchSettings.steadyRelativeTolerance;timeMarchSettings.steadyAdaptiveCFL;timeMarchSettings.steadyCFLMin;timeMarchSettings.steadyCFLMax;timeMarchSettings.steadyCFLGrowth;timeMarchSettings.steadyCFLReduction;timeMarchSettings.implicitRelaxation;timeMarchSettings.lusgsSweeps;timeMarchSettings.gmresSubspace;timeMarchSettings.gmresRestarts;timeMarchSettings.gmresRelativeTolerance;timeMarchSettings.gmresPreconditioner -->
+<!-- config-fields: acm|timeMarchSettings.integrator;timeMarchSettings.nSteps;timeMarchSettings.pseudoTimeStep;timeMarchSettings.physicalTimeStep;timeMarchSettings.useCFLTimeStep;timeMarchSettings.useLocalTimeStep;timeMarchSettings.cfl;timeMarchSettings.maximumPseudoTimeStep;timeMarchSettings.maxImplicitIterations;timeMarchSettings.implicitTolerance;timeMarchSettings.dualTimeConvergenceCriterion;timeMarchSettings.dualTimeFlowRelativeTolerance;timeMarchSettings.dualTimeTurbulenceRelativeTolerance;timeMarchSettings.dualTimeResidualScales;timeMarchSettings.dualTimeRelativeTolerances;timeMarchSettings.dualTimeRequireConvergence;timeMarchSettings.steadyRelativeTolerance;timeMarchSettings.steadyAdaptiveCFL;timeMarchSettings.steadyCFLMin;timeMarchSettings.steadyCFLMax;timeMarchSettings.steadyCFLGrowth;timeMarchSettings.steadyCFLReduction;timeMarchSettings.implicitRelaxation;timeMarchSettings.lusgsSweeps;timeMarchSettings.gmresSubspace;timeMarchSettings.gmresRestarts;timeMarchSettings.linearRelativeTolerance;timeMarchSettings.linearAbsoluteTolerance;timeMarchSettings.gmresPreconditioner -->
 
 ### 11.4 `turbulenceSettings`
 
@@ -1288,15 +1289,17 @@ ACM新入口的initialState长度、闭合模型、transportSubsteps及黏性开
 | `cfl` | `0.5` | 实数 | 伪时间CFL系数，必须为正；不直接等于物理时间步。 schema约束：≥0。 |
 | `maximumPseudoTimeStep` | `1e+100` | 实数 | CFL计算得到的伪时间步上限，必须为正。 schema约束：≥0。 |
 | `maxImplicitIterations` | `20` | 整数 | 每个物理步最多内迭代次数，必须为正；达到上限不等于收敛。 schema约束：≥1。 |
-| `implicitTolerance` | `1e-10` | 实数 | 原生隐式全局RMS绝对阈值；本模块尚无Absolute/Relative选择字段。 schema约束：≥0。 |
+| `implicitTolerance` | `1e-8` | 实数 | 变密度隐式/物理阶段的绝对RMS阈值，与implicitRelativeTolerance按OR组合。 |
+| `implicitRelativeTolerance` | `0` | 实数 | 相对本次非线性求解或ODE阶段初值的RMS阈值；算例显式采用1e-4。 |
 | `implicitRelaxation` | `1` | 实数 | 隐式流场修正的松弛系数，范围(0,1]。 schema约束：≥0；≤1。 |
-| `lusgsSweeps` | `2` | 整数 | 每次LU-SGS线性修正的固定残差校正次数，至少1；不是每步内迭代上限。 schema约束：≥1。 |
+| `lusgsSweeps` | `2` | 整数 | 独立LU-SGS的最大扫掠数；每遍检查真实残差。GMRES预条件中仍为固定扫掠数。 schema约束：≥1。 |
 | `gmresSubspace` | `10` | 整数 | GMRES的Arnoldi子空间维数，至少2；仅用于相应GMRES路径。 schema约束：≥2。 |
 | `gmresRestarts` | `3` | 整数 | 首轮之后的GMRES重启次数上限；0仍执行首轮，3最多执行4轮。 schema约束：≥0。 |
-| `gmresRelativeTolerance` | `1e-06` | 实数 | GMRES线性预条件残差的相对阈值；与物理步收敛阈值分别设置。 schema约束：≥0。 |
+| `linearRelativeTolerance` | `1e-06` | 实数 | GMRES/LU-SGS真实线性RMS相对阈值，与线性绝对阈值按OR组合。 |
+| `linearAbsoluteTolerance` | `1e-10` | 实数 | 真实线性RMS绝对阈值，在非线性松弛之前评估；不使用预条件范数。 |
 | `gmresPreconditioner` | `"LUSGS"` | 字符串 | GMRES左预条件器LUSGS或BlockJacobi。 schema约束：枚举："BlockJacobi"、"LUSGS"。 |
 
-<!-- config-fields: acmVariable|timeMarchSettings.physicalODECode;timeMarchSettings.pseudoODECode;timeMarchSettings.integrator;timeMarchSettings.nSteps;timeMarchSettings.pseudoTimeStep;timeMarchSettings.physicalTimeStep;timeMarchSettings.useCFLTimeStep;timeMarchSettings.useLocalTimeStep;timeMarchSettings.cfl;timeMarchSettings.maximumPseudoTimeStep;timeMarchSettings.maxImplicitIterations;timeMarchSettings.implicitTolerance;timeMarchSettings.implicitRelaxation;timeMarchSettings.lusgsSweeps;timeMarchSettings.gmresSubspace;timeMarchSettings.gmresRestarts;timeMarchSettings.gmresRelativeTolerance;timeMarchSettings.gmresPreconditioner -->
+<!-- config-fields: acmVariable|timeMarchSettings.physicalODECode;timeMarchSettings.pseudoODECode;timeMarchSettings.integrator;timeMarchSettings.nSteps;timeMarchSettings.pseudoTimeStep;timeMarchSettings.physicalTimeStep;timeMarchSettings.useCFLTimeStep;timeMarchSettings.useLocalTimeStep;timeMarchSettings.cfl;timeMarchSettings.maximumPseudoTimeStep;timeMarchSettings.maxImplicitIterations;timeMarchSettings.implicitTolerance;timeMarchSettings.implicitRelativeTolerance;timeMarchSettings.implicitRelaxation;timeMarchSettings.lusgsSweeps;timeMarchSettings.gmresSubspace;timeMarchSettings.gmresRestarts;timeMarchSettings.linearRelativeTolerance;timeMarchSettings.linearAbsoluteTolerance;timeMarchSettings.gmresPreconditioner -->
 
 ### 12.4 `turbulenceSettings`
 

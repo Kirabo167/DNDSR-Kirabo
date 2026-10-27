@@ -17,6 +17,11 @@ namespace DNDS::ACM
 {
     namespace
     {
+        /**
+         * @brief Reject non-finite BDF coefficients or a time-discretization order other than one or two.
+         * @param coefficients Physical-time derivative weights and startup/BDF2 order to validate.
+         * @throws std::runtime_error If any coefficient or the selected order is invalid.
+         */
         void ValidateCoefficients(const BDF2Coefficients &coefficients)
         {
             DNDS_check_throw_info(
@@ -29,6 +34,11 @@ namespace DNDS::ACM
                 "ACM BDF order must be one or two");
         }
 
+        /**
+         * @brief Check that a physical time interval is finite and strictly positive.
+         * @param physicalTimeStep Physical interval used as the denominator of BDF derivatives.
+         * @throws std::runtime_error If the time interval is non-finite or nonpositive.
+         */
         void ValidatePhysicalTimeStep(real physicalTimeStep)
         {
             DNDS_check_throw_info(
@@ -36,6 +46,11 @@ namespace DNDS::ACM
                 "ACM BDF2 physical time step must be finite and positive");
         }
 
+        /**
+         * @brief Check that a local flow-history field is nonempty and finite.
+         * @param field Owned-cell four-component [u,v,w,p] states to inspect.
+         * @param message Failure text used for either an empty field or a non-finite state.
+         */
         void ValidateStateField(const StateField &field, const char *message)
         {
             DNDS_check_throw_info(!field.empty(), message);
@@ -43,12 +58,23 @@ namespace DNDS::ACM
                 DNDS_check_throw_info(state.allFinite(), message);
         }
 
+        /**
+         * @brief Check the number of active entries in two-slot primitive turbulence storage.
+         * @param count Active equation count; must be one for SA or two for a two-equation model.
+         */
         void ValidateActiveVariableCount(int count)
         {
             DNDS_check_throw_info(count > 0 && count <= TurbulenceState::RowsAtCompileTime,
                                   "ACM BDF2 turbulence requires one or two active variables");
         }
 
+        /**
+         * @brief Validate active primitive turbulence history entries and clear inactive slots.
+         * @param field Nonempty local turbulence history to copy without modifying the source.
+         * @param activeVariableCount One or two finite positive entries to preserve per state.
+         * @return Validated history copy with all inactive entries set to zero.
+         * @throws std::runtime_error If the count, field size, or any active value is invalid.
+         */
         TurbulenceStateField SanitizeTurbulenceHistory(
             const TurbulenceStateField &field, int activeVariableCount)
         {
@@ -121,7 +147,7 @@ namespace DNDS::ACM
                physicalTimeStep;
     }
 
-    /** @copydoc EvaluateBDF2TurbulenceDerivative */
+    // See ACMBDF2.hpp for the function contract.
     TurbulenceState EvaluateBDF2TurbulenceDerivative(
         const TurbulenceState &current,
         const TurbulenceState &previous,
@@ -206,14 +232,14 @@ namespace DNDS::ACM
         }
     }
 
-    /** @copydoc IsBDF2DualTimeIntegrator */
+    // See ACMBDF2.hpp for the function contract.
     bool IsBDF2DualTimeIntegrator(TimeIntegratorType integrator)
     {
         return integrator == TimeIntegratorType::BDF2DualTimeLUSGS ||
                integrator == TimeIntegratorType::BDF2DualTimeGMRES;
     }
 
-    /** @copydoc SupportsBDF2TurbulenceModel */
+    // See ACMBDF2.hpp for the function contract.
     bool SupportsBDF2TurbulenceModel(TurbulenceModel model)
     {
         switch (model)
@@ -228,7 +254,7 @@ namespace DNDS::ACM
         return false;
     }
 
-    /** @copydoc BDF2UsesLUSGS */
+    // See ACMBDF2.hpp for the function contract.
     bool BDF2UsesLUSGS(TimeIntegratorType integrator)
     {
         DNDS_check_throw_info(
@@ -277,7 +303,7 @@ namespace DNDS::ACM
         return GetBDF2Coefficients(_completedPhysicalSteps);
     }
 
-    /** @copydoc BDF2History::Initialize */
+    // See ACMBDF2.hpp for the function contract.
     void BDF2History::Initialize(const StateField &initialState)
     {
         ValidateStateField(initialState, "ACM BDF2 initial history is empty or non-finite");
@@ -308,7 +334,7 @@ namespace DNDS::ACM
         return _previousPrevious;
     }
 
-    /** @copydoc BDF2History::Commit */
+    // See ACMBDF2.hpp for the function contract.
     void BDF2History::Commit(const StateField &completedState)
     {
         DNDS_check_throw_info(_initialized, "ACM BDF2 history is not initialized");

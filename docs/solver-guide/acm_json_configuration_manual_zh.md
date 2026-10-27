@@ -84,14 +84,14 @@ BDF2的外层一步推进物理时间 `physicalTimeStep`。每个物理步内部
 
 首个物理步采用BE（日志为BDF1），之后采用均匀步长BDF2。SST某个单元变量的BDF2历史若与正值下限不相容，会仅对该单元变量回退到BE，选择在该物理步内固定。回退依据本步固定的已完成历史判断。
 
-### 5.2 明确选择绝对或相对判据
+### 5.2 绝对或相对残差满足其一
 
 | 字段 | 本例值 | 默认参考 | 含义及使用条件 |
 | --- | --- | --- | --- |
-| `implicitTolerance` | `1e-08` | `1e-10` | Absolute模式的绝对残差阈值，要求非负。Relative模式保留此值，但不拿它提前结束内迭代。 |
-| `dualTimeConvergenceCriterion` | `"Relative"` | `"Absolute"` | 只允许 Absolute 或 Relative。缺少字段时补入 Absolute；不是流场/SST组选择。 |
-| `dualTimeFlowRelativeTolerance` | `0.001` | `0` | 正值启用流场 [u,v,w,p] 的组RMS；Relative目标为该值乘本物理步流场初值。范围[0,1)。 |
-| `dualTimeTurbulenceRelativeTolerance` | `0.001` | `0` | 正值启用活跃湍流变量组RMS；SST为 [k,omega]，使用其独立的本步初值。范围[0,1)。 |
+| `implicitTolerance` | `1e-08` | `1e-8` | 非线性绝对RMS阈值；OR模式下作为绝对精度兜底。 |
+| `dualTimeConvergenceCriterion` | `"AbsoluteOrRelative"` | `"Absolute"` | OR模式使用两阈值的较大值；仍支持单独Absolute、Relative用于对照。 |
+| `dualTimeFlowRelativeTolerance` | `1e-4` | `0` | 正值启用流场 [u,v,w,p] 的组RMS；相对目标为该值乘本物理步流场初值。 |
+| `dualTimeTurbulenceRelativeTolerance` | `1e-4` | `0` | 活跃湍流组的相对RMS阈值；使用该组独立的本步初值。 |
 | `dualTimeResidualScales` | 未写入，加载器补默认 | `[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]` | 6个正的逐方程绝对残差尺度，顺序 [u,v,w,p,q1,q2]；对应组启用组RMS时必须保持1。 |
 | `dualTimeRelativeTolerances` | 未写入，加载器补默认 | `[0, 0, 0, 0, 0, 0]` | 逐方程相对系数，顺序同左；组RMS关闭时使用。Relative模式要求每个活跃方程有正系数。 |
 | `dualTimeRequireConvergence` | 未写入，加载器补默认 | `true` | true时内迭代未满足所选条件就报错，不提交该步历史或物理时间；false仅用于预算受限的诊断推进。 |
@@ -99,33 +99,41 @@ BDF2的外层一步推进物理时间 `physicalTimeStep`。每个物理步内部
 当前两组RMS都已启用。每个物理步在任何修正之前记录流场初值 `R_flow,0` 和SST初值 `R_SST,0`，本步内保持不变；下个物理步重新记录。流场RMS包含四个流场方程，SST RMS包含两个活跃输运方程。
 
 ```text
-Relative:
-  R_flow <= 1e-3 * R_flow,0
-  R_SST  <= 1e-3 * R_SST,0
-
-Absolute:
-  R_flow <= 1e-8
-  R_SST  <= 1e-8
+AbsoluteOrRelative:
+  R_flow <= max(1e-8, 1e-4 * R_flow,0)
+  R_SST  <= max(1e-8, 1e-4 * R_SST,0)
 ```
 
-同一模式下流场与活跃SST组都要通过。`Relative` 不使用 `1e-8` 兜底或提前停止，`Absolute` 不使用 `1e-3` 放宽目标；选择的是收敛方式。此前的 `Both`、`Either`、`Flow`、`Turbulence` 值不再合法，已有这些值的配置应改为 `Absolute` 或 `Relative`。
+流场与活跃SST组各自满足绝对或相对条件即可；流场达标不能跳过SST检查。OR模式不是两条阈值都满足。`Relative`、`Absolute`保留为严格单一判据，不会使用另一种阈值。配置名应使用`AbsoluteOrRelative`，不使用`Both`、`Either`、`Flow`或`Turbulence`。
 
-例如本物理步流场初值为40.2，则其相对目标为0.0402；SST初值为6114，则其独立目标为6.114。两个目标不能互相替代。相对初值为零时目标也为零，仅接受当前残差为零。
+例如流场初值为40.2时相对目标为0.00402，SST初值为6114时为0.6114。两个组使用独立目标。初值为零时，OR模式仍可按绝对`1e-8`达标。
 
 某组相对字段设为0时改用该组逐方程控制。`Relative` 模式必须为每个活跃方程或其组设置正的相对系数，否则配置检查报错。启用组RMS时，同组逐方程尺度必须为1，逐方程相对系数必须为0，避免两套配置互相覆盖。层流不检查湍流组；SA的第二存储槽不参与判断。
+
+### 5.2.1 层流相对更新量
+
+层流算例还可将 `dualTimeConvergenceCriterion` 设置为 `RelativeUpdate`，用
+`dualTimeUpdateRelativeTolerance`（默认 `1e-5`）检查实际松弛后更新量的全局L2范数与更新后
+`[u,v,w,p]` 状态L2范数之比；`dualTimeUpdateMinimumIterations`（默认2）控制最少修正次数。
+范数仅统计自有单元、不含幽灵单元。更新量模式仍输出真实BDF残差，`residualConverged` 使用
+绝对或相对残差阈值独立检查。阈值为0可禁用更新量提前退出，但此时必须显式设置
+`dualTimeRequireConvergence=false`，按迭代预算推进。此选项当前限于层流，不适用于本节SST算例。
 
 ### 5.3 隐式线性修正
 
 | 字段 | 本例值 | 默认参考 | 含义及使用条件 |
 | --- | --- | --- | --- |
 | `implicitRelaxation` | `0.7` | `1.0` | 流场隐式修正松弛系数，位于(0,1]；当前每次加入0.7倍修正。 |
-| `lusgsSweeps` | `2` | `2` | 每次LU-SGS线性修正的固定残差校正次数，至少1；不是每步内迭代上限。 |
+| `lusgsSweeps` | `2` | `2` | 独立LU-SGS的最大扫掠次数；每遍后检查真实残差。在GMRES预条件器中仍为固定扫掠数。 |
 | `gmresSubspace` | `20` | `10` | GMRES的Arnoldi子空间维数，至少2；当前LU-SGS模式不启用。 |
 | `gmresRestarts` | `3` | `3` | 首轮之后的GMRES重启次数上限，非负；0仍执行首轮，3最多执行4轮；当前LU-SGS模式不启用。 |
-| `gmresRelativeTolerance` | `0.0001` | `1e-06` | GMRES线性预条件残差的相对阈值；与物理步收敛阈值分别设置。 |
+| `linearRelativeTolerance` | `1e-6` | `1e-6` | LU-SGS和GMRES真实线性RMS的相对阈值，参考本次修正的初始右端项。 |
+| `linearAbsoluteTolerance` | `1e-10` | `1e-10` | 真实线性RMS绝对阈值；与相对阈值按OR组合。 |
 | `gmresPreconditioner` | `"LUSGS"` | `"LUSGS"` | GMRES左预条件器，可选 LUSGS 或 BlockJacobi；当前仅保留配置。 |
 
 如将 `integrator` 改为 `BDF2DualTimeGMRES`，流场修正改用GMRES；SST守恒变量参与统一GMRES向量，局部源项块在预条件器中求解。流场GMRES与重构GMRES各有一套参数，开启其中一个不会同时开启另一个。
+
+线性停止检查`||b-Aδ||/sqrt(N*nVars)`，在乘`implicitRelaxation`之前评估；不拿预条件范数与绝对阈值直接比较。耗尽线性预算会记录`converged=0`，仍可提供非精确外层修正。旧JSON键`gmresRelativeTolerance`和相应命令行覆盖会兼容映射为`linearRelativeTolerance`。阈值选择依据见[残差阈值说明](acm_residual_tolerances.txt)。
 
 ### 5.4 稳态专用字段
 

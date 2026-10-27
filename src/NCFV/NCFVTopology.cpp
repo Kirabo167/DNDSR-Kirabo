@@ -19,6 +19,11 @@ namespace DNDS::NCFV
             std::array<index, 2> nodes{UnInitIndex, UnInitIndex};
             index relativePbi = 0;
 
+            /**
+             * @brief Order edge-directory keys by endpoint IDs and relative periodic bits.
+             * @param other Edge key to compare with this key.
+             * @return True when this key precedes other lexicographically.
+             */
             bool operator<(const EdgeKey &other) const
             {
                 if (nodes != other.nodes)
@@ -34,6 +39,11 @@ namespace DNDS::NCFV
                 UnInitIndex, UnInitIndex, UnInitIndex, UnInitIndex};
             std::array<index, 4> normalizedPbi{0, 0, 0, 0};
 
+            /**
+             * @brief Order face-directory keys by vertex count, node IDs, and normalized periodic bits.
+             * @param other Face key to compare with this key.
+             * @return True when this key precedes other lexicographically.
+             */
             bool operator<(const FaceKey &other) const
             {
                 if (nVertices != other.nVertices)
@@ -50,6 +60,14 @@ namespace DNDS::NCFV
             std::vector<int> receiveOffsets;
         };
 
+        /**
+         * @brief Build an endpoint-order-independent primal-edge identity including periodic images.
+         * @param node0 Global first-endpoint node ID.
+         * @param node1 Global second-endpoint node ID.
+         * @param pbi0 Periodic-image bits of the first endpoint in its parent frame; defaults to zero.
+         * @param pbi1 Periodic-image bits of the second endpoint in the same frame; defaults to zero.
+         * @return Sorted endpoint IDs with their XOR-relative periodic-image bits.
+         */
         EdgeKey CanonicalEdgeKey(
             index node0,
             index node1,
@@ -64,6 +82,12 @@ namespace DNDS::NCFV
             return key;
         }
 
+        /**
+         * @brief Hash a canonical edge key to a distributed directory rank.
+         * @param key Canonical edge identity, including periodic-image information.
+         * @param nRanks Positive MPI communicator size.
+         * @return Deterministic directory rank in [0,nRanks); directory placement is separate from mesh ownership.
+         */
         MPI_int EdgeDirectoryRank(const EdgeKey &key, MPI_int nRanks)
         {
             std::uint64_t value = static_cast<std::uint64_t>(key.nodes[0]);
@@ -79,6 +103,12 @@ namespace DNDS::NCFV
             return static_cast<MPI_int>(value % static_cast<std::uint64_t>(nRanks));
         }
 
+        /**
+         * @brief Build a vertex-order and periodic-frame independent primal-face identity.
+         * @param nodes Two to four global vertex IDs; repeated IDs can represent a coarse periodic quotient.
+         * @param pbi Optional matching per-vertex periodic-image bits; an empty vector denotes zero bits.
+         * @return Lexicographically minimal normalized node/periodic-bit key over uniform periodic-frame shifts.
+         */
         FaceKey CanonicalFaceKey(
             const std::vector<index> &nodes,
             const std::vector<Geom::NodePeriodicBits> &pbi = {})
@@ -123,6 +153,12 @@ namespace DNDS::NCFV
             return best;
         }
 
+        /**
+         * @brief Hash a canonical face key to a distributed directory rank.
+         * @param key Canonical face identity, including periodic-image information.
+         * @param nRanks Positive MPI communicator size.
+         * @return Deterministic directory rank in [0,nRanks); directory placement is separate from mesh ownership.
+         */
         MPI_int FaceDirectoryRank(const FaceKey &key, MPI_int nRanks)
         {
             std::uint64_t value = static_cast<std::uint64_t>(key.nVertices);
@@ -141,6 +177,12 @@ namespace DNDS::NCFV
             return static_cast<MPI_int>(value % static_cast<std::uint64_t>(nRanks));
         }
 
+        /**
+         * @brief Append a fixed-width canonical face key and payload to a directory message.
+         * @param [in,out] message Flat index buffer receiving a ten-index record.
+         * @param key Face identity with vertex count, four node slots, and four periodic-bit slots.
+         * @param payload Caller-defined final record entry, such as an owner/global face ID.
+         */
         void AppendFaceRecord(
             std::vector<index> &message,
             const FaceKey &key,
@@ -154,6 +196,13 @@ namespace DNDS::NCFV
             message.push_back(payload);
         }
 
+        /**
+         * @brief Decode the canonical key portion of a packed face-directory record.
+         * @param message Flat buffer containing complete ten-index records.
+         * @param offset Index of the first entry of the record to decode.
+         * @return Face key reconstructed from the first nine entries; the caller reads the payload separately.
+         * @pre At least ten entries are available beginning at offset.
+         */
         FaceKey ReadFaceRecord(const std::vector<index> &message, std::size_t offset)
         {
             FaceKey key;
@@ -169,6 +218,13 @@ namespace DNDS::NCFV
             return key;
         }
 
+        /**
+         * @brief Exchange variable-length index messages using MPI all-to-all counts and payloads.
+         * @param outgoing One index-vector message per destination rank, with length equal to mpi.size.
+         * @param mpi Communicator metadata for both collective exchanges.
+         * @return Flat received values and source-rank offset boundaries.
+         * @note Collective; each message count must fit the MPI int count type.
+         */
         ExchangeResult ExchangeByRank(
             const std::vector<std::vector<index>> &outgoing,
             const MPIInfo &mpi)

@@ -13,6 +13,26 @@
 using namespace DNDS::ACMVariable;
 using DNDS::real;
 
+TEST_CASE("Variable ACM nonlinear and linear tolerances accept either threshold")
+{
+    TimeMarchSettings settings;
+    settings.implicitTolerance = 1e-8;
+    settings.implicitRelativeTolerance = 1e-4;
+    CHECK(settings.ImplicitTarget(0) == doctest::Approx(1e-8));
+    CHECK(settings.ImplicitTarget(100) == doctest::Approx(1e-2));
+    CHECK_NOTHROW(settings.Validate());
+    const nlohmann::ordered_json encoded = settings;
+    const auto decoded = encoded.get<TimeMarchSettings>();
+    CHECK(decoded.implicitRelativeTolerance == doctest::Approx(1e-4));
+    CHECK(decoded.linearAbsoluteTolerance == doctest::Approx(1e-10));
+    CHECK_THROWS(settings.ImplicitTarget(-1));
+    settings.implicitRelativeTolerance = 1;
+    CHECK_THROWS(settings.Validate());
+    settings.implicitRelativeTolerance = 1e-4;
+    settings.linearAbsoluteTolerance = settings.linearRelativeTolerance = 0;
+    CHECK_THROWS(settings.Validate());
+}
+
 /** @brief Construct conservative test state. @param rho Density.
  * @param u Velocity. @param p Physical/gauge pressure. @return [rho,rho*u,p]. */
 static State MakeState(real rho, const Vector3 &u, real p)

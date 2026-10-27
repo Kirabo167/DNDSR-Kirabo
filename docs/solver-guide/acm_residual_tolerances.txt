@@ -1,0 +1,106 @@
+ACM absolute-or-relative convergence controls (2026-10-26)
+
+Scope
+-----
+The maintained cases and schemas under cases/acm, including constant-density
+laminar/RANS and variable-density ACM, use explicit tolerances at both the
+nonlinear and implicit linear levels. Historical simulation-directory JSON
+snapshots remain records of the settings actually used in those runs.
+
+Definition
+----------
+R <= atol OR R <= rtol * R_initial
+is equivalent to
+R <= max(atol, rtol * R_initial).
+This is not an AND test and not a sum of the tolerances. A zero initial
+residual uses the absolute floor. In constant-density BDF2, every active
+nonlinear group/equation must pass its own test; flow success cannot hide an
+unconverged turbulence group. Variable-density native BDF2 applies its scalar
+OR test to the existing maximum of flow and turbulence RMS defects; its
+relative reference is that combined initial norm. The supplied variable-density
+cases are laminar. Implicit ODE stages use their own combined stage defect norm.
+Non-finite residuals never pass.
+
+RMS normalization is ||residual||_2/sqrt(N*nVars), matching the solver's
+cell-based residual definition. Absolute values depend on normalization and
+units; the example cases are nondimensionalized. The selected numbers are
+engineering starting values, not universal constants established by a paper.
+
+Recommended explicit case values
+-------------------------------
+Nonlinear absolute RMS: implicitTolerance = 1e-8.
+Nonlinear relative reduction: 1e-4.
+  Constant-density BDF2:
+    dualTimeConvergenceCriterion = "AbsoluteOrRelative"
+    dualTimeFlowRelativeTolerance = 1e-4
+    dualTimeTurbulenceRelativeTolerance = 1e-4 for active RANS, 0 for laminar.
+  Constant-density steady implicit:
+    steadyRelativeTolerance = 1e-4.
+  Variable-density native implicit/BDF2 and implicit ODE stages:
+    implicitRelativeTolerance = 1e-4.
+  Explicit-only paths do not perform an implicit convergence solve.
+
+Linear true residual RMS:
+  linearAbsoluteTolerance = 1e-10
+  linearRelativeTolerance = 1e-6
+These apply to b-A*delta before multiplying delta by implicitRelaxation.
+They do not use the norm of a preconditioned residual as the final criterion.
+Standalone LU-SGS checks after each sweep up to lusgsSweeps; fixed SGS sweeps
+inside GMRES remain a preconditioner, not independent converged solves.
+GMRES checks true residuals at cycle boundaries. The reported iteration
+budget and converged flag are independent. A spent linear budget still gives
+an inexact outer correction; it does not certify linear convergence.
+
+Why these values
+----------------
+1. PETSc KSPConvergedDefault explicitly uses max(rtol*rnorm_0, abstol).
+   This supports the OR logic, not a mandatory numerical value.
+   https://petsc.org/release/manualpages/KSP/KSPConvergedDefault/
+
+2. SciPy GMRES explicitly checks ||b-A*x|| <= max(rtol*||b||, atol), even
+   with left preconditioning. This supports using true residuals rather
+   than comparing an absolute tolerance to a preconditioned norm.
+   https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.gmres.html
+
+3. SU2's published configuration template sets CONV_RESIDUAL_MINVAL=-8
+   and LINEAR_SOLVER_ERROR=1e-6. Its residual normalization and convergence
+   paths differ from DNDSR, so these indicate orders of magnitude only.
+   They motivate the nonlinear absolute 1e-8 and linear relative 1e-6
+   starting values, not direct equivalence of the solvers' residuals.
+   https://github.com/su2code/SU2/blob/master/config_template.cfg
+
+4. The artificial-compressibility study "Solution of the incompressible
+   Navier-Stokes equations using artificial compressibility methods"
+   (1989, NASA NTRS 19890057995) reports four orders of residual reduction
+   in its test. This shows that 1e-4 is an established reduction measure;
+   it does not prove that four orders suffice for every unsteady flow.
+   The current diagnostic study already used this reduction. The retained
+   relative 1e-4 therefore remains a starting value requiring time/grid
+   and pressure/force sensitivity checks for quantitative predictions.
+   https://ntrs.nasa.gov/citations/19890057995
+
+5. Eisenstat and Walker, "Choosing the Forcing Terms in an Inexact Newton
+   Method", SIAM J. Sci. Comput. 17(1), 16-32 (1996), explain why linear
+   solve accuracy affects nonlinear efficiency and robustness. The linear
+   absolute 1e-10 is our engineering choice, two orders below the nonlinear
+   absolute floor, to avoid an excessively loose absolute linear stop.
+   It is not a universal tolerance prescribed by that paper.
+   https://doi.org/10.1137/0917003
+
+If a case tightens the nonlinear absolute tolerance below 1e-8, its linear
+absolute tolerance should also be tightened. A linear floor looser than the
+requested nonlinear accuracy can legitimately accept a zero correction and
+stall the outer solve. High-precision analytic regressions explicitly use
+nonlinear atol=1e-12 and linear atol=1e-14; their original error checks remain.
+
+The 2048-cell cylinder tests showed nonlinear periodic stagnation even
+when the true linear residual was around 1e-15. OR logic does not eliminate
+that phenomenon and does not prove time/grid independence. Old strict
+Absolute and Relative modes remain selectable for diagnostic comparisons.
+
+Compatibility
+-------------
+Old case files and CLI pointers using gmresRelativeTolerance are translated
+to linearRelativeTolerance before validation. Specifying conflicting values
+under both keys in a file is rejected. Missing new optional controls in old
+cases are filled in memory. New cases and schemas emit the current names.

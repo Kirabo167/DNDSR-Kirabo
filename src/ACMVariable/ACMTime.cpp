@@ -191,6 +191,8 @@ namespace DNDS::ACMVariable
         DNDS_check_throw_info(
             std::isfinite(implicitTolerance) && implicitTolerance >= 0,
             "ACM implicitTolerance must be finite and non-negative");
+        DNDS_check_throw_info(std::isfinite(implicitRelativeTolerance) && implicitRelativeTolerance >= 0 && implicitRelativeTolerance < 1,
+                              "ACMVariable implicitRelativeTolerance must be finite and in [0,1)");
         DNDS_check_throw_info(
             std::isfinite(implicitRelaxation) && implicitRelaxation > 0 && implicitRelaxation <= 1,
             "ACM implicitRelaxation must be in (0, 1]");
@@ -198,8 +200,17 @@ namespace DNDS::ACMVariable
         DNDS_check_throw_info(gmresSubspace >= 2, "ACM gmresSubspace must be at least two");
         DNDS_check_throw_info(gmresRestarts >= 0, "ACM gmresRestarts must be non-negative");
         DNDS_check_throw_info(
-            std::isfinite(gmresRelativeTolerance) && gmresRelativeTolerance >= 0,
-            "ACM gmresRelativeTolerance must be finite and non-negative");
+            std::isfinite(linearRelativeTolerance) && linearRelativeTolerance >= 0 && linearRelativeTolerance < 1 &&
+                std::isfinite(linearAbsoluteTolerance) && linearAbsoluteTolerance >= 0 &&
+                (linearAbsoluteTolerance > 0 || linearRelativeTolerance > 0),
+            "ACMVariable linear tolerances must be finite, non-negative, with rtol < 1 and at least one positive tolerance");
+    }
+
+    real TimeMarchSettings::ImplicitTarget(real initialResidual) const
+    {
+        DNDS_check_throw_info(std::isfinite(initialResidual) && initialResidual >= 0,
+                              "ACMVariable initial nonlinear residual must be finite and non-negative");
+        return std::max(implicitTolerance, implicitRelativeTolerance * initialResidual);
     }
 
     /** @copydoc ApplyGammaInverseToResidual */
@@ -328,7 +339,7 @@ namespace DNDS::ACMVariable
                 report.initialDefectNorm = defectNorm;
             report.finalDefectNorm = defectNorm;
             report.iterations = iteration;
-            if (defectNorm <= timeSettings.implicitTolerance)
+            if (defectNorm <= timeSettings.ImplicitTarget(report.initialDefectNorm))
             {
                 report.converged = true;
                 return report;
@@ -367,7 +378,7 @@ namespace DNDS::ACMVariable
         EvaluateResidualChecked(states, residual, residualEvaluator);
         FormImplicitDefect(states, statesOld, residual, pseudoTimeStep, settings, defect);
         report.finalDefectNorm = GlobalRMSNorm(defect, mpi);
-        report.converged = report.finalDefectNorm <= timeSettings.implicitTolerance;
+        report.converged = report.finalDefectNorm <= timeSettings.ImplicitTarget(report.initialDefectNorm);
         return report;
     }
 

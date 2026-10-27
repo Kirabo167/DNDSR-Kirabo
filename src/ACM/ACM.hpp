@@ -161,6 +161,11 @@ namespace DNDS::ACM
     template <>
     struct ModelTraits<ACMModel::ConstantDensity2EQ3D> : RANSModelTraits<3, 2> {};
 
+    /**
+     * @brief Return the stable name of an ACM equation set.
+     * @param model Equation-set identifier, including its dimension and turbulence extension.
+     * @return Static model-name string, or "UnknownACMModel" for an unrecognized value.
+     */
     constexpr const char *ModelName(ACMModel model)
     {
         switch (model)

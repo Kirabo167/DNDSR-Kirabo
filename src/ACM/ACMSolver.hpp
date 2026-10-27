@@ -78,7 +78,11 @@ namespace DNDS::ACM
         /** @brief Closure/primitive scratch evaluator reused by unified model solvers. */
         const ssp<TTurbulence> &GetTurbulenceTransport() const { return _turbulence; }
 
-        /** @brief Write the prepared flow and primitive closure scratch fields. */
+        /**
+         *  @brief Write the prepared flow and primitive closure scratch fields.
+         * @param step Output step index used to identify the snapshot.
+         * @param time Time value stored with the flow and closure fields.
+         */
         void WriteOutput(int step, real time) { WriteFlowField(step, time); }
 
         /**
@@ -145,6 +149,7 @@ namespace DNDS::ACM
          * @param pseudoTimeStep Positive local pseudo-time steps.
          * @return Nonlinear iteration and defect report.
          * @note Modifier: Runzhi Ma.
+         * @param time Time used for all boundary evaluations during this nonlinear pseudo-time step.
          */
         TimeStepReport AdvanceImplicitDistributed(
             StateField &states,

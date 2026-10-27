@@ -285,6 +285,39 @@ TEST_CASE("NCFV named no-slip wall is imposed strongly and contributes viscous f
     }
 }
 
+TEST_CASE("NCFV positivity retries restore and halve a rejected physical step")
+{
+    const auto directory = TestDirectory();
+    PrepareDirectory(directory);
+    const auto initial = directory / "retry_initial.csv";
+    WriteInitialField(initial);
+    auto configuration = MakeConfiguration();
+    configuration.initialField.nodeFile = initial.string();
+    configuration.initialField.requireCompleteNodeFile = true;
+    configuration.reconstruction.limitPointRecovery = true;
+    configuration.time.useCFLTimeStep = false;
+    configuration.time.useLocalTimeStep = false;
+    configuration.time.timeStep = 1e4;
+    configuration.time.iterations = 1;
+    configuration.time.rejectNonPhysicalSteps = true;
+    configuration.time.maximumStepRetries = 25;
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    solver.Run();
+    CHECK(solver.CurrentIteration() == 1);
+    CHECK(solver.SimulationTime() > 0);
+    CHECK(solver.SimulationTime() < configuration.time.timeStep);
+    for (DNDS::index i = 0; i < solver.Mesh()->NumNode(); i++)
+    {
+        const auto state = solver.StateField()[i];
+        CHECK(state.allFinite());
+        CHECK(state(0) > 1e-12);
+        CHECK((configuration.physics.gamma - 1) *
+                  (state(4) - .5 * state.template segment<3>(1).squaredNorm() / state(0)) > 1e-12);
+        CHECK(solver.LocalTimeStep(i) == doctest::Approx(solver.SimulationTime()));
+    }
+}
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);

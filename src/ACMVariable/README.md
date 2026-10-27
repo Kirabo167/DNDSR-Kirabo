@@ -24,6 +24,13 @@ cmake --build build --target acmVariable2D acmVariable3D --parallel 4
 ```
 
 Each case is complete; no adjacent Euler-style default file is merged.
+Nonlinear implicit/physical stages accept
+`R <= max(implicitTolerance, implicitRelativeTolerance * R_initial)`; each solve
+or ODE stage fixes its own initial reference. The supplied cases use `1e-8`
+absolute and `1e-4` relative. LU-SGS and GMRES use the shared true linear RMS
+test with `linearAbsoluteTolerance=1e-10` and `linearRelativeTolerance=1e-6`.
+The old `gmresRelativeTolerance` input name remains accepted as an alias during
+loading. A linear iteration budget is distinct from successful convergence.
 `acmVariable_core` is shared and `acmVariable_2D` / `acmVariable_3D` hold
 the separate instantiations. `--emit-schema` describes the selected executable.
 See [the solver migration guide](../../docs/guides/solver_split_zh.md).

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -204,6 +205,7 @@ namespace
         cfg.timeMarchSettings.physicalTimeStep = dt;
         cfg.timeMarchSettings.maxImplicitIterations = 500;
         cfg.timeMarchSettings.implicitTolerance = 1e-12;
+        cfg.timeMarchSettings.linearAbsoluteTolerance = 1e-14;
         cfg.Validate();
         return cfg;
     }
@@ -406,6 +408,85 @@ TEST_CASE("ACM SST BDF2 has second-order physical accuracy away from bounds")
                   << " errors=" << errors[0] << ',' << errors[1] << ',' << errors[2]
                   << " ratios=" << errors[0] / errors[1] << ',' << errors[1] / errors[2] << std::endl;
     }
+}
+
+/// @test Native BDF update logging measures the applied damped increment against the updated state.
+TEST_CASE("ACM laminar physical marching reports actual relative updates")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::Laminar,
+                                    ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 1);
+    cfg.defaultBoundaryType = ACM::BoundaryType::BCWall;
+    cfg.initialState = {1, 0.2, 0, 0.3};
+    cfg.acmSettings.dynamicViscosity = 0.1;
+    cfg.timeMarchSettings.dualTimeConvergenceCriterion = "RelativeUpdate";
+    cfg.timeMarchSettings.dualTimeUpdateMinimumIterations = 1;
+    cfg.timeMarchSettings.dualTimeUpdateRelativeTolerance = 0;
+    cfg.timeMarchSettings.dualTimeRequireConvergence = false;
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.timeMarchSettings.implicitRelaxation = 0.2;
+    cfg.outputSettings.interval = 0;
+    cfg.Validate();
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    const ACM::State before = solver.GetState()[0];
+    std::ostringstream captured;
+    {
+        struct Capture
+        {
+            std::streambuf *previous;
+            explicit Capture(std::ostringstream &target) : previous(std::cout.rdbuf(target.rdbuf())) {}
+            ~Capture() { std::cout.rdbuf(previous); }
+        } capture(captured);
+        solver.Run();
+    }
+    const ACM::State after = solver.GetState()[0];
+    const DNDS::real applied = (after - before).norm();
+    REQUIRE(applied > 1e-10);
+    std::smatch match;
+    const std::string output = captured.str();
+    REQUIRE(std::regex_search(output, match, std::regex(
+        "ACM dual-time inner=1 updateNorm=([^ ]+) stateNorm=([^ ]+) updateRatio=([^ ]+)")));
+    CHECK(std::stod(match[1]) == doctest::Approx(applied).epsilon(1e-3));
+    CHECK(std::stod(match[2]) == doctest::Approx(after.norm()).epsilon(1e-3));
+    CHECK(std::stod(match[3]) == doctest::Approx(applied / after.norm()).epsilon(1e-3));
+    CHECK(output.find("convergenceCriterion=RelativeUpdate") != std::string::npos);
+}
+
+/// @test Even a stationary physical solution performs the requested minimum before update-based exit.
+TEST_CASE("ACM laminar physical marching enforces the update minimum iterations")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::Laminar,
+                                    ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 2);
+    cfg.timeMarchSettings.dualTimeConvergenceCriterion = "RelativeUpdate";
+    cfg.timeMarchSettings.dualTimeUpdateMinimumIterations = 2;
+    cfg.timeMarchSettings.maxImplicitIterations = 5;
+    cfg.outputSettings.interval = 0;
+    cfg.Validate();
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    std::ostringstream captured;
+    {
+        struct Capture
+        {
+            std::streambuf *previous;
+            explicit Capture(std::ostringstream &target) : previous(std::cout.rdbuf(target.rdbuf())) {}
+            ~Capture() { std::cout.rdbuf(previous); }
+        } capture(captured);
+        solver.Run();
+    }
+    const std::string output = captured.str();
+    const std::regex accepted("ACM physical step[^\\n]*inner=2 converged=1[^\\n]*convergenceCriterion=RelativeUpdate");
+    CHECK(std::distance(std::sregex_iterator(output.begin(), output.end(), accepted), std::sregex_iterator()) == 2);
 }
 
 /// @test Unconverged production steps produce no accepted output; diagnostic advancement needs an explicit option.
@@ -735,6 +816,7 @@ namespace
         cfg.timeMarchSettings.physicalTimeStep = 0.01;
         cfg.timeMarchSettings.maxImplicitIterations = 500;
         cfg.timeMarchSettings.implicitTolerance = 1e-12;
+        cfg.timeMarchSettings.linearAbsoluteTolerance = 1e-14;
         cfg.timeMarchSettings.nSteps = 3;
         return cfg;
     }

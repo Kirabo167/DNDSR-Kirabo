@@ -12,6 +12,7 @@
 #include "ACM/ACMBDF2.hpp"
 #include "ACM/ACMConfig.hpp"
 #include "ACM/ACMTime.hpp"
+#include "ACM/ACMLinear.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,54 @@
 
 using namespace DNDS;
 using namespace DNDS::ACM;
+
+/// @test A small applied update can stop independently of the true defect, but only after the minimum count.
+TEST_CASE("ACM BDF2 relative update convergence remains separate from residual convergence")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
+    settings.dualTimeConvergenceCriterion = "RelativeUpdate";
+    settings.dualTimeUpdateRelativeTolerance = 1e-5;
+    settings.dualTimeUpdateMinimumIterations = 2;
+    settings.dualTimeFlowRelativeTolerance = 1e-4;
+    CHECK_NOTHROW(settings.Validate());
+    const nlohmann::ordered_json serialized = settings;
+    CHECK(serialized.get<TimeMarchSettings>().dualTimeUpdateMinimumIterations == 2);
+    CHECK(serialized.get<TimeMarchSettings>().dualTimeUpdateRelativeTolerance == doctest::Approx(1e-5));
+
+    TimeStepReport report;
+    report.initialDefectNorm = 1;
+    report.finalDefectNorm = 0.1;
+    report.initialEquationDefectNorms.fill(1);
+    report.equationDefectNorms.fill(0.1);
+    report.appliedUpdateNorm = 1e-6;
+    report.updatedStateNorm = 2;
+    report.iterations = 1;
+    CHECK_FALSE(settings.DualTimeConverged(report, 4));
+    report.iterations = 2;
+    CHECK(settings.DualTimeConverged(report, 4));
+    CHECK_FALSE(settings.DualTimeResidualConverged(report, 4));
+    report.appliedUpdateNorm = 2e-5;
+    CHECK_FALSE(settings.DualTimeConverged(report, 4)); // The reference criterion uses strictly less than.
+    report.appliedUpdateNorm = std::numeric_limits<DNDS::real>::quiet_NaN();
+    CHECK_FALSE(settings.DualTimeConverged(report, 4));
+    report.appliedUpdateNorm = report.updatedStateNorm = 0;
+    CHECK(report.RelativeUpdateNorm() == 0);
+    CHECK(settings.DualTimeConverged(report, 4));
+    report.appliedUpdateNorm = 1;
+    CHECK(std::isinf(report.RelativeUpdateNorm()));
+    CHECK_FALSE(settings.DualTimeConverged(report, 4));
+    CHECK_THROWS(settings.ValidateDualTimeConvergence(6));
+    settings.dualTimeUpdateMinimumIterations = settings.maxImplicitIterations + 1;
+    CHECK_THROWS(settings.Validate());
+    settings.dualTimeUpdateMinimumIterations = 2;
+    settings.dualTimeUpdateRelativeTolerance = 0;
+    CHECK_THROWS(settings.Validate());
+    settings.dualTimeRequireConvergence = false;
+    CHECK_NOTHROW(settings.Validate());
+    report.appliedUpdateNorm = report.updatedStateNorm = 0;
+    CHECK_FALSE(settings.DualTimeConverged(report, 4));
+}
 
 /// @test Relative convergence keeps independent physical-step references and does not use absolute fallback.
 TEST_CASE("ACM BDF2 grouped relative convergence keeps independent flow and RANS references")
@@ -133,7 +182,90 @@ TEST_CASE("ACM BDF2 explicitly selects absolute or relative convergence")
     }
 }
 
-/// @test Relative mode requires configured thresholds only for active equations; old group-combination names are rejected.
+/// @test OR convergence accepts either threshold per active group, with an absolute floor for a zero reference.
+TEST_CASE("ACM BDF2 absolute or relative convergence keeps every active group constrained")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::BDF2DualTimeGMRES;
+    settings.dualTimeConvergenceCriterion = "AbsoluteOrRelative";
+    settings.implicitTolerance = 1e-8;
+    settings.dualTimeFlowRelativeTolerance = settings.dualTimeTurbulenceRelativeTolerance = 1e-4;
+    CHECK_NOTHROW(settings.Validate());
+    TimeStepReport report;
+    report.initialDefectNorm = 0;
+    report.finalDefectNorm = 5e-9; // Absolute threshold alone passes.
+    report.initialTurbulenceDefectNorm = 100;
+    report.turbulenceDefectNorm = 5e-3; // Relative threshold alone passes.
+    report.equationDefectNorms = {5e-9, 5e-9, 0, 5e-9, 5e-3, 5e-3};
+    CHECK(settings.DualTimeGroupTarget(0, false) == doctest::Approx(1e-8));
+    CHECK(settings.DualTimeGroupTarget(100, true) == doctest::Approx(1e-2));
+    CHECK(settings.DualTimeConverged(report, 6));
+    report.turbulenceDefectNorm = 2e-2;
+    CHECK_FALSE(settings.DualTimeConverged(report, 6));
+    report.turbulenceDefectNorm = 5e-3;
+    report.finalDefectNorm = 2e-8;
+    CHECK_FALSE(settings.DualTimeConverged(report, 6));
+    report.finalDefectNorm = 5e-9;
+    report.equationDefectNorms[0] = std::numeric_limits<DNDS::real>::quiet_NaN();
+    CHECK_FALSE(settings.DualTimeConverged(report, 6));
+
+    settings.dualTimeFlowRelativeTolerance = settings.dualTimeTurbulenceRelativeTolerance = 0;
+    settings.dualTimeRelativeTolerances.fill(1e-4);
+    std::array<DNDS::real, 6> initial{0, 100, 0, 1, 100, 0};
+    std::array<DNDS::real, 6> final{5e-9, 5e-3, 0, 5e-5, 5e-3, 5e-9};
+    CHECK(settings.DualTimeConverged(initial, final, 6));
+    final[5] = 2e-8;
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
+    const nlohmann::ordered_json encoded = settings;
+    CHECK(encoded.get<TimeMarchSettings>().dualTimeConvergenceCriterion == "AbsoluteOrRelative");
+    settings.linearAbsoluteTolerance = settings.linearRelativeTolerance = 0;
+    CHECK_THROWS(settings.Validate());
+}
+
+namespace
+{
+    struct DenseLinearField
+    {
+        Eigen::Vector2d values = Eigen::Vector2d::Zero();
+        void setConstant(DNDS::real value) { values.setConstant(value); }
+        void addTo(const DenseLinearField &other, DNDS::real scale) { values += scale * other.values; }
+        DenseLinearField &operator*=(DNDS::real scale) { values *= scale; return *this; }
+        DNDS::real norm2() { return values.norm(); }
+        DNDS::real dot(const DenseLinearField &other) { return values.dot(other.values); }
+    };
+}
+
+/// @test A small preconditioned norm must not bypass the true linear residual, and budgets never imply success.
+TEST_CASE("ACM implicit linear solves use true absolute or relative residuals")
+{
+    Eigen::Matrix2d matrix;
+    matrix << 4, 1, 1, 3;
+    DenseLinearField rhs, x;
+    rhs.values << 1, 2;
+    const auto build = [](DenseLinearField &field) { field.setConstant(0); };
+    const auto apply = [&](DenseLinearField &input, DenseLinearField &output) { output.values = matrix * input.values; };
+    const auto tinyPreconditioner = [](DenseLinearField &input, DenseLinearField &output) { output.values = 1e-12 * input.values; };
+    const auto jacobi = [&](DenseLinearField &input, DenseLinearField &output) { output.values = input.values.cwiseQuotient(matrix.diagonal()); };
+    const auto gmres = SolveImplicitLinearSystem(rhs, x, false, 2, 2, 2, 1e-10, 1e-6, 1,
+                                                 apply, tinyPreconditioner, build);
+    CHECK(gmres.converged);
+    CHECK(gmres.iterations > 0);
+    CHECK((rhs.values - matrix * x.values).norm() <= gmres.tolerance);
+    const auto spent = SolveImplicitLinearSystem(rhs, x, true, 1, 2, 2, 0, 1e-6, 1, apply, jacobi, build);
+    CHECK_FALSE(spent.converged);
+    CHECK(spent.iterations == 1);
+    const auto relative = SolveImplicitLinearSystem(rhs, x, true, 30, 2, 2, 0, 1e-6, 1, apply, jacobi, build);
+    CHECK(relative.converged);
+    CHECK(relative.iterations < 30);
+    CHECK(relative.finalResidual <= relative.tolerance);
+    rhs.values *= 1e-12;
+    const auto absolute = SolveImplicitLinearSystem(rhs, x, true, 30, 2, 2, 1e-10, 0, 1, apply, jacobi, build);
+    CHECK(absolute.converged);
+    CHECK(absolute.iterations == 0);
+    CHECK(x.values.norm() == 0);
+}
+
+/// @test Relative mode requires configured thresholds only for active equations; unsupported combination names are rejected.
 TEST_CASE("ACM BDF2 convergence selection validates JSON and relative targets")
 {
     TimeMarchSettings settings;
@@ -178,6 +310,7 @@ TEST_CASE("ACM BDF2 convergence selection validates JSON and relative targets")
 TEST_CASE("ACM BDF2 grouped relative settings validate and default to equation controls")
 {
     TimeMarchSettings settings;
+    settings.implicitTolerance = 1e-10;
     settings.dualTimeFlowRelativeTolerance = 1e-3;
     CHECK_THROWS(settings.Validate());
     settings.integrator = TimeIntegratorType::BDF2DualTimeGMRES;
@@ -766,11 +899,15 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     const std::filesystem::path temporaryConfiguration =
         std::filesystem::temp_directory_path() / "dndsr_acm_legacy_bdf2_config.json";
     nlohmann::ordered_json legacyConfiguration = KernelConfiguration{};
+    legacyConfiguration.at("timeMarchSettings")["gmresRelativeTolerance"] = 1e-4;
+    legacyConfiguration.at("timeMarchSettings").erase("linearRelativeTolerance");
+    legacyConfiguration.at("timeMarchSettings").erase("linearAbsoluteTolerance");
     legacyConfiguration.at("timeMarchSettings").erase("physicalTimeStep");
     for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
                             "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
                             "dualTimeRelativeTolerances", "dualTimeRequireConvergence",
-                            "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion"})
+                            "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion",
+                            "dualTimeUpdateRelativeTolerance", "dualTimeUpdateMinimumIterations"})
         legacyConfiguration.at("timeMarchSettings").erase(key);
     for (const char *key : {"variationalTolerance", "variationalMaxIterations", "variationalCheckInterval", "variationalRelaxation"})
         legacyConfiguration.at("reconstructionSettings").erase(key);
@@ -784,6 +921,8 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
         temporaryConfiguration.string(),
         {},
         {});
+    const LoadedConfiguration legacyOverride = LoadConfiguration(
+        temporaryConfiguration.string(), {"/timeMarchSettings/gmresRelativeTolerance"}, {"1e-5"});
     std::filesystem::remove(temporaryConfiguration);
 
     CHECK(loaded.configuration.timeMarchSettings.physicalTimeStep == doctest::Approx(0.01));
@@ -795,6 +934,12 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     CHECK(loaded.configuration.timeMarchSettings.dualTimeFlowRelativeTolerance == 0);
     CHECK(loaded.configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance == 0);
     CHECK(loaded.configuration.timeMarchSettings.dualTimeConvergenceCriterion == "Absolute");
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeUpdateRelativeTolerance == doctest::Approx(1e-5));
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeUpdateMinimumIterations == 2);
+    CHECK(loaded.configuration.timeMarchSettings.linearRelativeTolerance == doctest::Approx(1e-4));
+    CHECK(loaded.configuration.timeMarchSettings.linearAbsoluteTolerance == doctest::Approx(1e-10));
+    CHECK(legacyOverride.configuration.timeMarchSettings.linearRelativeTolerance == doctest::Approx(1e-5));
+    CHECK_FALSE(loaded.resolvedJson.at("timeMarchSettings").contains("gmresRelativeTolerance"));
     CHECK(loaded.configuration.reconstructionSettings.variationalTolerance == 0);
     REQUIRE(loaded.resolvedJson.contains("timeMarchSettings"));
     CHECK(loaded.resolvedJson.at("timeMarchSettings").contains("physicalTimeStep"));

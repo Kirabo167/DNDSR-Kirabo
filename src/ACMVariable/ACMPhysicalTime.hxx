@@ -88,6 +88,7 @@ namespace DNDS::ACMVariable
             WriteFlowField(0,0);
         for (int step=1; step<=settings.nSteps; ++step)
         {
+            std::vector<real> initialStageNorms;
             const auto frhs = [&](TQ &residual, TQ &values, TScalar &, int, real c, int position)
             {
                 decode(values,position);
@@ -174,14 +175,19 @@ namespace DNDS::ACMVariable
                     if (physical) pressure[position][cell](0) += relaxation*_linearIncrement[cell](4);
                 }
             };
-            const auto fstop = [&](int iteration, TQ &residual, int)
+            const auto fstop = [&](int iteration, TQ &residual, int stage)
             {
                 const real norm=std::max({lastNorm,
                     residual.norm2()/std::sqrt(std::max(real(1),real(7*_mesh->NumCellGlobal()))),
                     constraintNorm[0],constraintNorm[1]});
-                DNDS_check_throw_info(iteration<settings.maxImplicitIterations || norm<=settings.implicitTolerance,
+                if (initialStageNorms.size() <= static_cast<std::size_t>(stage))
+                    initialStageNorms.resize(static_cast<std::size_t>(stage) + 1, -1);
+                if (iteration == 1 || initialStageNorms[stage] < 0)
+                    initialStageNorms[stage] = norm;
+                const real target = settings.ImplicitTarget(initialStageNorms[stage]);
+                DNDS_check_throw_info(iteration<settings.maxImplicitIterations || norm<=target,
                                       "Physical ODE stage rejected: nonlinear residual did not converge");
-                return norm<=settings.implicitTolerance;
+                return norm<=target;
             };
             const auto fincrement = [](TQ &values, TQ &delta, real scale, int)
             { values.addTo(delta,scale); };

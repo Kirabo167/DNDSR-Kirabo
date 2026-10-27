@@ -52,12 +52,16 @@
         // Fixed upper limit for the dual-time iterations in every physical step.
         "maxImplicitIterations": 15,
         "implicitTolerance": 1e-8,
+        "dualTimeConvergenceCriterion": "AbsoluteOrRelative",
+        "dualTimeFlowRelativeTolerance": 1e-4,
+        "dualTimeTurbulenceRelativeTolerance": 0.0,
         "implicitRelaxation": 0.7,
         "lusgsSweeps": 2,
-        // Required complete-config fields; inactive for BDF2DualTimeLUSGS.
+        // GMRES dimensions are inactive; linear residual tolerances apply to standalone LU-SGS too.
         "gmresSubspace": 20,
         "gmresRestarts": 3,
-        "gmresRelativeTolerance": 1e-4,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
         "gmresPreconditioner": "LUSGS"
     },
 

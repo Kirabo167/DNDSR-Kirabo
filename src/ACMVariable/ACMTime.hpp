@@ -125,12 +125,14 @@ namespace DNDS::ACMVariable
         real cfl = 0.5;                                                     ///< CFL multiplier for spectral-radius stepping.
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
-        real implicitTolerance = 1e-10;                                     ///< Global RMS steady or physical defect tolerance.
+        real implicitTolerance = 1e-8;                                      ///< Global RMS steady or physical defect absolute tolerance.
+        real implicitRelativeTolerance = 0;                                ///< Relative nonlinear RMS target; OR with implicitTolerance.
         real implicitRelaxation = 1.0;                                      ///< Damping applied to every implicit correction.
-        int lusgsSweeps = 2;                                                ///< Fixed SGS residual-correction applications per solve.
+        int lusgsSweeps = 2;                                                ///< Maximum standalone SGS sweeps; fixed GMRES preconditioner sweeps.
         int gmresSubspace = 10;                                             ///< Arnoldi vectors per GMRES restart.
         int gmresRestarts = 3;                                              ///< Maximum generic-GMRES restart count.
-        real gmresRelativeTolerance = 1e-6;                                 ///< Relative preconditioned linear residual target.
+        real linearRelativeTolerance = 1e-6;                                ///< Relative true linear RMS target for LU-SGS and GMRES.
+        real linearAbsoluteTolerance = 1e-10;                               ///< Absolute true linear RMS target; OR with relative tolerance.
         GMRESPreconditionerType gmresPreconditioner =
             GMRESPreconditionerType::LUSGS; ///< Left preconditioner used by GMRES.
 
@@ -155,11 +157,13 @@ namespace DNDS::ACMVariable
                        DNDS::Config::range(1));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(implicitRelativeTolerance, "Implicit nonlinear RMS target relative to this solve's initial defect; OR with implicitTolerance", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(implicitRelaxation, "Implicit correction relaxation", DNDS::Config::range(0.0, 1.0));
-            DNDS_FIELD(lusgsSweeps, "ACM fixed LU-SGS residual-correction applications", DNDS::Config::range(1));
+            DNDS_FIELD(lusgsSweeps, "Maximum standalone LU-SGS sweeps; fixed sweeps for GMRES preconditioning", DNDS::Config::range(1));
             DNDS_FIELD(gmresSubspace, "ACM GMRES Krylov subspace size", DNDS::Config::range(2));
             DNDS_FIELD(gmresRestarts, "ACM GMRES restart count", DNDS::Config::range(0));
-            DNDS_FIELD(gmresRelativeTolerance, "ACM GMRES relative residual tolerance", DNDS::Config::range(0.0));
+            DNDS_FIELD(linearRelativeTolerance, "True linear RMS target relative to the initial right-hand side; OR with linearAbsoluteTolerance", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(linearAbsoluteTolerance, "Absolute true linear RMS target for LU-SGS and GMRES; OR with linearRelativeTolerance", DNDS::Config::range(0.0));
             DNDS_FIELD(gmresPreconditioner, "ACM GMRES left preconditioner",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(GMRESPreconditionerType)));
             config.post_read([](T &settings)
@@ -171,6 +175,8 @@ namespace DNDS::ACMVariable
          * @throws std::runtime_error If a count, time step, tolerance, or relaxation is invalid.
          */
         void Validate() const;
+        /** @brief Absolute-or-relative nonlinear RMS target, fixed at the start of each solve. */
+        real ImplicitTarget(real initialResidual) const;
     };
 
     using StateField = std::vector<State>;    ///< Rank-local owned ACM states.

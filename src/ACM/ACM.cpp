@@ -777,13 +777,13 @@ namespace DNDS::ACM
         return _conditions[static_cast<std::size_t>(id)];
     }
 
-    /** @copydoc BoundaryHandler::GetTypeFromID */
+    // See ACMBC.hpp for the function contract.
     BoundaryType BoundaryHandler::GetTypeFromID(Geom::t_index id) const
     {
         return GetConditionFromID(id).type;
     }
 
-    /** @copydoc BoundaryHandler::GetValueFromID */
+    // See ACMBC.hpp for the function contract.
     State BoundaryHandler::GetValueFromID(Geom::t_index id) const
     {
         return GetConditionFromID(id).ValueState();
@@ -1113,10 +1113,21 @@ namespace DNDS::ACM
         std::ifstream input(jsonName);
         DNDS_check_throw_info(input.good(), "ACM case configuration file does not exist: " + jsonName);
         nlohmann::ordered_json resolved = nlohmann::ordered_json::parse(input, nullptr, true, true);
+        if (resolved.at("timeMarchSettings").contains("gmresRelativeTolerance"))
+        {
+            auto &timeMarch = resolved.at("timeMarchSettings");
+            DNDS_check_throw_info(!timeMarch.contains("linearRelativeTolerance") ||
+                                      timeMarch.at("linearRelativeTolerance") == timeMarch.at("gmresRelativeTolerance"),
+                                  "Specify only linearRelativeTolerance; the legacy gmresRelativeTolerance conflicts");
+            timeMarch["linearRelativeTolerance"] = timeMarch.at("gmresRelativeTolerance");
+            timeMarch.erase("gmresRelativeTolerance");
+        }
 
         for (std::size_t i = 0; i < overwriteKeys.size(); i++)
         {
-            const nlohmann::ordered_json::json_pointer key(overwriteKeys[i]);
+            const std::string keyName = overwriteKeys[i] == "/timeMarchSettings/gmresRelativeTolerance"
+                                            ? "/timeMarchSettings/linearRelativeTolerance" : overwriteKeys[i];
+            const nlohmann::ordered_json::json_pointer key(keyName);
             try
             {
                 resolved[key] = nlohmann::ordered_json::parse(overwriteValues[i]);
@@ -1137,7 +1148,9 @@ namespace DNDS::ACM
         for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
                                 "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
                                 "dualTimeRelativeTolerances", "dualTimeRequireConvergence",
-                                "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion"})
+                                "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion",
+                                "dualTimeUpdateRelativeTolerance", "dualTimeUpdateMinimumIterations",
+                                "linearRelativeTolerance", "linearAbsoluteTolerance"})
             if (!timeMarch.contains(key))
                 timeMarch[key] = timeDefaults.at(key);
         auto &reconstruction = resolved.at("reconstructionSettings");

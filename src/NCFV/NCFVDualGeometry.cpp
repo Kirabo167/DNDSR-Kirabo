@@ -13,6 +13,15 @@ namespace DNDS::NCFV
     {
         constexpr std::size_t MaxAffineSupportNodes = 8;
 
+        /**
+         * @brief Locate a support entry in an already initialized sorted sparse stencil.
+         * @param [in,out] stencil Sorted unique entries with a node member; the function does not insert new
+         *     nodes.
+         * @param node Support-node ID that must already be present.
+         * @return Mutable reference to the matching stencil entry.
+         * @tparam TEntry Stencil entry type containing a node ID and integration weights.
+         * @throws std::runtime_error If the requested support node was not initialized.
+         */
         template <class TEntry>
         TEntry &FindStencilNode(
             std::vector<TEntry> &stencil,
@@ -28,6 +37,11 @@ namespace DNDS::NCFV
             return *iterator;
         }
 
+        /**
+         * @brief Collect all primal support-node IDs used by affine simplex vertices.
+         * @param points Construction points with primal-node interpolation supports.
+         * @return Sorted unique support-node IDs.
+         */
         std::vector<index> CollectSupportNodes(
             const std::vector<AffinePoint> &points)
         {
@@ -45,6 +59,14 @@ namespace DNDS::NCFV
             return nodes;
         }
 
+        /**
+         * @brief Create zero-initialized sparse entries for a complete support-node set.
+         * @param [out] stencil Initially empty destination stencil; one default-weight entry is appended for each
+         *     node.
+         * @param nodes Support-node IDs in the required sorted unique order.
+         * @tparam TEntry Aggregate stencil entry type initialized from its node ID.
+         * @pre stencil is empty.
+         */
         template <class TEntry>
         void InitializeStencil(
             std::vector<TEntry> &stencil,
@@ -57,6 +79,16 @@ namespace DNDS::NCFV
                 stencil.emplace_back(TEntry{node});
         }
 
+        /**
+         * @brief Expand an anchor-centered differential simplex integral into sparse primal-gradient weights.
+         * @param points Two, three, or four affine vertices of a line, triangle, or tetrahedron.
+         * @param anchorNode Primal node defining the Taylor expansion origin.
+         * @param anchorCoordinate Anchor coordinate in the same periodic frame as points.
+         * @param measure Positive simplex length, area, or volume.
+         * @param callback Callback (node, vectorWeight) invoked in sorted node order for nonzero
+         *     gradient-integration weights.
+         * @tparam TCallback Callable accepting a node ID and a const Vector3 weight.
+         */
         template <class TCallback>
         void ForEachDifferentialWeight(
             const std::vector<AffinePoint> &points,
@@ -139,6 +171,12 @@ namespace DNDS::NCFV
             }
         }
 
+        /**
+         * @brief Audit sorted unique stencil IDs against the process-local node range.
+         * @param stencil Sparse integration entries whose node IDs are checked.
+         * @param processNodeCount Exclusive upper bound of valid owned/ghost node indices.
+         * @tparam TEntry Stencil entry type exposing a node member.
+         */
         template <class TEntry>
         void CheckStencilNodes(
             const std::vector<TEntry> &stencil,
@@ -157,6 +195,14 @@ namespace DNDS::NCFV
             }
         }
 
+        /**
+         * @brief Accumulate one volume simplex's differential weights into node point-recovery data.
+         * @param [in,out] stencil Initialized point-recovery stencil receiving vector gradient weights.
+         * @param points Affine simplex vertices with initialized primal support IDs.
+         * @param anchorNode Primal node defining the differential expansion origin.
+         * @param anchorCoordinate Anchor coordinate in the simplex periodic frame.
+         * @param measure Positive simplex integration measure.
+         */
         void MergePointRecoveryWeights(
             std::vector<EfficientPointRecoveryNode> &stencil,
             const std::vector<AffinePoint> &points,
@@ -170,6 +216,16 @@ namespace DNDS::NCFV
                 { FindStencilNode(stencil, node).gradientWeight += value; });
         }
 
+        /**
+         * @brief Accumulate state-gradient and physical-flux-gradient integral weights for one surface side.
+         * @param [in,out] stencil Initialized macro-surface stencil receiving differential corrections.
+         * @param points Affine simplex vertices with initialized primal support IDs.
+         * @param anchorNode Primal node defining the differential expansion origin.
+         * @param anchorCoordinate Anchor coordinate in the simplex periodic frame.
+         * @param measure Positive simplex integration measure.
+         * @param unitNormal Oriented unit normal used to convert vector weights to flux-derivative tensor weights.
+         * @param side Zero for the first edge endpoint, one for the second endpoint.
+         */
         void MergeSurfaceDifferentialWeights(
             std::vector<EfficientSurfaceNode> &stencil,
             const std::vector<AffinePoint> &points,
@@ -191,6 +247,12 @@ namespace DNDS::NCFV
                 });
         }
 
+        /**
+         * @brief Accumulate affine mean-gradient integration weights on one surface simplex.
+         * @param [in,out] stencil Initialized surface stencil receiving scalar gradient weights.
+         * @param points Affine surface-simplex vertices.
+         * @param measure Positive surface length/area.
+         */
         void MergeSurfaceGradientWeights(
             std::vector<EfficientSurfaceNode> &stencil,
             const std::vector<AffinePoint> &points,
@@ -203,6 +265,12 @@ namespace DNDS::NCFV
                         pointFactor * coefficient.coefficient;
         }
 
+        /**
+         * @brief Initialize and integrate affine support weights for one boundary simplex.
+         * @param [out] stencil Initially empty boundary stencil receiving scalar integration weights.
+         * @param points Affine boundary segment/triangle vertices.
+         * @param measure Positive boundary length/area.
+         */
         void MergeBoundaryWeights(
             std::vector<EfficientBoundaryNode> &stencil,
             const std::vector<AffinePoint> &points,
@@ -219,16 +287,35 @@ namespace DNDS::NCFV
                 }
         }
 
+        /**
+         * @brief Test membership of a primal node in a connectivity row.
+         * @param nodes Node-ID sequence to search.
+         * @param target Node ID to find.
+         * @return True if target appears at least once.
+         */
         bool ContainsNode(const std::vector<index> &nodes, index target)
         {
             return std::find(nodes.begin(), nodes.end(), target) != nodes.end();
         }
 
+        /**
+         * @brief Test whether both edge endpoints belong to a connectivity row.
+         * @param nodes Node-ID sequence, normally a primal-face vertex list.
+         * @param node0 First endpoint ID.
+         * @param node1 Second endpoint ID.
+         * @return True if both endpoint IDs are present.
+         */
         bool ContainsEdge(const std::vector<index> &nodes, index node0, index node1)
         {
             return ContainsNode(nodes, node0) && ContainsNode(nodes, node1);
         }
 
+        /**
+         * @brief Compute a line/triangle normal vector weighted by its geometric measure.
+         * @param points Two affine points for a 2-D line or three for a 3-D triangle.
+         * @param orientationDirection Direction whose dot product selects the desired surface orientation.
+         * @return Normal-times-length/area vector, flipped when it opposes orientationDirection.
+         */
         Vector3 OrientedSurfaceVector(
             const std::vector<AffinePoint> &points,
             const Vector3 &orientationDirection)
@@ -254,6 +341,13 @@ namespace DNDS::NCFV
             return vectorMeasure;
         }
 
+        /**
+         * @brief Extract the O1 vertex subset of one cell-local primal face.
+         * @param mesh Distributed primal mesh supplying cell connectivity.
+         * @param iCell Process-local parent-cell index.
+         * @param iLocalFace Face number within the parent reference element.
+         * @return Mesh-local face vertex IDs in reference-element order.
+         */
         std::vector<index> FaceVertexNodes(
             const ssp<Geom::UnstructuredMesh> &mesh,
             index iCell,
@@ -267,6 +361,13 @@ namespace DNDS::NCFV
             return faceNodes;
         }
 
+        /**
+         * @brief Extract the endpoint vertex IDs of one edge of a primal face.
+         * @param face Reference-element descriptor of the primal face.
+         * @param faceNodes Face vertex connectivity in reference-element order.
+         * @param iLocalEdge Zero-based edge number within the face.
+         * @return Mesh-local primal-edge endpoint IDs.
+         */
         std::vector<index> FaceEdgeNodes(
             Geom::Elem::Element face,
             const std::vector<index> &faceNodes,
@@ -279,6 +380,11 @@ namespace DNDS::NCFV
             return edgeNodes;
         }
 
+        /**
+         * @brief Add simplex raw moments into an aggregate dual-volume moment record.
+         * @param [in,out] destination Running zeroth, first, and second moments.
+         * @param source Additional moments expressed about the same coordinate origin.
+         */
         void AccumulateMoments(RawMoments &destination, const RawMoments &source)
         {
             destination.measure += source.measure;

@@ -124,9 +124,9 @@ namespace DNDS::NCFV
             DNDS_FIELD(meshFile, "Input O1 CGNS mesh file");
             DNDS_FIELD(reorderCells, "Reorder local primal cells", DNDS::Config::range(0, 1));
             DNDS_FIELD(periodicTolerance, "Periodic-node matching tolerance", DNDS::Config::range(0.0));
-            DNDS_FIELD(periodicLengths, "Translational periodic box lengths [Lx,Ly,Lz]; zeros disable");
+            DNDS_FIELD(periodicLengths, "Translational periodic lengths [Lx,Ly,Lz]; zero disables that axis (3-D only)");
             DNDS_FIELD(periodicBoundaryPairs,
-                       "Flat [main1,donor1,...] CGNS zone names; empty infers pairs from Periodic boundaryZones order");
+                       "Flat [main,donor,...] CGNS zone names for positive-length axes in x,y,z order; empty infers from Periodic boundaryZones order");
             config.field_section(&T::partitionOptions, "partitionOptions", "Existing DNDSR partition options");
         }
     };
@@ -143,7 +143,10 @@ namespace DNDS::NCFV
         // It is intentionally absent from the serialized configuration schema.
         bool profileIntegrationInitialization = false;
 
-        /** DNDSR quadrature APIs take the highest polynomial degree that must be exact. */
+        /**
+         * @brief DNDSR quadrature APIs take the highest polynomial degree that must be exact.
+         * @return surfaceQuadratureOrder - 1, the highest polynomial degree that must be integrated exactly.
+         */
         [[nodiscard]] int SurfaceQuadraturePolynomialDegree() const
         {
             return surfaceQuadratureOrder - 1;
@@ -169,6 +172,7 @@ namespace DNDS::NCFV
         ReconstructionMethod method = ReconstructionMethod::SVDLeastSquares;
         real stencilSizeFactor = 1.7;
         int maximumStencilRings = 4;
+        bool completeStencilRings = false;
         real distanceWeightPower = 1.0;
         real distanceWeightFloor = 0.15;
         real svdTolerance = 1e-11;
@@ -177,6 +181,13 @@ namespace DNDS::NCFV
         real variationalRelaxation = 1.0;
         real variationalWeight = 1.0;
         bool enableLimiter = true;
+        bool limitPointRecovery = false;
+        bool sharedGradientFaceSweep = false;
+        bool limitPressure = false;
+        bool directionalPairBounds = false;
+        bool limitFluxCorrection = false;
+        bool fluxCorrectionPairBounds = false;
+        real maximumFluxCorrection = 1.0;
 
         DNDS_DECLARE_CONFIG(ReconstructionSettings)
         {
@@ -188,6 +199,8 @@ namespace DNDS::NCFV
             DNDS_FIELD(stencilSizeFactor, "Stencil size divided by quadratic basis size",
                        DNDS::Config::range(1.0, 8.0));
             DNDS_FIELD(maximumStencilRings, "Maximum breadth-first node rings", DNDS::Config::range(1, 8));
+            DNDS_FIELD(completeStencilRings,
+                       "Keep every candidate in the first admissible complete graph ring instead of selecting a compact subset");
             DNDS_FIELD(distanceWeightPower, "Inverse-distance least-squares exponent", DNDS::Config::range(0.0, 8.0));
             DNDS_FIELD(distanceWeightFloor, "Minimum normalized stencil distance", DNDS::Config::range(1e-8, 1.0));
             DNDS_FIELD(svdTolerance,
@@ -203,6 +216,21 @@ namespace DNDS::NCFV
                        "Variational w: shared weight on squared value and first-derivative jumps, relative to the Hessian jump",
                        DNDS::Config::range(0.0));
             DNDS_FIELD(enableLimiter, "Enable one-coefficient Barth--Jespersen limiting");
+            DNDS_FIELD(limitPointRecovery,
+                       "Efficient mode: limit point recovery and complete interface increments about conservative means");
+            DNDS_FIELD(sharedGradientFaceSweep,
+                       "Single sequential sweep over owned interface means; update every contributing shared gradient in place; MPI rank blocks ordered");
+            DNDS_FIELD(limitPressure,
+                       "Also bound point and interface pressure by one-ring mean pressures; requires limitPointRecovery");
+            DNDS_FIELD(directionalPairBounds,
+                       "Use endpoint mean bounds on each interface; requires limitPointRecovery and can reduce smooth accuracy");
+            DNDS_FIELD(limitFluxCorrection,
+                       "Experimental conservative LLF bar-state limiting of the complete high-order flux correction; inviscid global CFL mode, first-order open boundaries");
+            DNDS_FIELD(fluxCorrectionPairBounds,
+                       "Tighten corrected bar-state bounds to this edge's two means and low-order bar; requires limitFluxCorrection");
+            DNDS_FIELD(maximumFluxCorrection,
+                       "Maximum shared coefficient of the limited flux correction; zero gives the LLF reference",
+                       DNDS::Config::range(0.0, 1.0));
         }
     };
 
@@ -339,6 +367,10 @@ namespace DNDS::NCFV
     {
         std::vector<std::string> program;
 
+        /**
+         * @brief Join the initializer program lines into an executable expression source string.
+         * @return All configured lines in order, each followed by a newline, including the last line.
+         */
         [[nodiscard]] std::string GetProgram() const
         {
             std::string result;
@@ -399,6 +431,8 @@ namespace DNDS::NCFV
         real maximumTimeStep = 1e10;
         real endTime = -1.0;
         int reportInterval = 10;
+        bool rejectNonPhysicalSteps = false;
+        int maximumStepRetries = 12;
 
         DNDS_DECLARE_CONFIG(TimeSettings)
         {
@@ -411,6 +445,10 @@ namespace DNDS::NCFV
             DNDS_FIELD(maximumTimeStep, "Upper time-step clamp", DNDS::Config::range(0.0));
             DNDS_FIELD(endTime, "Stop at this physical time; negative disables time-based stopping");
             DNDS_FIELD(reportInterval, "Residual reporting interval", DNDS::Config::range(1));
+            DNDS_FIELD(rejectNonPhysicalSteps,
+                       "Reject an SSPRK3 step with nonphysical means and retry with half the step");
+            DNDS_FIELD(maximumStepRetries, "Maximum time-step halvings after a rejected step",
+                       DNDS::Config::range(0, 40));
         }
     };
 
@@ -484,6 +522,12 @@ namespace DNDS::NCFV
                              { configuration.Validate(); });
         }
 
+        /**
+         * @brief Validate the complete NCFV case before mesh reading or time marching.
+         * @details Checks solver selection, dimensions, integration/reconstruction choices, gas and boundary data,
+         *     initializers, time-step controls, and output requirements.
+         * @throws std::runtime_error If a value or combination of settings is unsupported or inconsistent.
+         */
         void Validate() const;
     };
 
@@ -493,6 +537,16 @@ namespace DNDS::NCFV
         nlohmann::ordered_json resolvedJson;
     };
 
+    /**
+     * @brief Load a JSON case, merge typed defaults, apply command-line overrides, and validate the result.
+     * @param jsonName Path to the case JSON file; JSON comments are accepted by the parser.
+     * @param overwriteKeys JSON-pointer paths to override, in the same order as overwriteValues; empty means no
+     *     overrides.
+     * @param overwriteValues Replacement texts parsed as JSON when possible, otherwise retained as strings; length
+     *     must match overwriteKeys.
+     * @return Typed validated configuration together with its fully resolved JSON representation.
+     * @throws std::runtime_error If the file is unavailable, override lengths differ, or case validation fails.
+     */
     LoadedConfiguration LoadConfiguration(
         const std::string &jsonName,
         const std::vector<std::string> &overwriteKeys = {},

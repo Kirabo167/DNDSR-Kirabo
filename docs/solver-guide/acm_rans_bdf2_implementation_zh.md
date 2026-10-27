@@ -108,8 +108,8 @@ $\rho_0$ 恒定，故输运 $\rho_0 k,\rho_0\omega$ 与输运原始 $k,\omega$ �
 1. 使用流场和 SST 历史取得当前 BE/BDF2 系数，设置目标物理时间，并依据当前涡黏度计算伪时间 CFL。
 2. 求流场缺陷 $\mathcal F_U$，组装原有的四变量冻结重构隐式矩阵，并在速度对角上加入 $a_0M_U/\Delta t$。GMRES 或 LU-SGS 解出流场修正。
 3. 用修正后的流场评估 SST 空间残差，减去 $\mathcal D_t q$；采用带正值界限的分离式 SSPRK3 伪时间子步更新 $k,\omega$。
-4. 用新的 SST 涡黏度重算流场缺陷，同时计算 SST 物理时间缺陷。只有两个缺陷都达到 `implicitTolerance` 才提前结束内迭代。
-5. 完成物理步后提交流场与 SST 历史。即使达到 `maxImplicitIterations` 而没有收敛，现有驱动仍会提交该物理步，日志中的 `converged=0` 与 `turbResidual` 必须一起检查。
+4. 用新的 SST 涡黏度重算流场缺陷，同时计算 SST 物理时间缺陷。当前`AbsoluteOrRelative`配置下，每个组分别达到绝对或相对阈值即可结束内迭代，阈值为`max(implicitTolerance, rtol*本步该组初值)`。
+5. 收敛后才提交流场与SST历史。默认`dualTimeRequireConvergence=true`会拒绝达到内迭代上限但未达标的物理步；仅显式设为`false`才允许诊断推进，日志仍显示`converged=0`。
 
 主要代码位置如下：
 

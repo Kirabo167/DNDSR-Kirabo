@@ -4,6 +4,7 @@
 #pragma once
 
 #include "ACMRANSSolver.hpp"
+#include "ACMLinear.hpp"
 
 #include <cmath>
 #include <filesystem>
@@ -363,13 +364,13 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model, true>::ApplyPreconditioner(TDof &input, TDof &output, bool lusgs)
+    void ACMSolver<model, true>::ApplyPreconditioner(TDof &input, TDof &output, bool lusgs, int sweeps)
     {
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
             _flowInput[cell] = input[cell].template head<4>();
         if (lusgs)
             GetEvaluator()->SolveLUSGS(_flowInput, _flowDiagonal, _faceJacobians, _flowOutput,
-                                      _configuration.timeMarchSettings.lusgsSweeps);
+                                      sweeps > 0 ? sweeps : _configuration.timeMarchSettings.lusgsSweeps);
         else
             GetEvaluator()->ApplyBlockJacobi(_flowInput, _flowDiagonal, _flowOutput);
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
@@ -387,34 +388,35 @@ namespace DNDS::ACM
     {
         _increment.setConstant(0.0);
         const auto integrator = _configuration.timeMarchSettings.integrator;
-        if (lusgs || integrator == TimeIntegratorType::ImplicitEulerBlockJacobi)
+        if (integrator == TimeIntegratorType::ImplicitEulerBlockJacobi)
         {
             ApplyPreconditioner(_defect, _increment, lusgs);
             return;
         }
-        Linear::GMRES_LeftPreconditioned<TDof> gmres(
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresSubspace),
+        const auto &settings = _configuration.timeMarchSettings;
+        const auto report = SolveImplicitLinearSystem(
+            _defect, _increment, lusgs,
+            settings.lusgsSweeps, settings.gmresSubspace, settings.gmresRestarts,
+            settings.linearAbsoluteTolerance, settings.linearRelativeTolerance,
+            std::sqrt(static_cast<real>(GetMesh()->NumCellGlobal()) * nVarsFixed),
+            [this](TDof &input, TDof &output) { ApplyOperator(input, output); },
+            [&](TDof &input, TDof &output)
+            {
+                ApplyPreconditioner(input, output,
+                    lusgs || settings.gmresPreconditioner == GMRESPreconditionerType::LUSGS,
+                    lusgs ? 1 : settings.lusgsSweeps);
+            },
             [this](TDof &field)
             {
                 GetReconstruction()->BuildUDof(field, nVarsFixed);
                 field.setConstant(0.0);
             });
-        gmres.solve(
-            [this](TDof &input, TDof &output) { ApplyOperator(input, output); },
-            [this](TDof &input, TDof &output)
-            {
-                ApplyPreconditioner(input, output,
-                    _configuration.timeMarchSettings.gmresPreconditioner == GMRESPreconditionerType::LUSGS);
-            },
-            [](TDof &left, TDof &right) -> real { return left.dot(right); },
-            _defect, _increment,
-            // ACM counts restarts; shared GMRES takes the total cycle budget.
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts) + 1U,
-            [this](uint32_t, real residual, real initial)
-            {
-                return residual <= _configuration.timeMarchSettings.gmresRelativeTolerance *
-                                   std::max(initial, verySmallReal);
-            });
+        if (_mpi.rank == 0)
+            log() << "ACM linear solver=" << (lusgs ? "LUSGS" : "GMRES")
+                  << " iterations=" << report.iterations << " trueResidual=" << report.finalResidual
+                  << " initial=" << report.initialResidual << " target=" << report.tolerance
+                  << " relativeResidual=" << (report.initialResidual > 0 ? report.finalResidual / report.initialResidual : 0)
+                  << " converged=" << report.converged << std::endl;
     }
 
     template <ACMModel model>

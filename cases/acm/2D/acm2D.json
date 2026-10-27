@@ -51,12 +51,14 @@
         // At most five nonlinear backward-Euler corrections per outer pseudo-time step.
         "maxImplicitIterations": 5,
         "implicitTolerance": 1e-8,
+        "steadyRelativeTolerance": 1e-4,
         "implicitRelaxation": 0.8,
         // Two LU-SGS sweeps are used for every GMRES preconditioner application.
         "lusgsSweeps": 2,
         "gmresSubspace": 20,
         "gmresRestarts": 2,
-        "gmresRelativeTolerance": 1e-4,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
         "gmresPreconditioner": "LUSGS"
     },
     // Re_D=20 is laminar. This section remains present because one complete JSON must cover all modes;

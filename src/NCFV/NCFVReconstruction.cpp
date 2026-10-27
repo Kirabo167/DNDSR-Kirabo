@@ -15,6 +15,12 @@ namespace DNDS::NCFV
 {
     namespace
     {
+        /**
+         * @brief Validate active reconstruction scales and compute their reciprocals.
+         * @param lengths Three reference lengths; active entries must be finite and strictly positive.
+         * @param dimension Active spatial dimension, two or three.
+         * @return Three reciprocals, with inactive components left at one.
+         */
         Vector3 InverseReferenceLengths(const Vector3 &lengths, int dimension)
         {
             DNDS_check_throw_info(dimension == 2 || dimension == 3,
@@ -27,6 +33,13 @@ namespace DNDS::NCFV
             return inverse;
         }
 
+        /**
+         * @brief Evaluate normalized cubic Taylor modes used to assess stencil truncation error.
+         * @param displacement Physical point-minus-anchor offset.
+         * @param referenceLengths Positive anchor normalization lengths.
+         * @param dimension Active dimension, two or three.
+         * @return Four cubic modes in 2-D or ten in 3-D, with Taylor factorial scaling.
+         */
         Eigen::VectorXd CubicPointBasis(
             const Vector3 &displacement,
             const Vector3 &referenceLengths,
@@ -57,6 +70,15 @@ namespace DNDS::NCFV
             return basis;
         }
 
+        /**
+         * @brief Find and emphasize weakly resolved polynomial directions of a weighted stencil matrix.
+         * @param weighted Distance-weighted design matrix, with stencil equations as rows and basis modes as
+         *     columns.
+         * @param method SVDLeastSquares selects singular vectors; other supported methods use normal-matrix
+         *     eigenvectors.
+         * @return Basis-direction matrix with inverse-strength scaling; identity is returned for degenerate/failed
+         *     decompositions.
+         */
         Eigen::MatrixXd WeightedWeakDirections(
             const Eigen::MatrixXd &weighted,
             ReconstructionMethod method)
@@ -108,6 +130,15 @@ namespace DNDS::NCFV
             real condition = veryLargeReal;
         };
 
+        /**
+         * @brief Build a weighted polynomial recovery operator and estimate its rank and condition number.
+         * @param weighted Already row-weighted design matrix, with stencil equations as rows.
+         * @param weights Row weights additionally applied to the unweighted state-jump right-hand side.
+         * @param method Selects truncated SVD or full-rank normal-equation LDLT inversion.
+         * @param relativeTolerance Relative singular-value threshold for rank decisions.
+         * @return Recovery inverse, accepted numerical rank, and condition estimate; failed normal-equation solves
+         *     leave an empty inverse.
+         */
         WeightedLeastSquaresOperator BuildWeightedLeastSquaresOperator(
             const Eigen::MatrixXd &weighted,
             const Eigen::VectorXd &weights,
@@ -197,6 +228,13 @@ namespace DNDS::NCFV
             return result;
         }
 
+        /**
+         * @brief Form physical second derivatives of the normalized quadratic basis.
+         * @param referenceLengths Positive normalization lengths in active directions.
+         * @param dimension Spatial dimension, two or three.
+         * @return dimension*dimension by BasisSize matrix with Hessian directions flattened in row-major (i,j)
+         *     order.
+         */
         Eigen::MatrixXd QuadraticHessianRows(
             const Vector3 &referenceLengths, int dimension)
         {
@@ -227,6 +265,17 @@ namespace DNDS::NCFV
             return hessian;
         }
 
+        /**
+         * @brief Build value, gradient, and Hessian rows for a variational neighbor constraint.
+         * @param displacement Physical evaluation-point offset from the polynomial anchor.
+         * @param referenceLengths Positive normalization lengths of the anchor polynomial.
+         * @param meanBasis Anchor dual-volume mean basis subtracted from the point-value row.
+         * @param edgeLength Physical endpoint distance setting derivative penalty scales.
+         * @param sqrtWeight Weight multiplier for the value and first-derivative constraint rows.
+         * @param dimension Spatial dimension, two or three.
+         * @return Constraint matrix with one value row, dimension gradient rows, and dimension*dimension Hessian
+         *     rows.
+         */
         Eigen::MatrixXd VariationalDifferentialRows(
             const Vector3 &displacement,
             const Vector3 &referenceLengths,
@@ -526,7 +575,7 @@ namespace DNDS::NCFV
                 if (candidates[static_cast<std::size_t>(candidate)].ring == 1)
                     select(candidate);
 
-            const int initialStencilSize = std::min(
+            const int initialStencilSize = _settings.completeStencilRings ? static_cast<int>(pool.size()) : std::min(
                 std::max({nBasis, targetStencilSize,
                           static_cast<int>(selectionOrder.size())}),
                 static_cast<int>(pool.size()));
@@ -1104,6 +1153,33 @@ namespace DNDS::NCFV
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
             {
                 real factor = 1.0;
+                const Eigen::VectorXd anchor = _settings.limitPointRecovery ?
+                                                   Eigen::VectorXd(means[iNode]) : Eigen::VectorXd(pointValues[iNode]);
+                Eigen::VectorXd meanMinimum = means[iNode], meanMaximum = means[iNode];
+                if (_settings.limitPointRecovery)
+                    for (const auto &incidence : _topology.Node2Edge(iNode))
+                    {
+                        const auto &surface = _geometry.EdgeSurface(incidence.edge);
+                        const index neighbor = surface.nodes[surface.nodes[0] == iNode ? 1 : 0];
+                        meanMinimum = meanMinimum.cwiseMin(Eigen::VectorXd(means[neighbor]));
+                        meanMaximum = meanMaximum.cwiseMax(Eigen::VectorXd(means[neighbor]));
+                    }
+                const auto limit = [&](const Eigen::VectorXd &candidate,
+                                       const Eigen::VectorXd &minimum,
+                                       const Eigen::VectorXd &maximum)
+                {
+                    for (int iVar = 0; iVar < nVars; iVar++)
+                    {
+                        const real increment = candidate(iVar) - anchor(iVar);
+                        constexpr real tolerance = 1e-10;
+                        if (increment > tolerance)
+                            factor = std::min(factor, (maximum(iVar) - anchor(iVar)) / increment);
+                        else if (increment < -tolerance)
+                            factor = std::min(factor, (minimum(iVar) - anchor(iVar)) / increment);
+                    }
+                };
+                if (_settings.limitPointRecovery)
+                    limit(Eigen::VectorXd(pointValues[iNode]), meanMinimum, meanMaximum);
                 for (const NodeEdgeIncidence &incidence : _topology.Node2Edge(iNode))
                 {
                     const EdgeControlSurface &surface =
@@ -1122,25 +1198,15 @@ namespace DNDS::NCFV
                                      entry.stateGradientWeights[side].head(_mesh->getDim());
                     candidate /= surface.measure;
 
-                    const Eigen::VectorXd minimum =
-                        pointValues[iNode].cwiseMin(pointValues[neighbor]);
-                    const Eigen::VectorXd maximum =
-                        pointValues[iNode].cwiseMax(pointValues[neighbor]);
-                    for (int iVar = 0; iVar < nVars; iVar++)
-                    {
-                        const real increment =
-                            candidate(iVar) - pointValues[iNode](iVar);
-                        if (increment > verySmallReal)
-                            factor = std::min(
-                                factor,
-                                (maximum(iVar) - pointValues[iNode](iVar)) /
-                                    increment);
-                        else if (increment < -verySmallReal)
-                            factor = std::min(
-                                factor,
-                                (minimum(iVar) - pointValues[iNode](iVar)) /
-                                    increment);
-                    }
+                    const Eigen::VectorXd minimum = _settings.limitPointRecovery ? meanMinimum :
+                                                       Eigen::VectorXd(pointValues[iNode].cwiseMin(pointValues[neighbor]));
+                    const Eigen::VectorXd maximum = _settings.limitPointRecovery ? meanMaximum :
+                                                       Eigen::VectorXd(pointValues[iNode].cwiseMax(pointValues[neighbor]));
+                    if (_settings.limitPointRecovery && _settings.directionalPairBounds)
+                        limit(candidate, means[iNode].cwiseMin(means[neighbor]),
+                              means[iNode].cwiseMax(means[neighbor]));
+                    else
+                        limit(candidate, minimum, maximum);
                 }
                 factors[static_cast<std::size_t>(iNode)] =
                     std::clamp(factor, 0.0, 1.0);

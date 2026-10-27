@@ -8,6 +8,7 @@
 #pragma once
 
 #include "ACMSolver.hpp"
+#include "ACMLinear.hpp"
 
 #include "DNDS/Errors.hpp"
 #include "DNDS/OMP.hpp"
@@ -24,6 +25,18 @@ namespace DNDS::ACM
 {
     namespace
     {
+        /**
+         * @brief Read a contiguous owned-cell hyperslab from a VTKHDF restart dataset.
+         * @param file Open HDF5 file handle; ownership remains with the caller.
+         * @param path Absolute dataset path within the HDF5 file.
+         * @param offset First row of this rank's owned-cell slice in the global dataset.
+         * @param count Number of rows to read.
+         * @param width Values per row; one selects a rank-one scalar dataset, otherwise a rank-two vector dataset.
+         * @param memoryType HDF5 native memory datatype matching TValue.
+         * @return Flat count*width values in dataset row order.
+         * @tparam TValue Scalar C++ value type used for the destination buffer.
+         * @throws std::runtime_error If a dataset is absent, has an incompatible shape, or cannot be read.
+         */
         template <class TValue>
         std::vector<TValue> ReadVTKHDFSlice(
             hid_t file,
@@ -402,63 +415,32 @@ namespace DNDS::ACM
         const typename TEvaluator::FaceJacobianField &faceJacobians,
         bool useLUSGS)
     {
-        _linearIncrement.setConstant(0.0);
-        if (useLUSGS)
-        {
-            _evaluator->SolveLUSGS(
-                _linearRhs,
-                diagonal,
-                faceJacobians,
-                _linearIncrement,
-                _configuration.timeMarchSettings.lusgsSweeps);
-            return;
-        }
-
-        Linear::GMRES_LeftPreconditioned<TDof> gmres(
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresSubspace),
+        const auto &settings = _configuration.timeMarchSettings;
+        const auto report = SolveImplicitLinearSystem(
+            _linearRhs, _linearIncrement, useLUSGS,
+            settings.lusgsSweeps, settings.gmresSubspace, settings.gmresRestarts,
+            settings.linearAbsoluteTolerance, settings.linearRelativeTolerance,
+            std::sqrt(static_cast<real>(_mesh->NumCellGlobal()) * Traits::nVarsFixed),
+            [&](TDof &input, TDof &output)
+            { _evaluator->ApplyImplicitLinearization(input, diagonal, faceJacobians, output); },
+            [&](TDof &input, TDof &output)
+            {
+                if (useLUSGS || settings.gmresPreconditioner == GMRESPreconditionerType::LUSGS)
+                    _evaluator->SolveLUSGS(input, diagonal, faceJacobians, output, useLUSGS ? 1 : settings.lusgsSweeps);
+                else
+                    _evaluator->ApplyBlockJacobi(input, diagonal, output);
+            },
             [this](TDof &field)
             {
                 _vfv->BuildUDof(field, Traits::nVarsFixed);
                 field.setConstant(0.0);
             });
-        gmres.solve(
-            [&](TDof &input, TDof &output)
-            {
-                _evaluator->ApplyImplicitLinearization(
-                    input,
-                    diagonal,
-                    faceJacobians,
-                    output);
-            },
-            [&](TDof &input, TDof &output)
-            {
-                if (_configuration.timeMarchSettings.gmresPreconditioner ==
-                    GMRESPreconditionerType::LUSGS)
-                    _evaluator->SolveLUSGS(
-                        input,
-                        diagonal,
-                        faceJacobians,
-                        output,
-                        _configuration.timeMarchSettings.lusgsSweeps);
-                else
-                    _evaluator->ApplyBlockJacobi(input, diagonal, output);
-            },
-            [](TDof &left, TDof &right)
-            { return left.dot(right); },
-            _linearRhs,
-            _linearIncrement,
-            // ACM counts restarts; shared GMRES takes the total cycle budget.
-            static_cast<uint32_t>(_configuration.timeMarchSettings.gmresRestarts) + 1U,
-            [&](uint32_t restart, real residual, real initialResidual)
-            {
-                if (_mpi.rank == 0 && restart > 0)
-                    log() << "ACM GMRES restart=" << restart
-                          << " residual=" << residual
-                          << " initial=" << initialResidual << std::endl;
-                return residual <=
-                       _configuration.timeMarchSettings.gmresRelativeTolerance *
-                           std::max(initialResidual, verySmallReal);
-            });
+        if (_mpi.rank == 0)
+            log() << "ACM linear solver=" << (useLUSGS ? "LUSGS" : "GMRES")
+                  << " iterations=" << report.iterations << " trueResidual=" << report.finalResidual
+                  << " initial=" << report.initialResidual << " target=" << report.tolerance
+                  << " relativeResidual=" << (report.initialResidual > 0 ? report.finalResidual / report.initialResidual : 0)
+                  << " converged=" << report.converged << std::endl;
     }
 
     template <ACMModel model>
@@ -685,6 +667,22 @@ namespace DNDS::ACM
             report.iterations = iteration + 1;
             report.finalDefectNorm = evaluateDefect();
             recordEquationDefects();
+            if (_configuration.timeMarchSettings.dualTimeConvergenceCriterion == "RelativeUpdate")
+            {
+                report.appliedUpdateNorm = _configuration.timeMarchSettings.implicitRelaxation * _linearIncrement.norm2();
+                report.updatedStateNorm = _u.norm2();
+                if (_mpi.rank == 0)
+                    log() << std::scientific
+                          << "ACM dual-time inner=" << report.iterations
+                          << " updateNorm=" << report.appliedUpdateNorm
+                          << " stateNorm=" << report.updatedStateNorm
+                          << " updateRatio=" << report.RelativeUpdateNorm()
+                          << " residual=" << report.finalDefectNorm
+                          << " residualRatio=" << report.FlowDefectRatio()
+                          << " updateConverged=" << converged()
+                          << " residualConverged=" << _configuration.timeMarchSettings.DualTimeResidualConverged(report, activeEquations)
+                          << std::endl;
+            }
         }
         report.converged = converged();
         return report;
@@ -855,6 +853,13 @@ namespace DNDS::ACM
                         log() << " flowTarget=" << report.defectTolerance;
                     if (_configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance > 0 && _turbulence)
                         log() << " turbTarget=" << report.turbulenceDefectTolerance;
+                    if (_configuration.timeMarchSettings.dualTimeConvergenceCriterion == "RelativeUpdate")
+                        log() << " updateNorm=" << report.appliedUpdateNorm
+                              << " stateNorm=" << report.updatedStateNorm
+                              << " updateRatio=" << report.RelativeUpdateNorm()
+                              << " updateTolerance=" << _configuration.timeMarchSettings.dualTimeUpdateRelativeTolerance
+                              << " residualConverged=" << _configuration.timeMarchSettings.DualTimeResidualConverged(
+                                     report, Traits::nVarsFixed + (_turbulence ? _turbulence->ActiveVariableCount() : 0));
                     if (_configuration.timeMarchSettings.dualTimeFlowRelativeTolerance == 0 &&
                         _configuration.timeMarchSettings.dualTimeTurbulenceRelativeTolerance == 0)
                         log() << " eqTarget=" << nlohmann::ordered_json(equationTargets).dump();

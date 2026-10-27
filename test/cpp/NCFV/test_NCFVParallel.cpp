@@ -7,6 +7,7 @@
 #include "doctest.h"
 
 #include "NCFV/NCFVSolver.hpp"
+#include "NCFV/NCFVPressureLimiter.hpp"
 
 #include <array>
 #include <cmath>
@@ -835,6 +836,54 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
     }
 }
 
+TEST_CASE("NCFV z-only periodic topology supports limited efficient reconstruction")
+{
+    auto configuration = MakeExactPeriodicConfiguration(IntegrationMode::EfficientDifferential);
+    configuration.mesh.periodicLengths = {0, 0, 4};
+    configuration.mesh.periodicBoundaryPairs = {"bc-4", "bc-4-1"};
+    for (auto &zone : configuration.physics.boundaryZones)
+        if (zone.name != "bc-4" && zone.name != "bc-4-1")
+            zone.mode = BoundaryMode::SupersonicOutlet;
+    configuration.reconstruction.enableLimiter = true;
+    configuration.reconstruction.limitPointRecovery = true;
+    configuration.physics.initialPrimitive = {1.0, 0, 0, 0.1, 1.0};
+    configuration.physics.farFieldPrimitive = configuration.physics.initialPrimitive;
+    configuration.Validate();
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    CHECK(solver.Mesh()->isPeriodic);
+    CHECK(solver.Mesh()->NumNodeGlobal() == 1210);
+    CHECK(solver.Mesh()->NumCellGlobal() == 1000);
+    CHECK(solver.EdgeTopology().NumEdgeGlobal() == 3410);
+    CHECK(solver.Geometry().MaximumClosureError() < 2e-13);
+    CHECK(solver.EvaluateResidual() < 2e-11);
+    const Eigen::Vector<double, 5> initial = solver.StateField()[0];
+    solver.Run();
+    DNDS::real localChange = 0, globalChange = 0;
+    for (DNDS::index i = 0; i < solver.Mesh()->NumNode(); i++)
+        localChange = std::max(localChange, (solver.StateField()[i] - initial).norm());
+    MPI_Allreduce(&localChange, &globalChange, 1, DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+    CHECK(globalChange < 2e-12);
+
+    configuration.initialField.expressions = {{{
+        "inRegion := 1;",
+        "UPrim[0] := 1 + 0.01 * sin(2*pi*x[2]/4);",
+        "0;"}}};
+    Solver<3> transported(gMPI, configuration);
+    transported.Initialize();
+    const auto totals = [&]()
+    {
+        Eigen::Vector<double, 5> local = Eigen::Vector<double, 5>::Zero(), global;
+        for (DNDS::index i = 0; i < transported.Mesh()->NumNode(); i++)
+            local += transported.Geometry().NodeVolume(i).moments.measure * transported.StateField()[i];
+        MPI_Allreduce(local.data(), global.data(), 5, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+        return global;
+    };
+    const auto initialTotals = totals();
+    transported.Run();
+    CHECK((totals() - initialTotals).norm() < 5e-11);
+}
+
 TEST_CASE("NCFV Roe SSPRK3 has third-order temporal self-convergence")
 {
     for (const auto mode : {IntegrationMode::TraditionalQuadrature,
@@ -908,6 +957,13 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
 {
     const Vector3 stretch{0.05, 2, 5};
     Configuration configuration = MakeConfiguration(IntegrationMode::EfficientDifferential);
+    SUBCASE("compact stencil")
+    {
+    }
+    SUBCASE("complete graph rings")
+    {
+        configuration.reconstruction.completeStencilRings = true;
+    }
     configuration.reconstruction.enableLimiter = false;
     Solver<3> original(gMPI, configuration);
     original.Initialize();
@@ -1075,10 +1131,138 @@ TEST_CASE("NCFV directional normalization survives stretching, ghost exchange an
     }
 }
 
+TEST_CASE("NCFV pressure limiting bounds the complete conservative segment")
+{
+    using State = Eigen::Vector<double, 5>;
+    const auto pressure = [](const State &u)
+    {
+        return .4 * (u(4) - .5 * u.segment<3>(1).squaredNorm() / u(0));
+    };
+    State mean, candidate;
+    mean << 1, -1, 0, 0, 3;
+    candidate << 1, 1, 0, 0, 3;
+    // Both endpoints have p=1, but the interior peak is p=1.2.
+    const double upperCap = LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, .9, 1.1, 1.0);
+    CHECK(upperCap == doctest::Approx((1 - std::sqrt(.5)) / 2).epsilon(2e-8));
+    for (int i = 0; i <= 100; i++)
+    {
+        const double theta = upperCap * i / 100;
+        CHECK(pressure(mean + theta * (candidate - mean)) <= 1.1 + 2e-10);
+        CHECK(pressure(mean + theta * (candidate - mean)) >= .9 - 2e-10);
+    }
+    CHECK(LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, .9, 1.2, 1.0) == 1.0);
+    CHECK(LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, .9, 1.1, .5 * upperCap) == .5 * upperCap);
+
+    mean << 1, 0, 0, 0, 2.5;
+    candidate << 1, 0, 0, 0, .5;
+    const double lowerCap = LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, .6, 1.2, 1.0);
+    CHECK(lowerCap == doctest::Approx(.5).epsilon(1e-8));
+    for (int i = 0; i <= 100; i++)
+        CHECK(pressure(mean + lowerCap * i / 100 * (candidate - mean)) >= .6 - 2e-10);
+
+    // A constant-pressure contact must remain untouched, even with a density jump.
+    mean << 1, .7, 0, 0, 2.5 + .245;
+    candidate << 2, 1.4, 0, 0, 2.5 + .49;
+    CHECK(LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, 1, 1, 1.0) == 1.0);
+    CHECK(LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, 1, 1, 0.0) == 0.0);
+
+    mean << 1, 0, 0, 0, 2.5;
+    candidate << .05, .25, 0, 0, 1.125;
+    const double variableDensityCap = LimitIdealGasPressureFactor<3>(mean, candidate, 1.4, .3, 1.1, 1.0);
+    CHECK(variableDensityCap > 0);
+    CHECK(variableDensityCap < 1);
+    for (int i = 0; i <= 100; i++)
+    {
+        const double value = pressure(mean + variableDensityCap * i / 100 * (candidate - mean));
+        CHECK(value >= .3 - 2e-10);
+        CHECK(value <= 1.1 + 2e-10);
+    }
+}
+
+TEST_CASE("NCFV pressure limiting constrains recovered points and full macro interfaces")
+{
+    auto configuration = MakeConfiguration(IntegrationMode::EfficientDifferential);
+    configuration.reconstruction.enableLimiter = true;
+    configuration.reconstruction.limitPointRecovery = true;
+    configuration.physics.viscous.enabled = false;
+    configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
+    configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    const auto &mesh = solver.Mesh();
+    const auto &halo = solver.NodeCommunication();
+    NodeStatePair means, rhs;
+    for (auto *field : {&means, &rhs})
+    {
+        field->InitPair(field == &means ? "NCFV.test.pressureMeans" : "NCFV.test.pressureRhs", gMPI);
+        field->father->Resize(mesh->NumNode(), 5, 1);
+        field->son->Resize(halo.NumNodeGhost(), 5, 1);
+        field->BorrowSetup(halo.Layout());
+        field->trans.initPersistentPull();
+    }
+    for (DNDS::index i = 0; i < mesh->NumNode(); i++)
+    {
+        const double angle = .7 * mesh->node2nodeOrig(i, 0);
+        means[i] << 1, std::cos(angle), std::sin(angle), 0, 3;
+    }
+    const auto pressure = [](const Eigen::Vector<double, 5> &u)
+    {
+        return .4 * (u(4) - .5 * u.segment<3>(1).squaredNorm() / u(0));
+    };
+    double localUnboundedExcess = 0;
+    for (bool enabled : {false, true})
+    {
+        configuration.reconstruction.limitPressure = enabled;
+        SpatialOperator<3> spatial(
+            gMPI, mesh, solver.EdgeTopology(), solver.Geometry(), solver.ReconstructionData(),
+            solver.Boundaries(), configuration.algorithm.mode, configuration.reconstruction,
+            configuration.physics, configuration.time, halo);
+        spatial.Initialize();
+        CHECK(std::isfinite(spatial.EvaluateRHS(means, rhs)));
+        for (DNDS::index i = 0; i < mesh->NumNode(); i++)
+        {
+            CHECK(pressure(Eigen::Vector<double, 5>(means[i])) == doctest::Approx(1.0));
+            const auto checkState = [&](const Eigen::Vector<double, 5> &state)
+            {
+                if (enabled)
+                {
+                    CHECK(pressure(state) <= 1 + 2e-9);
+                    CHECK(pressure(state) >= 1 - 2e-9);
+                }
+                else
+                    localUnboundedExcess = std::max(localUnboundedExcess, pressure(state) - 1);
+            };
+            checkState(Eigen::Vector<double, 5>(spatial.PointValues()[i]));
+            for (const auto &incidence : solver.EdgeTopology().Node2Edge(i))
+            {
+                const auto &surface = solver.Geometry().EdgeSurface(incidence.edge);
+                const int side = surface.nodes[0] == i ? 0 : 1;
+                Eigen::Vector<double, 5> correction = Eigen::Vector<double, 5>::Zero();
+                for (const auto &entry : surface.efficientStencil)
+                    correction += spatial.Gradients()[entry.node].transpose() * entry.stateGradientWeights[side].head<3>();
+                checkState(Eigen::Vector<double, 5>(spatial.PointValues()[i]) +
+                           spatial.LimiterFactors()[i](0) * correction / surface.measure);
+            }
+        }
+    }
+    double globalUnboundedExcess = 0;
+    MPI_Allreduce(&localUnboundedExcess, &globalUnboundedExcess, 1, DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+    CHECK(globalUnboundedExcess > 1e-3);
+}
+
 TEST_CASE("NCFV limited efficient anchors stay physical without changing conservative means")
 {
+    bool limitRecovery = false;
+    SUBCASE("endpoint reference")
+    {
+    }
+    SUBCASE("mean reference and point recovery")
+    {
+        limitRecovery = true;
+    }
     Configuration configuration = MakeConfiguration(IntegrationMode::EfficientDifferential);
     configuration.reconstruction.enableLimiter = true;
+    configuration.reconstruction.limitPointRecovery = limitRecovery;
     configuration.physics.viscous.enabled = false;
     configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
     configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
@@ -1129,13 +1313,111 @@ TEST_CASE("NCFV limited efficient anchors stay physical without changing conserv
         CHECK(means[i](0) == 1);
         CHECK(means[i].template segment<3>(1).squaredNorm() == 0);
         CHECK(means[i](4) == (mesh->node2nodeOrig(i, 0) % 5 == 0 ? 10.0 : 0.01));
-        if (rawPoints[i](4) > 1e-12)
+        if (!limitRecovery && rawPoints[i](4) > 1e-12)
             CHECK((point - rawPoints[i]).squaredNorm() == 0);
+        if (limitRecovery)
+        {
+            Eigen::Vector<double, 5> lo = means[i], hi = means[i];
+            for (const auto &incidence : solver.EdgeTopology().Node2Edge(i))
+            {
+                const auto &surface = solver.Geometry().EdgeSurface(incidence.edge);
+                const auto neighbor = surface.nodes[surface.nodes[0] == i ? 1 : 0];
+                lo = lo.cwiseMin(Eigen::Vector<double, 5>(means[neighbor]));
+                hi = hi.cwiseMax(Eigen::Vector<double, 5>(means[neighbor]));
+            }
+            CHECK((point.array() >= lo.array() - 1e-12).all());
+            CHECK((point.array() <= hi.array() + 1e-12).all());
+            const DNDS::real factor = spatial.LimiterFactors()[i](0);
+            if (factor == 0)
+                CHECK((point - means[i]).squaredNorm() == 0);
+            for (const auto &incidence : solver.EdgeTopology().Node2Edge(i))
+            {
+                const auto &surface = solver.Geometry().EdgeSurface(incidence.edge);
+                const int side = surface.nodes[0] == i ? 0 : 1;
+                Eigen::Vector<double, 5> correction = Eigen::Vector<double, 5>::Zero();
+                for (const auto &entry : surface.efficientStencil)
+                    correction += spatial.Gradients()[entry.node].transpose() * entry.stateGradientWeights[side].head<3>();
+                const Eigen::Vector<double, 5> limited = point + factor * correction / surface.measure;
+                CHECK((limited.array() >= lo.array() - 1e-12).all());
+                CHECK((limited.array() <= hi.array() + 1e-12).all());
+                CHECK(limited(0) > 1e-12);
+                CHECK((configuration.physics.gamma - 1) *
+                          (limited(4) - .5 * limited.segment<3>(1).squaredNorm() / limited(0)) > 1e-12);
+            }
+        }
     }
     DNDS::index globalUnphysicalRawPoints = 0;
     MPI_Allreduce(&localUnphysicalRawPoints, &globalUnphysicalRawPoints, 1,
                   DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
     CHECK(globalUnphysicalRawPoints > 0);
+}
+
+TEST_CASE("NCFV conservative flux correction preserves entropy bounds and periodic conservation")
+{
+    auto configuration = MakeExactPeriodicConfiguration(IntegrationMode::EfficientDifferential);
+    // Exercise the flux limiter independently of the reconstruction limiter.
+    configuration.reconstruction.enableLimiter = false;
+    configuration.reconstruction.limitFluxCorrection = true;
+    SUBCASE("one-ring bar bounds")
+    {
+    }
+    SUBCASE("edge-pair bar bounds")
+    {
+        configuration.reconstruction.fluxCorrectionPairBounds = true;
+    }
+    configuration.time.cfl = .5;
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    const auto &mesh = solver.Mesh();
+    const auto &halo = solver.NodeCommunication();
+    NodeStatePair means, rhs;
+    for (auto *field : {&means, &rhs})
+    {
+        field->InitPair(field == &means ? "NCFV.test.fluxMeans" : "NCFV.test.fluxRhs", gMPI);
+        field->father->Resize(mesh->NumNode(), 5, 1);
+        field->son->Resize(halo.NumNodeGhost(), 5, 1);
+        field->BorrowSetup(halo.Layout());
+        field->trans.initPersistentPull();
+    }
+    for (DNDS::index i = 0; i < mesh->NumNode(); i++)
+    {
+        const double density = mesh->node2nodeOrig(i, 0) % 5 == 0 ? 2.0 : 1.0;
+        means[i] << density, .5 * density, 0, 0, 2.5 + .125 * density;
+    }
+    SpatialOperator<3> spatial(
+        gMPI, mesh, solver.EdgeTopology(), solver.Geometry(), solver.ReconstructionData(),
+        solver.Boundaries(), configuration.algorithm.mode, configuration.reconstruction,
+        configuration.physics, configuration.time, halo);
+    spatial.Initialize();
+    CHECK(std::isfinite(spatial.EvaluateRHS(means, rhs)));
+    Eigen::Vector<double, 5> localTotal = Eigen::Vector<double, 5>::Zero();
+    double localLimited = 0, localChange = 0;
+    for (DNDS::index i = 0; i < mesh->NumNode(); i++)
+    {
+        const double volume = solver.Geometry().NodeVolume(i).moments.measure;
+        localTotal += volume * rhs[i];
+        const Eigen::Vector<double, 5> next = means[i] + spatial.LocalTimeStep(i) * rhs[i];
+        CHECK(next(0) >= 1 - 1e-11);
+        CHECK(next(0) <= 2 + 1e-11);
+        CHECK(next(3) == doctest::Approx(0).epsilon(1e-11));
+        CHECK(.4 * (next(4) - .5 * next.segment<3>(1).squaredNorm() / next(0)) == doctest::Approx(1).epsilon(1e-11));
+        localChange += (next - means[i]).norm();
+    }
+    for (DNDS::index edge = 0; edge < solver.EdgeTopology().NumEdge(); edge++)
+    {
+        const double factor = spatial.EdgeFluxCorrectionFactors()[edge](0);
+        CHECK(factor >= 0);
+        CHECK(factor <= 1);
+        localLimited += factor < .99;
+    }
+    Eigen::Vector<double, 5> total = Eigen::Vector<double, 5>::Zero();
+    double limited = 0, change = 0;
+    MPI_Allreduce(localTotal.data(), total.data(), 5, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+    MPI_Allreduce(&localLimited, &limited, 1, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+    MPI_Allreduce(&localChange, &change, 1, DNDS_MPI_REAL, MPI_SUM, gMPI.comm);
+    CHECK(total.cwiseAbs().maxCoeff() < 1e-10);
+    CHECK(limited > 0);
+    CHECK(change > 0);
 }
 
 int main(int argc, char **argv)

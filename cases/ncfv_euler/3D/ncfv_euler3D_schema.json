@@ -80,12 +80,12 @@
                         0.0,
                         0.0
                     ],
-                    "description": "Translational periodic box lengths [Lx,Ly,Lz]; zeros disable"
+                    "description": "Translational periodic lengths [Lx,Ly,Lz]; zero disables that axis (3-D only)"
                 },
                 "periodicBoundaryPairs": {
                     "type": "array",
                     "default": [],
-                    "description": "Flat [main1,donor1,...] CGNS zone names; empty infers pairs from Periodic boundaryZones order"
+                    "description": "Flat [main,donor,...] CGNS zone names for positive-length axes in x,y,z order; empty infers from Periodic boundaryZones order"
                 },
                 "partitionOptions": {
                     "type": "object",
@@ -204,6 +204,11 @@
                     "minimum": 1.0,
                     "maximum": 8.0
                 },
+                "completeStencilRings": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Keep every candidate in the first admissible complete graph ring instead of selecting a compact subset"
+                },
                 "distanceWeightPower": {
                     "type": "number",
                     "default": 1.0,
@@ -255,6 +260,43 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Enable one-coefficient Barth--Jespersen limiting"
+                },
+                "limitPointRecovery": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Efficient mode: limit point recovery and complete interface increments about conservative means"
+                },
+                "sharedGradientFaceSweep": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Single sequential sweep over owned interface means; update every contributing shared gradient in place; MPI rank blocks ordered"
+                },
+                "limitPressure": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also bound point and interface pressure by one-ring mean pressures; requires limitPointRecovery"
+                },
+                "directionalPairBounds": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use endpoint mean bounds on each interface; requires limitPointRecovery and can reduce smooth accuracy"
+                },
+                "limitFluxCorrection": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Experimental conservative LLF bar-state limiting of the complete high-order flux correction; inviscid global CFL mode, first-order open boundaries"
+                },
+                "maximumFluxCorrection": {
+                    "type": "number",
+                    "default": 1.0,
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Maximum shared coefficient of the limited flux correction; zero gives the LLF reference"
+                },
+                "fluxCorrectionPairBounds": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Tighten corrected bar-state bounds to this edge's two means and low-order bar; requires limitFluxCorrection"
                 }
             }
         },
@@ -637,6 +679,18 @@
                     "default": 10,
                     "description": "Residual reporting interval",
                     "minimum": 1.0
+                },
+                "rejectNonPhysicalSteps": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Reject an SSPRK3 step with nonphysical means and retry with half the step"
+                },
+                "maximumStepRetries": {
+                    "type": "integer",
+                    "default": 12,
+                    "description": "Maximum time-step halvings after a rejected step",
+                    "minimum": 0.0,
+                    "maximum": 40.0
                 }
             }
         },

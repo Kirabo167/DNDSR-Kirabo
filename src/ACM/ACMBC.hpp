@@ -91,10 +91,18 @@ namespace DNDS::ACM
          */
         const BoundaryCondition &GetConditionFromID(Geom::t_index id) const;
 
-        /// @brief Return only the boundary type for a face-zone ID.
+        /**
+         * @brief Return only the boundary type for a face-zone ID.
+         * @param id Integer face-zone ID assigned by the mesh reader.
+         * @return Boundary family for this zone, using the default condition when unmapped.
+         */
         BoundaryType GetTypeFromID(Geom::t_index id) const;
 
-        /// @brief Return only the `[u,v,w,p]` boundary value for a face-zone ID.
+        /**
+         * @brief Return only the `[u,v,w,p]` boundary value for a face-zone ID.
+         * @param id Integer face-zone ID assigned by the mesh reader.
+         * @return Prescribed state [u,v,w,p], using the default condition when unmapped.
+         */
         State GetValueFromID(Geom::t_index id) const;
 
     private:

@@ -32,12 +32,14 @@
         "cfl": 2.0,
         "maximumPseudoTimeStep": 0.05,
         "maxImplicitIterations": 200,
-        "implicitTolerance": 1e-08,
+        "implicitTolerance": 1e-8,
+        "steadyRelativeTolerance": 1e-4,
         "implicitRelaxation": 0.8,
         "lusgsSweeps": 2,
         "gmresSubspace": 20,
         "gmresRestarts": 2,
-        "gmresRelativeTolerance": 0.0001,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
         "gmresPreconditioner": "LUSGS"
     },
     "turbulenceSettings": {
