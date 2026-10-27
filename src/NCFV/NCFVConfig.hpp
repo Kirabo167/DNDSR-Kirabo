@@ -498,17 +498,23 @@ namespace DNDS::NCFV
         }
     };
 
+    /**
+     * @brief Complete typed input for the node-centered ideal-gas Euler/Navier--Stokes solver.
+     * @details solver metadata and dimension must agree with the executable; states have
+     * dimension+2 entries. Section objects separate mesh/integration/reconstruction setup,
+     * physical and initial data, time integration, and output/restart policy.
+     */
     struct Configuration
     {
-        SolverSelection solver{"ncfv_euler", "NCFV", "IdealGas", 4};
-        int dimension = 2;
-        MeshSettings mesh;
-        AlgorithmSettings algorithm;
-        ReconstructionSettings reconstruction;
-        PhysicsSettings physics;
-        InitialFieldSettings initialField;
-        TimeSettings time;
-        IOSettings io;
+        SolverSelection solver{"ncfv_euler", "NCFV", "IdealGas", 4}; ///< Executable family and state-count contract.
+        int dimension = 2; ///< Active mesh/flow dimension; three-dimensional cases require five state entries.
+        MeshSettings mesh; ///< Primal mesh input, reordering, and translational periodic pairing.
+        AlgorithmSettings algorithm; ///< Median-dual integration mode, quadrature, and geometry retention.
+        ReconstructionSettings reconstruction; ///< Polynomial recovery, stencil selection, and limiting controls.
+        PhysicsSettings physics; ///< Gas/viscous parameters and per-zone boundary input.
+        InitialFieldSettings initialField; ///< Fresh-field region/file/expression or analytic-vortex inputs.
+        TimeSettings time; ///< SSPRK stepping, CFL bounds, stopping time, and rejection policy.
+        IOSettings io; ///< Result output, restart backend, and resolved-configuration writing policy.
 
         DNDS_DECLARE_CONFIG(Configuration)
         {
@@ -534,10 +540,15 @@ namespace DNDS::NCFV
         void Validate() const;
     };
 
+    /**
+     * @brief A validated typed case together with the JSON that produced it.
+     * @details resolvedJson includes typed defaults, normalized array-item defaults, and
+     * CLI overrides, so output diagnostics can record the effective input consistently.
+     */
     struct LoadedConfiguration
     {
-        Configuration configuration;
-        nlohmann::ordered_json resolvedJson;
+        Configuration configuration; ///< Validated section objects consumed by the solver.
+        nlohmann::ordered_json resolvedJson; ///< Ordered effective JSON retained for output/provenance.
     };
 
     /**

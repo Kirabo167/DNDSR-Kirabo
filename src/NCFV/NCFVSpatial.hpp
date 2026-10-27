@@ -14,12 +14,16 @@
 
 namespace DNDS::NCFV
 {
-    /** Fine-grained wall times for one side of the efficient physical-flux integral. */
+    /**
+     * @brief Fine-grained local wall times for one side of an efficient physical-flux integral.
+     * @details Values are seconds and are accumulated only by enabled detailed flux timing.
+     * They describe subphases of a larger interface timer, not additional disjoint work.
+     */
     struct EfficientPhysicalFluxIntegralTiming
     {
-        real zeroOrderFluxSeconds = 0;
-        real precomputedGradientIntegralSeconds = 0;
-        real finalAssemblySeconds = 0;
+        real zeroOrderFluxSeconds = 0; ///< Evaluating the physical flux at the side's anchor point state.
+        real precomputedGradientIntegralSeconds = 0; ///< Contracting cached flux derivatives with integral weights.
+        real finalAssemblySeconds = 0; ///< Combining zero-order and limited differential contributions.
 
         /**
          * @brief Accumulate corresponding phase timings without MPI reduction.
@@ -37,43 +41,48 @@ namespace DNDS::NCFV
         }
     };
 
-    /** Per-rank wall times for one complete spatial residual evaluation. */
+    /**
+     * @brief Local wall-clock phase accounting for one complete spatial RHS evaluation.
+     * @details All values are seconds on this rank, with no automatic MPI reduction.
+     * Reconstruction and edge timers include their nested subphase/detail timers: summing
+     * every member would double-count work. Mode-specific or disabled detail fields stay zero.
+     */
     struct RhsPhaseTiming
     {
-        real reconstructionSeconds = 0;
-        real meanHaloSeconds = 0;
-        real coefficientComputeSeconds = 0;
-        real coefficientHaloSeconds = 0;
-        real pointRecoverySeconds = 0;
-        real limiterSeconds = 0;
-        real pointValueHaloSeconds = 0;
-        real physicalFluxGradientComputeSeconds = 0;
-        real edgeFluxSeconds = 0;
+        real reconstructionSeconds = 0; ///< Inclusive reconstruction, limiting, and associated halo exchanges.
+        real meanHaloSeconds = 0; ///< Pulling conservative dual means required by reconstruction.
+        real coefficientComputeSeconds = 0; ///< Computing gradient/polynomial coefficient fields.
+        real coefficientHaloSeconds = 0; ///< Pulling reconstructed gradient/coefficient dependencies.
+        real pointRecoverySeconds = 0; ///< Recovering primal-node point states from dual means.
+        real limiterSeconds = 0; ///< Constructing/applying selected reconstruction and physical-state limits.
+        real pointValueHaloSeconds = 0; ///< Synchronizing recovered or limited point-state anchors.
+        real physicalFluxGradientComputeSeconds = 0; ///< Computing cached Cartesian Euler-flux derivatives.
+        real edgeFluxSeconds = 0; ///< Inclusive owned-edge flux and edge spectral-radius evaluation loop.
         // Timings accumulated over all owned internal-edge evaluations in an RHS.
         // In efficient mode, the state-preparation entries measure the two
         // EfficientSurfaceMean calls.  In traditional mode they instead measure
         // the two quadrature-point trace reconstructions, since no face mean is
         // formed by that formulation.
-        real edgeLeftStatePreparationSeconds = 0;
-        real edgeRightStatePreparationSeconds = 0;
+        real edgeLeftStatePreparationSeconds = 0; ///< Left surface mean or left quadrature trace preparation.
+        real edgeRightStatePreparationSeconds = 0; ///< Right surface mean or right quadrature trace preparation.
         // In efficient mode these are the left/right derivative-based physical
         // flux integrals.  In traditional mode the combined entry is the
         // quadrature numerical-flux integration; the side entries remain zero.
-        real edgeLeftPhysicalFluxIntegralSeconds = 0;
-        real edgeRightPhysicalFluxIntegralSeconds = 0;
-        real edgeNumericalFluxAndAssemblySeconds = 0;
-        EfficientPhysicalFluxIntegralTiming edgeLeftPhysicalFluxDetail;
-        EfficientPhysicalFluxIntegralTiming edgeRightPhysicalFluxDetail;
-        real edgeRiemannFluxSeconds = 0;
-        real edgeCentralFluxSeconds = 0;
-        real edgeDissipationAssemblySeconds = 0;
-        real edgeInviscidFinalAssemblySeconds = 0;
-        real edgeViscousFluxSeconds = 0;
-        real edgeHaloSeconds = 0;
-        real localTimeStepSeconds = 0;
-        real residualAssemblySeconds = 0;
-        real residualNormSeconds = 0;
-        real totalSeconds = 0;
+        real edgeLeftPhysicalFluxIntegralSeconds = 0; ///< Efficient left-side physical-flux integration.
+        real edgeRightPhysicalFluxIntegralSeconds = 0; ///< Efficient right-side physical-flux integration.
+        real edgeNumericalFluxAndAssemblySeconds = 0; ///< Combined interface numerical-flux assembly time.
+        EfficientPhysicalFluxIntegralTiming edgeLeftPhysicalFluxDetail; ///< Nested efficient left-side timers.
+        EfficientPhysicalFluxIntegralTiming edgeRightPhysicalFluxDetail; ///< Nested efficient right-side timers.
+        real edgeRiemannFluxSeconds = 0; ///< Selected Riemann flux evaluated at interface means/traces.
+        real edgeCentralFluxSeconds = 0; ///< Centered physical-flux contribution used to isolate dissipation.
+        real edgeDissipationAssemblySeconds = 0; ///< Forming the numerical-minus-central correction.
+        real edgeInviscidFinalAssemblySeconds = 0; ///< Combining inviscid integral terms.
+        real edgeViscousFluxSeconds = 0; ///< Internal viscous flux evaluation and integration.
+        real edgeHaloSeconds = 0; ///< Pulling edge-owner fluxes and spectral radii onto incident-node ranks.
+        real localTimeStepSeconds = 0; ///< Computing/clamping steps and reducing their global extrema.
+        real residualAssemblySeconds = 0; ///< Summing boundary and signed edge fluxes, then dividing by volume.
+        real residualNormSeconds = 0; ///< Forming/reducing the optional volume-weighted global RMS norm.
+        real totalSeconds = 0; ///< Inclusive EvaluateRHS() wall time; not a sum of all stored subphase times.
 
         /**
          * @brief Accumulate corresponding phase timings without MPI reduction.
@@ -113,13 +122,21 @@ namespace DNDS::NCFV
         }
     };
 
+    /**
+     * @brief Owner/ghost work arrays and spatial RHS evaluation for node-centered ideal-gas flow.
+     * @tparam dimension Two or three active coordinates; conservative states have dimension+2 entries.
+     * @details Node arrays use the finalized NodeHalo mapping and store [rho,rho*u...,rho*E].
+     * Edge arrays instead borrow Topology ownership so a single integrated flux serves both
+     * incident control volumes. Reconstructed point values are separate from evolved dual means.
+     */
     template <int dimension>
     class SpatialOperator
     {
         static_assert(dimension == 2 || dimension == 3);
 
-        using State = Eigen::Vector<real, dimension + 2>;
-        using StateGradient = Eigen::Matrix<real, dimension, dimension + 2>;
+        using State = Eigen::Vector<real, dimension + 2>; ///< Density, momentum components, total energy density.
+        using StateGradient = Eigen::Matrix<real, dimension, dimension + 2>; ///< (direction, conserved component).
+        /// Conserved-component rows; column i*dimension+j stores d(F_j)/d(x_i).
         using PhysicalFluxGradient =
             Eigen::Matrix<real, dimension + 2, dimension * dimension>;
         using SpatialVector = Eigen::Vector<real, dimension>;

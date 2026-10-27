@@ -10,10 +10,15 @@
 
 namespace DNDS::NCFV
 {
+    /**
+     * @brief One primal edge's contribution to a node's outward dual-volume flux sum.
+     * @details A unique edge-owner flux is directed from canonical endpoint 0 to endpoint 1.
+     * Multiplying by outwardSign gives the correct outward contribution for either endpoint.
+     */
     struct NodeEdgeIncidence
     {
-        index edge = UnInitIndex;
-        real outwardSign = 0;
+        index edge = UnInitIndex; ///< Process-local owned/ghost edge index, not a global edge identifier.
+        real outwardSign = 0; ///< +1 at canonical endpoint 0, -1 at endpoint 1; zero denotes an unset entry.
     };
 
     /**

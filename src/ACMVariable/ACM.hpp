@@ -109,16 +109,20 @@ namespace DNDS::ACMVariable
     template <ACMModel model>
     struct ModelTraits;
 
-    /// Compile-time layout of the variable-density three-dimensional state `[rho, mx, my, mz, p]`.
+    /**
+     * @brief Five-entry variable-density layout on a two-dimensional primal mesh.
+     * @details [rho,mx,my,mz,p] retains all three momentum slots; only x/y derivatives are active.
+     * Momentum is rho times velocity, and the last entry is physical pressure rather than energy.
+     */
     template <>
     struct ModelTraits<ACMModel::VariableDensity2D>
     {
         static constexpr int dim = 2;
         static constexpr int gDim = 2;
-        static constexpr int nVarsFixed = 5;
-        static constexpr int velocityBegin = 1;
-        static constexpr int pressureIndex = 4;
-        static constexpr int nExtraVars = 0;
+        static constexpr int nVarsFixed = 5;    ///< Density, three momenta, and physical pressure.
+        static constexpr int velocityBegin = 1; ///< First momentum slot; velocity requires division by rho.
+        static constexpr int pressureIndex = 4; ///< Physical-pressure component, not total energy.
+        static constexpr int nExtraVars = 0;    ///< Turbulence transport is stored outside this flow state.
     };
 
     /// Compile-time layout of the variable-density three-dimensional state `[rho, mx, my, mz, p]`.
@@ -127,10 +131,10 @@ namespace DNDS::ACMVariable
     {
         static constexpr int dim = 3;
         static constexpr int gDim = 3;
-        static constexpr int nVarsFixed = 5;
-        static constexpr int velocityBegin = 1;
-        static constexpr int pressureIndex = 4;
-        static constexpr int nExtraVars = 0;
+        static constexpr int nVarsFixed = 5;    ///< Density, three momenta, and physical pressure.
+        static constexpr int velocityBegin = 1; ///< First momentum slot; velocity requires division by rho.
+        static constexpr int pressureIndex = 4; ///< Physical-pressure component, not total energy.
+        static constexpr int nExtraVars = 0;    ///< Turbulence transport is stored outside this flow state.
     };
 
     using State = Eigen::Vector<real, 5>;      ///< ACM state or flux vector `[rho, mx, my, mz, p]`.

@@ -30,31 +30,43 @@ namespace DNDS::NCFV
         static constexpr int NVars = dimension + 2;
         using State = Eigen::Vector<real, NVars>;
 
+        /** @brief One source-gradient contribution to a face-side mean-minus-conservative-mean trace. */
         struct Entry
         {
-            index node = UnInitIndex;
-            Vector3 weight = Vector3::Zero();
+            index node = UnInitIndex; ///< Row in this sweep's extended dependency halo, not the solver halo.
+            Vector3 weight = Vector3::Zero(); ///< Combined normalized interface/recovery weight of this source.
         };
 
+        /**
+         * @brief One owned interface event in the prescribed sequential sweep order.
+         * @details Face supports combine both sides' point-recovery and interface-integration
+         * dependencies. A face factor is applied once per unique support node, then remains
+         * visible to later face events through the shared accumulated node scales.
+         */
         struct Face
         {
-            std::array<index, 2> anchors{};
-            std::array<std::vector<Entry>, 2> entries;
-            std::vector<index> support;
-            std::array<index, 5> key{};
+            std::array<index, 2> anchors{}; ///< Left/right anchor rows in the sweep's extended halo.
+            std::array<std::vector<Entry>, 2> entries; ///< Folded gradient weights for each anchor's trace.
+            std::vector<index> support; ///< Unique extended-halo rows receiving this event's common factor.
+            std::array<index, 5> key{}; ///< Original endpoint IDs plus three quantized periodic offsets for sorting.
         };
 
     public:
+        /**
+         * @brief Counters and timings from the last completed shared-gradient face pass.
+         * @details After Apply(), face counts and minimumFaceFactor have been reduced over
+         * MPI. Timings remain local wall-clock seconds; rankBlocks is the communicator size.
+         */
         struct Diagnostics
         {
-            index updatedFaces = 0;
-            index zeroFactorFaces = 0;
-            real minimumFaceFactor = 1;
-            int rankBlocks = 0;
-            real inputHaloSeconds = 0;
-            real localSweepSeconds = 0;
-            real blockCommunicationSeconds = 0;
-            real totalSeconds = 0;
+            index updatedFaces = 0; ///< Global number of face events with a factor smaller than one.
+            index zeroFactorFaces = 0; ///< Global number of events that set their common face factor to zero.
+            real minimumFaceFactor = 1; ///< Smallest event factor over all ranks; one if no event limits.
+            int rankBlocks = 0; ///< Number of sequential MPI rank blocks processed by the pass.
+            real inputHaloSeconds = 0; ///< Pulling raw gradients and fixed anchor bounds before the sweep.
+            real localSweepSeconds = 0; ///< Local time in ordered face loops, without factor communication.
+            real blockCommunicationSeconds = 0; ///< Exchanging remote factor products and refreshing node scales.
+            real totalSeconds = 0; ///< Inclusive local wall time for Apply(), including final exchanges/reductions.
         };
 
     private:
@@ -63,10 +75,10 @@ namespace DNDS::NCFV
         const Topology &_topology;
         const DualGeometry &_geometry;
         const NodeHalo &_nodeHalo;
-        NodeMatrixPair _rawGradients;
-        NodeStatePair _scales;
+        NodeMatrixPair _rawGradients; ///< Frozen dimension-by-NVars source gradients in the extended halo.
+        NodeStatePair _scales; ///< One cumulative multiplicative gradient factor per extended-halo node.
         // Columns: mean, lower bound, upper bound. Final row holds pressure.
-        NodeMatrixPair _anchorData;
+        NodeMatrixPair _anchorData; ///< (NVars+1)-by-3 mean/lower/upper matrix; final row stores pressure bounds.
         std::vector<Face> _faces;
         std::vector<MPI_int> _ghostOwnerRanks;
         std::vector<index> _ghostOwnerLocals;

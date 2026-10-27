@@ -21,9 +21,9 @@ namespace DNDS::ACM
     /// Reconstructed two-sided state and geometry required to evaluate one local face flux.
     struct FaceInput
     {
-        State left = State::Zero();
-        State right = State::Zero();
-        Vector3 unitNormal = Vector3::UnitX();
+        State left = State::Zero();  ///< Reconstructed global [u,v,w,p] state on the left side.
+        State right = State::Zero(); ///< Right trace, or the generated exterior state on a boundary.
+        Vector3 unitNormal = Vector3::UnitX(); ///< Left-to-right normal direction; flux code normalizes it.
     };
 
     /**

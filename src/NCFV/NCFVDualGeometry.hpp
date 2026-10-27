@@ -18,23 +18,29 @@ namespace DNDS::NCFV
     using Vector3 = Eigen::Vector3d;
     using Matrix3 = Eigen::Matrix3d;
 
+    /**
+     * @brief One primal-node coefficient in an affine dual-grid construction point.
+     * @details Support IDs are mesh-local during construction and use the exact NCFV node
+     * halo after retained integration data pass through RemapNodeIndices().
+     */
     struct AffineCoefficient
     {
-        index node = UnInitIndex;
-        real coefficient = 0;
+        index node = UnInitIndex; ///< Primal support-node ID in the construction/runtime layout.
+        real coefficient = 0;    ///< Dimensionless interpolation coefficient; a point's coefficients sum to one.
     };
 
     /** @brief A dual construction point and its interpolation from primal vertices. */
     struct AffinePoint
     {
-        Vector3 coordinate = Vector3::Zero();
-        std::vector<AffineCoefficient> support;
+        Vector3 coordinate = Vector3::Zero(); ///< Physical coordinate in the selected minimum-image frame.
+        std::vector<AffineCoefficient> support; ///< Sorted primal support and affine interpolation weights.
     };
 
+    /** @brief A sparse vector coefficient multiplying the gradient at one primal support node. */
     struct SparseVectorWeight
     {
-        index node = UnInitIndex;
-        Vector3 value = Vector3::Zero();
+        index node = UnInitIndex; ///< Support-node ID in the layout used by the supplied affine points.
+        Vector3 value = Vector3::Zero(); ///< Integral weight; normalization is applied by the receiving stencil.
     };
 
     /**
@@ -42,11 +48,13 @@ namespace DNDS::NCFV
      *
      * node is a process-local DNDS node index.  It may address either the
      * owned part or the ghost part of a synchronized node field.
+     * @details The completed stencil is divided by the target volume. Point recovery
+     * subtracts the sum of G_node^T * gradientWeight from the target conservative mean.
      */
     struct EfficientPointRecoveryNode
     {
-        index node = UnInitIndex;
-        Vector3 gradientWeight = Vector3::Zero();
+        index node = UnInitIndex; ///< Mesh-local support ID before remapping, runtime-halo ID afterward.
+        Vector3 gradientWeight = Vector3::Zero(); ///< Volume-normalized recovery weight, with units of length.
     };
 
     /**
@@ -62,36 +70,50 @@ namespace DNDS::NCFV
      */
     struct EfficientSurfaceNode
     {
-        index node = UnInitIndex;
+        index node = UnInitIndex; ///< Support ID in the geometry's current mesh-local or runtime-halo layout.
+        /// Integral weights for each side's conservative-state gradient; side 0/1 is the edge endpoint.
         std::array<Vector3, 2> stateGradientWeights{
             Vector3::Zero(), Vector3::Zero()};
+        /// Weights contracting d(F_j)/d(x_i), indexed as (derivative i, Cartesian flux direction j).
         std::array<Matrix3, 2> fluxGradientWeights{
             Matrix3::Zero(), Matrix3::Zero()};
-        real gradientWeight = 0;
+        real gradientWeight = 0; ///< Scalar integral weight for averaging the physical gradient on the surface.
     };
 
     /** @brief Compact support-node weights for one boundary micro-surface. */
     struct EfficientBoundaryNode
     {
-        index node = UnInitIndex;
+        index node = UnInitIndex; ///< Boundary support node in the geometry's current node layout.
         // The affine value and affine-gradient surface rules have the same
         // nodal coefficient on a boundary simplex.
-        real integrationWeight = 0;
+        real integrationWeight = 0; ///< Scalar surface-integral weight; divide by piece.measure for a mean.
     };
 
+    /**
+     * @brief Zeroth, first, and second geometric integral moments in a caller-selected frame.
+     * @details These are integrals, not normalized means. With coordinate r in the selected
+     * frame they represent integral(1), integral(r), and integral(r*r^T). NodeControlVolume
+     * stores r = x - x_node; simplex utilities use the coordinates supplied by the caller.
+     */
     struct RawMoments
     {
-        real measure = 0;
-        Vector3 first = Vector3::Zero();
-        Matrix3 second = Matrix3::Zero();
+        real measure = 0;                 ///< Positive length, area, or volume of the integration domain.
+        Vector3 first = Vector3::Zero();   ///< Three first moments about the selected origin.
+        Matrix3 second = Matrix3::Zero();  ///< Symmetric unnormalized second-moment tensor in that frame.
     };
 
+    /** @brief One physical Gauss/Hammer sample of a median-dual control volume. */
     struct VolumeQuadraturePoint
     {
-        Vector3 coordinate = Vector3::Zero();
-        real weight = 0;
+        Vector3 coordinate = Vector3::Zero(); ///< Physical evaluation point in the volume's periodic frame.
+        real weight = 0; ///< Physical integration weight including the simplex Jacobian; not a mean weight.
     };
 
+    /**
+     * @brief One physical interface/boundary quadrature sample with scalar and oriented weights.
+     * @details Use vectorWeight for a flux projected onto the surface normal, and weight
+     * when the integrand already contains a unit-normal contraction or is a scalar mean.
+     */
     struct SurfaceQuadraturePoint
     {
         /** Physical quadrature-point coordinate, constructed and stored at initialization. */
@@ -102,36 +124,46 @@ namespace DNDS::NCFV
         real weight = 0;
     };
 
+    /**
+     * @brief One simplex in an owned node's median-dual volume decomposition.
+     * @details Triangle data occupy three entries in 2-D, tetrahedron data four in 3-D.
+     * Retention is optional after moments and runtime integration weights have been built.
+     */
     struct MicroVolume
     {
-        index primalCell = UnInitIndex;
-        int nPoints = 0;
-        std::array<Vector3, 4> points{};
-        real signedJacobian = 0;
-        real measure = 0;
+        index primalCell = UnInitIndex; ///< Process-local parent primal-cell index, including ghost cells.
+        int nPoints = 0;               ///< Active simplex vertices: three in 2-D, four in 3-D.
+        std::array<Vector3, 4> points{}; ///< Physical vertices; only the first nPoints entries are active.
+        real signedJacobian = 0;       ///< Raw determinant retaining the simplex orientation.
+        real measure = 0;              ///< Positive triangle area or tetrahedron volume.
     };
 
+    /** @brief One line/triangle component of an edge's dual macro-surface. */
     struct MicroSurface
     {
-        index primalCell = UnInitIndex;
-        index primalFace = UnInitIndex;
-        int nPoints = 0;
-        std::array<Vector3, 3> points{};
-        Vector3 vectorMeasure = Vector3::Zero();
-        real measure = 0;
+        index primalCell = UnInitIndex; ///< Process-local primal cell containing this component.
+        index primalFace = UnInitIndex; ///< Process-local parent face in the cell-face construction chain.
+        int nPoints = 0;               ///< Two segment vertices in 2-D or three triangle vertices in 3-D.
+        std::array<Vector3, 3> points{}; ///< Physical vertices in the macro-surface's periodic frame.
+        Vector3 vectorMeasure = Vector3::Zero(); ///< Normal times measure, oriented from endpoint 0 to 1.
+        real measure = 0;              ///< Positive line length or triangle area.
     };
 
-    /** Method-specific work performed while constructing integration data. */
+    /**
+     * @brief Local timing and call counts for method-specific integration initialization.
+     * @details Times are wall-clock seconds on this rank, not MPI sums. The diagnostic
+     * profile is populated when profileIntegrationInitialization is enabled.
+     */
     struct IntegrationInitializationTiming
     {
-        double volumeSeconds = 0;
-        double internalSurfaceSeconds = 0;
-        double boundarySurfaceSeconds = 0;
-        double volumeNormalizationSeconds = 0;
-        index volumeCalls = 0;
-        index internalSurfaceCalls = 0;
-        index boundarySurfaceCalls = 0;
-        index volumeNormalizationCalls = 0;
+        double volumeSeconds = 0; ///< Building volume quadrature or differential recovery data.
+        double internalSurfaceSeconds = 0; ///< Building internal macro-surface integration data.
+        double boundarySurfaceSeconds = 0; ///< Building external boundary-piece integration data.
+        double volumeNormalizationSeconds = 0; ///< Merging/pruning and normalizing volume recovery weights.
+        index volumeCalls = 0; ///< Number of timed volume integration blocks.
+        index internalSurfaceCalls = 0; ///< Number of timed internal-surface blocks.
+        index boundarySurfaceCalls = 0; ///< Number of timed boundary-surface blocks.
+        index volumeNormalizationCalls = 0; ///< Number of timed recovery-normalization blocks.
 
         /**
          * @brief Return sum of the four measured integration-initialization phase times in seconds.
@@ -154,20 +186,30 @@ namespace DNDS::NCFV
         }
     };
 
+    /**
+     * @brief A physical-boundary simplex closing one owned node's dual volume.
+     * @details Efficient mode retains affine support/integration weights; traditional mode
+     * retains quadrature samples. Its oriented normal points out of the owning dual volume.
+     */
     struct BoundaryPiece
     {
-        Geom::t_index zone = Geom::INTERNAL_ZONE;
-        int nPoints = 0;
-        std::array<AffinePoint, 3> points{};
-        Vector3 vectorMeasure = Vector3::Zero();
-        real measure = 0;
-        std::vector<EfficientBoundaryNode> efficientStencil;
-        std::vector<SurfaceQuadraturePoint> quadrature;
+        Geom::t_index zone = Geom::INTERNAL_ZONE; ///< Parent primal face's boundary-zone identifier.
+        int nPoints = 0; ///< Active affine vertices: two for a segment, three for a triangle.
+        std::array<AffinePoint, 3> points{}; ///< Geometry and primal-node interpolation support.
+        Vector3 vectorMeasure = Vector3::Zero(); ///< Outward oriented line/area measure.
+        real measure = 0; ///< Positive scalar length/area used to normalize boundary means.
+        std::vector<EfficientBoundaryNode> efficientStencil; ///< Sparse integral weights in efficient mode.
+        std::vector<SurfaceQuadraturePoint> quadrature; ///< Physical samples in traditional mode.
     };
 
+    /**
+     * @brief Geometry and integration data for one owned node's complete median-dual volume.
+     * @details Moments and bounds are relative to the primal node to avoid cancellation.
+     * Owned node IDs are preserved when geometry supports are remapped to the exact runtime halo.
+     */
     struct NodeControlVolume
     {
-        index node = UnInitIndex;
+        index node = UnInitIndex; ///< Owned primal-node index; unchanged by runtime support remapping.
         /**
          * Moments about the primal node x_j:
          *   { |V_j|, integral(x-x_j)dV, integral((x-x_j)(x-x_j)^T)dV }.
@@ -177,35 +219,47 @@ namespace DNDS::NCFV
         RawMoments moments;
         // Extrema relative to the primal node, accumulated before optional
         // micro-geometry is discarded. The node belongs to every micro-volume.
-        Vector3 lowerOffset = Vector3::Zero();
-        Vector3 upperOffset = Vector3::Zero();
-        Vector3 referenceLengths = Vector3::Ones();
+        Vector3 lowerOffset = Vector3::Zero(); ///< Component-wise minimum of x - x_node over the volume.
+        Vector3 upperOffset = Vector3::Zero(); ///< Component-wise maximum of x - x_node over the volume.
+        Vector3 referenceLengths = Vector3::Ones(); ///< Active half-spans for polynomial basis normalization.
         // Volume scale is retained for CFL/wall models, not polynomial bases.
-        real lengthScale = 0;
-        std::vector<EfficientPointRecoveryNode> pointRecoveryStencil;
-        std::vector<MicroVolume> microVolumes;
-        std::vector<VolumeQuadraturePoint> volumeQuadrature;
-        std::vector<BoundaryPiece> boundaryPieces;
+        real lengthScale = 0; ///< pow(volume,1/dimension), used for CFL/viscous distance estimates.
+        std::vector<EfficientPointRecoveryNode> pointRecoveryStencil; ///< Volume-normalized recovery weights.
+        std::vector<MicroVolume> microVolumes; ///< Optional retained simplex decomposition.
+        std::vector<VolumeQuadraturePoint> volumeQuadrature; ///< Traditional volume integration samples.
+        std::vector<BoundaryPiece> boundaryPieces; ///< Physical-boundary pieces closing this dual volume.
     };
 
+    /**
+     * @brief Integrated dual interface separating the two endpoint control volumes of a primal edge.
+     * @details All oriented measures point from nodes[0] toward nodes[1]. Scalar measure
+     * sums component lengths/areas and can differ from vectorMeasure.norm() on a nonplanar
+     * interface. Support-node IDs become runtime-halo-local after geometry remapping.
+     */
     struct EdgeControlSurface
     {
-        index edge = UnInitIndex;
-        std::array<index, 2> nodes{UnInitIndex, UnInitIndex};
+        index edge = UnInitIndex; ///< Process-local primal-edge ID; edge ownership is kept by Topology.
+        std::array<index, 2> nodes{UnInitIndex, UnInitIndex}; ///< Oriented endpoint IDs in the current node layout.
         /** Endpoint coordinates in this macro-surface's minimum-image frame. */
         std::array<Vector3, 2> nodeCoordinates{
             Vector3::Zero(), Vector3::Zero()};
-        Vector3 edgePoint = Vector3::Zero();
-        Vector3 vectorMeasure = Vector3::Zero();
-        real measure = 0;
-        std::vector<EfficientSurfaceNode> efficientStencil;
-        std::vector<MicroSurface> microSurfaces;
-        std::vector<SurfaceQuadraturePoint> quadrature;
+        Vector3 edgePoint = Vector3::Zero(); ///< Arithmetic endpoint midpoint in the common periodic frame.
+        Vector3 vectorMeasure = Vector3::Zero(); ///< Sum of oriented micro-surface normal-times-measure vectors.
+        real measure = 0; ///< Sum of positive micro-surface lengths/areas, used to normalize interface means.
+        std::vector<EfficientSurfaceNode> efficientStencil; ///< Sorted sparse integral weights for both sides.
+        std::vector<MicroSurface> microSurfaces; ///< Optional retained geometric surface decomposition.
+        std::vector<SurfaceQuadraturePoint> quadrature; ///< Traditional oriented surface quadrature samples.
     };
 
-    /** Packed node-local moments: volume, c1_j, and the six symmetric C2_j entries. */
+    /**
+     * @brief Mesh-layout owner/ghost moments packed as [V,cx,cy,cz,Cxx,Cyy,Czz,Cxy,Cyz,Czx].
+     * @details c and C are unnormalized moments about each primal node. This initialization
+     * field borrows the mesh coordinate halo, not the finalized runtime NodeHalo layout.
+     */
     using NodeMomentPair = ArrayPair<ArrayEigenVector<10>>;
+    /// Mesh-layout owner/ghost polynomial reference half-spans [hx,hy,hz], with inactive entries one.
     using NodeReferenceLengthPair = ArrayPair<ArrayEigenVector<3>>;
+    /// Topology edge-layout metrics packed as [vectorMeasure.x,vectorMeasure.y,vectorMeasure.z,measure].
     using EdgeMetricPair = ArrayPair<ArrayEigenVector<4>>;
 
     /**

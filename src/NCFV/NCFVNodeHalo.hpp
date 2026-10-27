@@ -12,7 +12,13 @@
 
 namespace DNDS::NCFV
 {
-    /** Coordinate, centred moments, and reconstruction scales for one node. */
+    /**
+     * @brief Sixteen scalars of owner/ghost geometry in an NCFV node-halo layout.
+     * @details Packing is [x,y,z,V,cx,cy,cz,Cxx,Cyy,Czz,Cxy,Cyz,Czx,hx,hy,hz].
+     * c/C are unnormalized moments about that node; h contains polynomial reference
+     * half-spans. Owned rows follow mesh ownership, while ghost rows are chosen from
+     * actual integration/reconstruction dependencies and differ from the mesh ghost halo.
+     */
     using NodeHaloGeometryPair = ArrayPair<ArrayEigenVector<16>>;
 
     /**
@@ -30,13 +36,13 @@ namespace DNDS::NCFV
         ssp<Geom::UnstructuredMesh> _mesh;
         Vector3 _periodicLengths = Vector3::Zero();
 
-        Geom::tAdjPair _nodeAdjacency;
-        NodeHaloGeometryPair _preliminaryGeometry;
-        NodeHaloGeometryPair _geometry;
-        std::vector<std::vector<std::vector<index>>> _ringsGlobal;
-        bool _preliminaryReady = false;
-        bool _finalized = false;
-        index _preliminaryGhostCount = 0;
+        Geom::tAdjPair _nodeAdjacency; ///< Complete graph rows with global neighbor IDs for ring expansion.
+        NodeHaloGeometryPair _preliminaryGeometry; ///< Temporary maximum-ring/integration dependency layout.
+        NodeHaloGeometryPair _geometry; ///< Exact runtime geometry/layout retained after Finalize().
+        std::vector<std::vector<std::vector<index>>> _ringsGlobal; ///< Global IDs grouped by owned node and zero-based ring.
+        bool _preliminaryReady = false; ///< Whether stencil-selection geometry can be accessed.
+        bool _finalized = false; ///< Selects final geometry rather than the preliminary field.
+        index _preliminaryGhostCount = 0; ///< Saved temporary ghost count for initialization diagnostics.
 
         /**
          * @brief Build complete owned-node graph-neighbor rows in global node IDs from primal cell stars.

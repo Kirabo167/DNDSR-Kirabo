@@ -48,10 +48,15 @@ namespace DNDS::ACM
         using TpVFV = ssp<TVFV>;                           ///< Shared reconstruction engine pointer.
         using TBoundaryFunction = typename TVFV::template TFBoundary<nVarsFixed>;
         using TBoundaryDiffFunction = typename TVFV::template TFBoundaryDiff<nVarsFixed>;
+        /**
+         * @brief Outcome of the most recent variational-reconstruction solve.
+         * @details A fixed sweep count does not certify convergence: converged becomes true
+         * only after a global scaled equation-defect check satisfies the requested tolerance.
+         */
         struct ReconstructionReport
         {
-            int iterations = 0;
-            real equationDefect = 0;
+            int iterations = 0;    ///< Completed coefficient-update sweeps in this reconstruction call.
+            real equationDefect = 0; ///< Latest scaled MPI maximum defect; remains zero if no check was requested.
             bool converged = false; ///< True only after checking the VR equation defect.
         };
         /**
@@ -73,6 +78,9 @@ namespace DNDS::ACM
 
         /**
          * @brief Derivatives of one integrated numerical face flux with respect to both cells.
+         * @details Both blocks use [u,v,w,p] rows/columns and include surface quadrature weights.
+         * Their orientation is the common left-to-right face normal; cell-volume division and
+         * the residual assembly sign are applied when the operator is assembled or evaluated.
          * @note On a physical boundary `right` is zero and `left` includes the ghost-state chain rule.
          * @note Modifier: Runzhi Ma.
          */

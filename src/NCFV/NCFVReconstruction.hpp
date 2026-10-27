@@ -13,26 +13,39 @@
 
 namespace DNDS::NCFV
 {
+    /**
+     * @brief Owner/ghost node vectors with a runtime-sized component count.
+     * @details Solution fields use [rho,rho*u...,rho*E]; scalar caches use their requested
+     * row count instead. Allocators specify whether the pair borrows the runtime node halo.
+     */
     using NodeStatePair = ArrayDof<DynamicSize, 1>;
+    /// Owner/ghost per-node matrices; shape is assigned by each gradient/coefficient/cache allocator.
     using NodeMatrixPair = ArrayDof<DynamicSize, DynamicSize>;
 
+    /**
+     * @brief Geometry-only reconstruction map for one owned node's dual-volume mean.
+     * @details inverseRows multiplies stencil mean jumps (U_neighbor - U_anchor), not point
+     * values. Rows represent dimensionless nonconstant Taylor modes; physical gradients
+     * divide the retained linear rows by referenceLengths. There are five full modes in
+     * 2-D and nine in 3-D; efficient nonvariational reconstruction retains only linear rows.
+     */
     struct ReconstructionOperator
     {
-        index node = UnInitIndex;
-        int rings = 0;
-        int numericalRank = 0;
-        real lengthScale = 0;                       // Volume-based scale for distance weights only.
-        Vector3 referenceLengths = Vector3::Ones(); // Thesis (3-34), basis normalization.
-        real conditionNumber = veryLargeReal;
+        index node = UnInitIndex; ///< Owned anchor-node ID, identical in preliminary and runtime layouts.
+        int rings = 0; ///< Maximum graph-ring depth reached while selecting this stencil.
+        int numericalRank = 0; ///< Accepted rank of the complete nonconstant quadratic fitting problem.
+        real lengthScale = 0; ///< Volume-derived length used only for distance weights.
+        Vector3 referenceLengths = Vector3::Ones(); ///< Anisotropic basis half-spans from dual-volume bounds.
+        real conditionNumber = veryLargeReal; ///< Estimated condition number before discarding unused rows.
         /** Dimensionless linear-mode response to normalized cubic point data. */
         real cubicErrorIndicator = veryLargeReal;
         /** Number of first-ring graph neighbours retained in stencil. */
         int directNeighborCount = 0;
-        std::vector<index> stencil;
+        std::vector<index> stencil; ///< Neighbor IDs in the preliminary halo, remapped to the final halo once.
         /** Stable global IDs retained while the final exact halo is pruned. */
         std::vector<index> stencilGlobals;
-        Eigen::MatrixXd inverseRows;
-        Eigen::VectorXd targetBasisMean;
+        Eigen::MatrixXd inverseRows; ///< Retained mode count by stencil.size() weighted recovery matrix.
+        Eigen::VectorXd targetBasisMean; ///< Full quadratic basis averaged over the anchor dual volume.
     };
 
     /**
@@ -45,11 +58,16 @@ namespace DNDS::NCFV
      */
     class Reconstruction
     {
+        /**
+         * @brief Pre-inverted contribution of one neighbor to a variational coefficient update.
+         * @details The update adds coupling*C_neighbor plus meanJump*(U_neighbor-U_anchor)^T.
+         * All polynomial rows use the corresponding anchor/neighbor normalization lengths.
+         */
         struct VariationalNeighborOperator
         {
-            index node = UnInitIndex;
-            Eigen::MatrixXd coupling;
-            Eigen::VectorXd meanJump;
+            index node = UnInitIndex; ///< Neighbor ID in the finalized runtime node halo.
+            Eigen::MatrixXd coupling; ///< BasisSize by BasisSize map from neighbor polynomial coefficients.
+            Eigen::VectorXd meanJump; ///< BasisSize response vector multiplying each conservative mean jump.
         };
         const MPIInfo &_mpi;
         ssp<Geom::UnstructuredMesh> _mesh;

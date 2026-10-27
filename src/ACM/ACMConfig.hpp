@@ -171,7 +171,12 @@ namespace DNDS::ACM
         }
     };
 
-    /// Complete kernel-preview configuration read by the `acm3D` application.
+    /**
+     * @brief Complete constant-density ACM case, including flow-only and unified RANS controls.
+     * @details Solver metadata selects dimension and equation count. initialState uses
+     * [u,v,w,p,rho0*q...] for RANS, whereas boundary flow data always use [u,v,w,p].
+     * Configuration loading and model-specific validation check these layout constraints.
+     */
     struct KernelConfiguration
     {
         SolverSelection solver{"ACM", "CFV", "ConstantDensity3D", 4};
@@ -265,8 +270,8 @@ namespace DNDS::ACM
     /// Validated typed configuration paired with its normalized JSON representation.
     struct LoadedConfiguration
     {
-        KernelConfiguration configuration;
-        nlohmann::ordered_json resolvedJson;
+        KernelConfiguration configuration; ///< Validated typed settings consumed by the solver.
+        nlohmann::ordered_json resolvedJson; ///< Input after compatibility/default handling and CLI overrides.
     };
 
     /**

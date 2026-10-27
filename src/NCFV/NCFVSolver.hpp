@@ -14,15 +14,26 @@
 
 namespace DNDS::NCFV
 {
-    /** Per-rank wall times for one completed production SSPRK3 step. */
+    /**
+     * @brief Local timing summary for one completed production SSPRK3 step.
+     * @details Values are wall-clock seconds on this rank. rhs contains accumulated spatial
+     * evaluation timings, including nested details; totalSeconds is the inclusive step time.
+     */
     struct StepPhaseTiming
     {
-        RhsPhaseTiming rhs;
-        real baseStateCopySeconds = 0;
-        real stageUpdateSeconds = 0;
-        real totalSeconds = 0;
+        RhsPhaseTiming rhs; ///< Accumulated RHS evaluation phase/detail timings within the step.
+        real baseStateCopySeconds = 0; ///< Saving the conservative state used by RK combinations/retries.
+        real stageUpdateSeconds = 0; ///< Stage combinations and driver-side state update work.
+        real totalSeconds = 0; ///< Inclusive elapsed time for the completed production step.
     };
 
+    /**
+     * @brief Own the mesh, communication, reconstruction, solution fields, and time-step driver for NCFV.
+     * @tparam dimension Mesh/flow dimension, two or three.
+     * @details The evolved state is a dual-volume conservative mean, not a primal-node point
+     * sample. Runtime node fields follow the exact finalized dependency halo; geometry and
+     * edge ownership remain separate. Initialize() builds these layouts before Run() uses them.
+     */
     template <int dimension>
     class Solver
     {
@@ -42,10 +53,10 @@ namespace DNDS::NCFV
         std::unique_ptr<BoundaryRegistry> _boundaries;
         std::unique_ptr<SpatialOperator<dimension>> _spatial;
 
-        NodeStatePair _state;
-        NodeStatePair _baseState;
-        NodeStatePair _stageState;
-        NodeStatePair _rhs;
+        NodeStatePair _state; ///< Authoritative conservative dual means [rho,rho*u...,rho*E].
+        NodeStatePair _baseState; ///< Start-of-step state retained for RK combinations and rejected-step recovery.
+        NodeStatePair _stageState; ///< Intermediate conservative RK stage field.
+        NodeStatePair _rhs; ///< Latest owned-node spatial derivative; ghost values are not solution history.
         index _currentIteration = 0;
         real _simulationTime = 0;
         index _lastOutputIteration = UnInitIndex;

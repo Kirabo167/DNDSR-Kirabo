@@ -19,9 +19,9 @@ namespace DNDS::ACM
     /// Three distinct characteristic speeds of the four-variable ACM system.
     struct Eigenvalues
     {
-        real lambdaMinus = 0;
-        real lambdaTangential = 0;
-        real lambdaPlus = 0;
+        real lambdaMinus = 0;      ///< Signed lower acoustic speed of the preconditioned normal operator.
+        real lambdaTangential = 0; ///< Signed repeated tangential speed, shared by two shear modes.
+        real lambdaPlus = 0;       ///< Signed upper acoustic speed; speeds are not surface-integrated.
 
         /**
          * @brief Compute the largest characteristic-speed magnitude.
@@ -30,11 +30,15 @@ namespace DNDS::ACM
         real SpectralRadius() const;
     };
 
-    /// Numerical face flux together with the characteristic speeds used by its dissipation.
+    /**
+     * @brief Numerical face flux and the characteristic speeds used for its dissipation.
+     * @details The flux uses global component ordering and a left-to-right normal convention.
+     * Surface measure and quadrature weights are applied by the caller, not stored here.
+     */
     struct FluxResult
     {
-        State flux = State::Zero();
-        Eigenvalues eigenvalues;
+        State flux = State::Zero(); ///< Three velocity-equation fluxes followed by the continuity flux.
+        Eigenvalues eigenvalues;   ///< Signed characteristic speeds at the flux linearization state.
     };
 
     /**

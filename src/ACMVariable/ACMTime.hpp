@@ -198,7 +198,12 @@ namespace DNDS::ACMVariable
     using DiagonalJacobianEvaluator =
         std::function<void(const StateField &states, MatrixField &diagonalJacobian)>;
 
-    /// Diagnostics returned after one outer or physical time-marching step.
+    /**
+     * @brief Iteration count and global convergence norms for one variable-density time step.
+     * @details The reported norm follows the selected explicit/implicit driver and uses owned
+     * flow entries [rho,mx,my,mz,p]. A physical-time driver may also include its coupled
+     * turbulence or constraint defect in the stopping norm; ghosts are not counted as owners.
+     */
     struct TimeStepReport
     {
         int iterations = 0;         ///< Explicit stages or implicit nonlinear iterations.

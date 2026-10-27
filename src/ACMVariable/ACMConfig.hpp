@@ -230,8 +230,8 @@ namespace DNDS::ACMVariable
     /// Validated typed configuration paired with its normalized JSON representation.
     struct LoadedConfiguration
     {
-        KernelConfiguration configuration;
-        nlohmann::ordered_json resolvedJson;
+        KernelConfiguration configuration; ///< Validated typed variable-density solver settings.
+        nlohmann::ordered_json resolvedJson; ///< Case after default/legacy-field handling and CLI overrides.
     };
 
     /**

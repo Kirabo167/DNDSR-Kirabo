@@ -305,7 +305,14 @@ namespace DNDS::ACM
     using DiagonalJacobianEvaluator =
         std::function<void(const StateField &states, MatrixField &diagonalJacobian)>;
 
-    /// Diagnostics returned after one outer or physical time-marching step.
+    /**
+     * @brief Diagnostics returned by one outer pseudo-time step or physical BDF step.
+     * @details Residual/defect norms use global owned-cell data. Equation arrays follow
+     * [u,v,w,p,q1,q2], with inactive entries zero; grouped flow and RANS norms are reported
+     * separately. Applied-update norms are unnormalized L2 values rather than RMS residuals.
+     * @note converged refers to the selected stopping criterion. RelativeUpdate can pass
+     * without satisfying the independently reported physical-defect convergence test.
+     */
     struct TimeStepReport
     {
         int iterations = 0;         ///< Explicit stages or implicit nonlinear iterations.

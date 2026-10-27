@@ -8,14 +8,18 @@
 
 namespace DNDS::ACM
 {
-    /// True, unpreconditioned RMS residuals of one implicit correction system.
+    /**
+     * @brief Convergence diagnostics for one linear correction system A*increment = rhs.
+     * @details Norms are true unpreconditioned residual RMS values, measured before nonlinear
+     * damping. Exhausting an iteration budget leaves converged false unless the target was met.
+     */
     struct ImplicitLinearReport
     {
-        real initialResidual = 0;
-        real finalResidual = 0;
-        real tolerance = 0;
-        int iterations = 0;
-        bool converged = false;
+        real initialResidual = 0; ///< RHS RMS for the zero initial correction.
+        real finalResidual = 0;   ///< Latest checked RMS of rhs - A*increment.
+        real tolerance = 0;       ///< max(absoluteTolerance, relativeTolerance*initialResidual).
+        int iterations = 0;       ///< Completed SGS corrections, or the GMRES cycle index reported by its callback.
+        bool converged = false;   ///< Whether the latest true residual is at or below tolerance.
     };
 
     /**

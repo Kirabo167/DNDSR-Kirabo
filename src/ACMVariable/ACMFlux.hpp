@@ -19,9 +19,9 @@ namespace DNDS::ACMVariable
     /// Three distinct characteristic speeds of the five-variable ACM system.
     struct Eigenvalues
     {
-        real lambdaMinus = 0;
-        real lambdaTangential = 0;
-        real lambdaPlus = 0;
+        real lambdaMinus = 0;      ///< Signed lower acoustic speed of the preconditioned normal operator.
+        real lambdaTangential = 0; ///< Repeated convective speed for the nonacoustic modes.
+        real lambdaPlus = 0;       ///< Signed upper acoustic speed; no surface measure is included.
 
         /**
          * @brief Compute the largest characteristic-speed magnitude.
@@ -33,8 +33,8 @@ namespace DNDS::ACMVariable
     /// Numerical face flux together with the characteristic speeds used by its dissipation.
     struct FluxResult
     {
-        State flux = State::Zero();
-        Eigenvalues eigenvalues;
+        State flux = State::Zero(); ///< Global density, three momentum, and pressure-equation flux entries.
+        Eigenvalues eigenvalues;   ///< Signed characteristic speeds used by the numerical dissipation.
     };
 
     /**

@@ -113,43 +113,53 @@ namespace DNDS::ACM
     template <ACMModel model>
     struct ModelTraits;
 
-    /// Compile-time layout of the constant-density three-dimensional state `[u, v, w, p]`.
+    /**
+     * @brief Layout of the constant-density flow block on a two-dimensional mesh.
+     * @details Storage remains [u,v,w,p]: the third velocity slot is retained even though mesh
+     * derivatives use only x and y. Density is the prescribed rho0, not a state component.
+     */
     template <>
     struct ModelTraits<ACMModel::ConstantDensity2D>
     {
-        static constexpr int dim = 2;
-        static constexpr int gDim = 2;
-        static constexpr int nVarsFixed = 4;
-        static constexpr int velocityBegin = 0;
-        static constexpr int pressureIndex = 3;
-        static constexpr int nExtraVars = 0;
+        static constexpr int dim = 2;           ///< Number of active spatial directions.
+        static constexpr int gDim = 2;          ///< Dimension of the primal mesh and reconstruction.
+        static constexpr int nVarsFixed = 4;    ///< Stored flow entries, including the retained w slot.
+        static constexpr int velocityBegin = 0; ///< First of the three contiguous velocity entries.
+        static constexpr int pressureIndex = 3; ///< Index of physical pressure, not pressure divided by beta2.
+        static constexpr int nExtraVars = 0;    ///< No turbulence equations in the flow-only block.
     };
 
     /// Compile-time layout of the constant-density three-dimensional state `[u, v, w, p]`.
     template <>
     struct ModelTraits<ACMModel::ConstantDensity3D>
     {
-        static constexpr int dim = 3;
-        static constexpr int gDim = 3;
-        static constexpr int nVarsFixed = 4;
-        static constexpr int velocityBegin = 0;
-        static constexpr int pressureIndex = 3;
-        static constexpr int nExtraVars = 0;
+        static constexpr int dim = 3;           ///< Number of active spatial directions.
+        static constexpr int gDim = 3;          ///< Dimension of the primal mesh and reconstruction.
+        static constexpr int nVarsFixed = 4;    ///< Number of entries in [u,v,w,p].
+        static constexpr int velocityBegin = 0; ///< First of the three contiguous velocity entries.
+        static constexpr int pressureIndex = 3; ///< Physical-pressure component.
+        static constexpr int nExtraVars = 0;    ///< No turbulence equations in the flow-only block.
     };
 
-    /** @brief Compile-time extension of the four-equation ACM flow block. */
+    /**
+     * @brief Compile-time layout shared by constant-density RANS model specializations.
+     * @tparam dimension Active mesh dimension, two or three.
+     * @tparam turbulenceVariables One for SA, or two for a two-equation closure.
+     * @details The authoritative solver state is [u,v,w,p,rho0*q...]. Primitive closure
+     * fields used to evaluate viscosity and source terms are separate scratch projections.
+     */
     template <int dimension, int turbulenceVariables>
     struct RANSModelTraits
     {
         static constexpr int dim = dimension;
         static constexpr int gDim = dimension;
-        static constexpr int nExtraVars = turbulenceVariables;
-        static constexpr int nVarsFixed = 4 + turbulenceVariables;
+        static constexpr int nExtraVars = turbulenceVariables; ///< Active density-weighted transport entries.
+        static constexpr int nVarsFixed = 4 + turbulenceVariables; ///< Total flow-plus-turbulence state length.
         static constexpr int velocityBegin = 0;
         static constexpr int pressureIndex = 3;
-        static constexpr int turbulenceBegin = 4;
-        static constexpr bool hasSA = turbulenceVariables == 1;
-        static constexpr bool has2EQ = turbulenceVariables == 2;
+        static constexpr int turbulenceBegin = 4; ///< First density-weighted turbulence component.
+        static constexpr bool hasSA = turbulenceVariables == 1; ///< Selects the single-equation SA layout.
+        static constexpr bool has2EQ = turbulenceVariables == 2; ///< Selects a two-equation RANS layout.
     };
 
     template <>
@@ -180,6 +190,11 @@ namespace DNDS::ACM
         return "UnknownACMModel";
     }
 
+    /**
+     * @brief Fixed-size state vector for a selected flow or unified RANS equation set.
+     * @tparam model Determines the dimension and the four-, five-, or six-entry storage layout.
+     * @details Entries 0..3 are always [u,v,w,p]; any remaining entries use rho0*q in the solver.
+     */
     template <ACMModel model>
     using ModelState = Eigen::Vector<real, ModelTraits<model>::nVarsFixed>;
 
