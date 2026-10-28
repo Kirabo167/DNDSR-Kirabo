@@ -1,0 +1,84 @@
+{
+    "$schema": "../ncfv_euler3D_schema.json",
+    "solver": {
+        "type": "ncfv_euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
+    "dimension": 3,
+    "mesh": {
+        "meshFile": "../data/mesh/riemann_barth_400x400x5.cgns",
+        "periodicLengths": [0, 0, 0.0125],
+        "periodicBoundaryPairs": ["ZMIN", "ZMAX"]
+    },
+    "algorithm": {
+        "mode": "EfficientDifferential",
+        "quadratureOrder": 4,
+        "surfaceQuadratureOrder": 3,
+        "retainMicroGeometry": false
+    },
+    "reconstruction": {
+        "method": "SVDLeastSquares",
+        "stencilSizeFactor": 1.7,
+        "maximumStencilRings": 4,
+        "completeStencilRings": false,
+        "enableLimiter": true,
+        "limitPointRecovery": true,
+        "barthZeroOrderFallback": false,
+        "sharedGradientFaceSweep": true,
+        "limitPressure": false,
+        "directionalPairBounds": false,
+        "limitFluxCorrection": false
+    },
+    "physics": {
+        "gamma": 1.4,
+        "riemannSolver": "Roe",
+        "boundaryMode": "SupersonicOutlet",
+        "initialPrimitive": [1.5, 0, 0, 0, 1.5],
+        "farFieldPrimitive": [1.5, 0, 0, 0, 1.5],
+        "requireBoundaryZoneCoverage": true,
+        "boundaryZones": [
+            {"name": "XMIN", "mode": "SupersonicOutlet"},
+            {"name": "XMAX", "mode": "SupersonicOutlet"},
+            {"name": "YMIN", "mode": "SupersonicOutlet"},
+            {"name": "YMAX", "mode": "SupersonicOutlet"},
+            {"name": "ZMIN", "mode": "Periodic"},
+            {"name": "ZMAX", "mode": "Periodic"}
+        ],
+        "viscous": {"enabled": false}
+    },
+    "initialField": {
+        "nodeFile": "../data/mesh/riemann_barth_400x400x5_initial/RP1.csv",
+        "nodeFileVariables": "Conservative",
+        "nodeFileIndexBase": 0,
+        "requireCompleteNodeFile": true
+    },
+    "time": {
+        "iterations": 1000000,
+        "endTime": 0.25,
+        "useCFLTimeStep": true,
+        "useLocalTimeStep": false,
+        "cfl": 0.5,
+        "minimumTimeStep": 1e-12,
+        "maximumTimeStep": 0.0001,
+        "reportInterval": 10,
+        "rejectNonPhysicalSteps": true,
+        "maximumStepRetries": 20
+    },
+    "io": {
+        "writeVTK": true,
+        "writeInitial": true,
+        "writeFinal": true,
+        "outputInterval": 100,
+        "outputPrefix": "../data/out/NCFV/RP1_reflection_stencil_single_400_20261027/solution",
+        "vtkSeriesName": "../data/out/NCFV/RP1_reflection_stencil_single_400_20261027/series",
+        "vtkFloatEncoding": "binary",
+        "restartInput": "",
+        "restartInterval": 100,
+        "writeFinalRestart": true,
+        "restartPrefix": "../data/out/NCFV/RP1_reflection_stencil_single_400_20261027/restart",
+        "restartSerializer": {"type": "H5"},
+        "writeResolvedConfiguration": true
+    }
+}

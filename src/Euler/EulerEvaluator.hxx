@@ -1049,8 +1049,8 @@ namespace DNDS::Euler
         case 2:   // for IV10 problem
         case 203: // for IV10 problem with PP
         case 202:
-            DNDS_assert(model == NS || model == NS_2D || model == NS_EX);
-            if constexpr (model == NS || model == NS_2D || model == NS_EX)
+            DNDS_assert(model == NS || model == NS_2D || model == NS_3D || model == NS_EX);
+            if constexpr (model == NS || model == NS_2D || model == NS_3D || model == NS_EX)
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif

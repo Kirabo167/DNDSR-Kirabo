@@ -1,0 +1,205 @@
+// File: cases/acm/2D/acm2D_cylinder_Re50_LUSGS_CFL20.json
+// Purpose: Short two-dimensional Re_D=50 cylinder test with standalone LU-SGS at CFL=20.
+// Mesh: existing 2048-cell diagnostic O-grid; center (0,0), diameter D=1, outer radius=20.
+// Nondimensional flow: rho=1, U_inf=1, D=1, so mu=rho*U_inf*D/Re_D=0.02.
+// Time integration: backward-Euler startup followed by BDF2 dual-time standalone LU-SGS.
+// Run length: 6 physical steps with dt=0.01, reaching t*=0.06; this is a startup convergence check.
+// Stop each physical inner solve when flow RMS <= 1e-8 OR its physical-step ratio <= 1e-4.
+// Output: initial field and each accepted physical step.
+// Intended launch from build/ with 2 MPI ranks:
+// OMP_NUM_THREADS=1 mpirun -np 2 ./app/acm2D.exe \
+//   ../cases/acm/2D/acm2D_cylinder_Re50_LUSGS_CFL20.json
+// This short startup run checks iterative convergence. Developed vortex shedding and
+// time-step/grid independence require longer calculations and separate verification.
+// Modifier: Runzhi Ma
+{
+    "solver": {
+        "type": "ACM",
+        "discretization": "CFV",
+        "model": "ConstantDensity2D",
+        "fieldNVariables": 4
+    },
+    "$schema": "acm2D_schema.json",
+    // Constant-density artificial-compressibility state [u,v,w,p].
+    "acmSettings": {
+        "rho0": 1.0,
+        "beta2": 4.0,
+        "alpha": 0.5,
+        // Re_D=rho0*U_inf*D/mu=50 for rho0=U_inf=D=1.
+        "dynamicViscosity": 0.02,
+        "riemannSolverType": "Roe",
+        "pressureStorage": "PhysicalP",
+        "entropyFixRatio": 0.05,
+        "pressureReference": 0.0,
+        "farFieldValue": [1.0, 0.0, 0.0, 0.0],
+        "enableViscousFlux": true
+    },
+
+    // Physical BDF2 outer steps with local-CFL pseudo-time iterations.
+    "timeMarchSettings": {
+        "integrator": "BDF2DualTimeLUSGS",
+        "nSteps": 6,
+        // Fallback pseudo-time step when useCFLTimeStep=false.
+        "pseudoTimeStep": 0.0005,
+        // Uniform nondimensional physical time step; 6 steps reach t*=0.06.
+        "physicalTimeStep": 0.01,
+        "useCFLTimeStep": true,
+        "useLocalTimeStep": true,
+        // Local steps remain set by the spectral-radius CFL, without an extra cap.
+        // Match the preceding Re=3900 test at CFL=20 to isolate the viscosity change.
+        "cfl": 20.0,
+        "maximumPseudoTimeStep": 1e100,
+        // The 600-correction trial did not converge at startup; use an extended budget.
+        "maxImplicitIterations": 1200,
+        // Absolute RMS floor; OR with the physical-step relative target below.
+        "implicitTolerance": 1e-8,
+        "dualTimeConvergenceCriterion": "AbsoluteOrRelative",
+        "dualTimeFlowRelativeTolerance": 1e-4,
+        "dualTimeTurbulenceRelativeTolerance": 0.0,
+        "dualTimeRequireConvergence": true,
+        "implicitRelaxation": 0.7,
+        "lusgsSweeps": 2,
+        // GMRES controls are inactive for this standalone LU-SGS test.
+        "gmresSubspace": 20,
+        "gmresRestarts": 3,
+        "linearRelativeTolerance": 1e-6,
+        "linearAbsoluteTolerance": 1e-10,
+        "gmresPreconditioner": "LUSGS"
+    },
+
+    // Laminar flow; the remaining turbulence values are inactive but required.
+    "turbulenceSettings": {
+        "model": "Laminar",
+        "initialValue": [1e-6, 1.0],
+        "farFieldValue": [1e-6, 1.0],
+        "minimumValue": [1e-12, 1e-10],
+        "maximumValue": [1000000.0, 1000000000000.0],
+        "maximumEddyViscosityRatio": 100000.0,
+        "wallOmegaCoefficient": 800.0,
+        "enableSourceTerms": true,
+        "secondOrderReconstruction": true,
+        "transportSubsteps": 4,
+        "transportTimeScale": 0.25,
+        "wallDistanceMethod": 1,
+        "wallDistanceExecution": 0,
+        "wallDistanceSubdivide": 0,
+        "minimumWallDistance": 1e-10,
+        "wallDistanceVerbose": 0
+    },
+
+    // Available 2-D cylinder O-grid: 64 azimuthal x 32 radial cells, radial growth=1.1.
+    "meshSettings": {
+        "meshFile": "../data/acm_cylinder_inner_diagnostic/mesh/cylinder_2048_mild.cgns",
+        "meshElevation": 0,
+        "meshDirectBisect": 0,
+        "meshReorderCells": 0,
+        "periodicTolerance": 1e-9,
+        "periodicTranslation1": [0.0, 0.0, 0.0],
+        "periodicTranslation2": [0.0, 0.0, 0.0],
+        "periodicTranslation3": [0.0, 0.0, 0.0],
+        "partitionOptions": {
+            "metisType": "KWAY",
+            "metisUfactor": 20,
+            "metisSeed": 0,
+            "edgeWeightMethod": 0,
+            "metisNcuts": 3
+        }
+    },
+
+    // Second-order variational reconstruction with startup limiting.
+    "reconstructionSettings": {
+        "type": "Variational",
+        "variationalIterations": 3,
+        "resetVariationalCoefficients": false,
+        "enableLimiter": true,
+        "limiterType": "CWBAP"
+    },
+
+    // Files are numbered 00000000, 00000001, ..., 00000006.
+    "outputSettings": {
+        "interval": 1,
+        "directory": "../data/outACM/acm2D_CylinderRe50_LUSGS_CFL20",
+        "prefix": "Cylinder2048_Re50_LUSGS_CFL20",
+        "writeInitial": true
+    },
+
+    "vfvSettings": {
+        "maxOrder": 2,
+        "intOrder": 4,
+        "ignoreMeshGeometryDeficiency": false,
+        "nIterCellSmoothScale": 15,
+        "intOrderVR": -1,
+        "intOrderVRBC": -2,
+        "cacheDiffBase": false,
+        "cacheDiffBaseSize": 3,
+        "jacobiRelax": 1.0,
+        "SORInstead": true,
+        "smoothThreshold": 0.01,
+        "WBAP_nStd": 10.0,
+        "normWBAP": false,
+        "limiterBiwayAlter": 0,
+        "subs2ndOrder": 0,
+        "subs2ndOrderGGScheme": 1,
+        "svdTolerance": 0.0,
+        "baseSettings": {
+            "localOrientation": false,
+            "anisotropicLengths": false
+        },
+        "functionalSettings": {
+            "scaleType": "BaryDiff",
+            "scaleMultiplier": 1.0,
+            "dirWeightScheme": "Factorial",
+            "dirWeightCombPowV": 1,
+            "manualDirWeights": [1.0, 1.0, 0.5, 0.16666666666666666, 0.041666666666666664],
+            "geomWeightScheme": "GWNone",
+            "geomWeightPower": 0.5,
+            "geomWeightPower1": 0.0,
+            "geomWeightPower2": 0.0,
+            "useAnisotropicFunctional": false,
+            "tanWeightScale": 1.0,
+            "anisotropicType": "InertiaCoord",
+            "inertiaWeightPower": 1.0,
+            "geomWeightBias": 0.0,
+            "greenGauss1Weight": 0.0,
+            "greenGauss1Bias": 0.5,
+            "greenGauss1Penalty": 0.0,
+            "greenGaussSpacial": 0
+        },
+        "bcWeight": 1.0
+    },
+
+    "defaultBoundaryType": "BCFar",
+    "boundaryConditions": [
+        {
+            "type": "BCWall",
+            "name": "WALL",
+            "value": [0.0, 0.0, 0.0, 0.0],
+            "frameOption": 0,
+            "anchorOption": 0,
+            "integrationOption": 0,
+            "specialOption": 0,
+            "rectifyOption": 0,
+            "valueExtra": []
+        },
+        {
+            "type": "BCFar",
+            "name": "FAR",
+            "value": [1.0, 0.0, 0.0, 0.0],
+            "frameOption": 0,
+            "anchorOption": 0,
+            "integrationOption": 0,
+            "specialOption": 0,
+            "rectifyOption": 0,
+            "valueExtra": []
+        }
+    ],
+
+    // A small transverse perturbation breaks exact symmetry, matching the Re=3900 initial state.
+    "initialState": [1.0, 0.001, 0.0, 0.0],
+    "boundaryValue": [1.0, 0.0, 0.0, 0.0],
+    "leftState": [1.0, 0.0, 0.0, 0.0],
+    "rightState": [0.0, 0.0, 0.0, 0.0],
+    "unitNormal": [1.0, 0.0, 0.0],
+    // Compatibility-only preview size; MPI parallelism is selected by mpirun -np 2.
+    "nFacesPerRank": 16
+}

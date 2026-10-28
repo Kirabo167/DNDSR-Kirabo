@@ -407,14 +407,14 @@ namespace DNDS::NCFV
         State integral = PhysicalFlux(
             State(_pointValues[anchorNode]),
             surface.vectorMeasure.template head<dimension>());
-        if (_reconstructionSettings.barthZeroOrderFallback &&
-            _limiterFactors[anchorNode](0, 0) == 0)
-            return integral;
         if (_detailedFluxTiming)
         {
             timing.zeroOrderFluxSeconds += MPI_Wtime() - phaseStart;
             phaseStart = MPI_Wtime();
         }
+        if (_reconstructionSettings.barthZeroOrderFallback &&
+            _limiterFactors[anchorNode](0, 0) == 0)
+            return integral;
         State correction = State::Zero();
         for (const EfficientSurfaceNode &entry : surface.efficientStencil)
         {

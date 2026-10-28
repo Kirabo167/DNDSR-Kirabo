@@ -161,7 +161,7 @@ def load_series(path):
     return entries, times
 
 
-def add_panel(plotter, column, mesh, field, clim, width, height):
+def add_panel(plotter, column, mesh, field, clim, width, height, cmap="coolwarm"):
     """Give titles, data, and colorbars separate white renderer strips."""
     x0, x1 = column / 2, (column + 1) / 2
     title_index, data_index, bar_index = column * 3, column * 3 + 1, column * 3 + 2
@@ -174,8 +174,8 @@ def add_panel(plotter, column, mesh, field, clim, width, height):
     plotter.subplot(title_index, 0)
     title = plotter.add_text("", position="lower_edge", color="black", font_size=16)
     plotter.subplot(data_index, 0)
-    actor = plotter.add_mesh(mesh, scalars=field, cmap="inferno" if field == "Density"
-                            else "viridis", clim=clim, show_scalar_bar=False,
+    actor = plotter.add_mesh(mesh, scalars=field, cmap=cmap,
+                            clim=clim, show_scalar_bar=False,
                             lighting=False, show_edges=False)
     bounds = mesh.bounds
     cx, cy = (bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2
@@ -208,12 +208,15 @@ def add_panel(plotter, column, mesh, field, clim, width, height):
     return title, actor
 
 
-def render_case(name, entries, caches, clims, directory, size, z, final_label=True):
+def render_case(name, entries, caches, clims, directory, size, z, final_label=True,
+                contour_count=25, cmap="coolwarm"):
     directory.mkdir(parents=True, exist_ok=True)
     plotter = pv.Plotter(off_screen=True, window_size=size, shape=(6, 1), border=False)
     mesh = pv.read(caches[0])
-    panels = [add_panel(plotter, k, mesh, field, clims[field], *size)
+    panels = [add_panel(plotter, k, mesh, field, clims[field], *size, cmap=cmap)
               for k, field in enumerate(FIELDS)]
+    levels = {field: np.linspace(*clims[field], contour_count + 2)[1:-1]
+              for field in FIELDS}
     images = []
     for index, (entry, cache) in enumerate(zip(entries, caches)):
         if index:
@@ -224,10 +227,23 @@ def render_case(name, entries, caches, clims, directory, size, z, final_label=Tr
                 raise ValueError(f"Slice topology changed at {entry['path']}")
             for field in FIELDS:
                 mesh.point_data[field] = updated.point_data[field]
-        for field, (title, actor) in zip(FIELDS, panels):
+        for column, (field, (title, actor)) in enumerate(zip(FIELDS, panels)):
             suffix = " (final)" if final_label and index == len(entries) - 1 else ""
             title.set_text("lower_edge", f"{name}  |  {field}  |  t = {entry['time']:.5f}{suffix}")
             actor.mapper.scalar_range = clims[field]
+            plotter.subplot(column * 3 + 1, 0)
+            contour_name = f"contours_{field}"
+            plotter.remove_actor(contour_name, reset_camera=False, render=False)
+            if contour_count:
+                contours = mesh.contour(levels[field], scalars=field,
+                                        compute_scalars=False, preference="point")
+                if contours.n_cells:
+                    # Lift the lines slightly toward the camera to avoid z fighting.
+                    contours.translate((0, 0, 1e-5 * (mesh.bounds[1] - mesh.bounds[0])),
+                                       inplace=True)
+                    plotter.add_mesh(contours, color="black", line_width=.7, opacity=.65,
+                                     lighting=False, show_scalar_bar=False, name=contour_name,
+                                     reset_camera=False, render=False)
         image = directory / f"{index:06d}.png"
         plotter.render()
         plotter.screenshot(image)
@@ -256,6 +272,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("data/out/NCFV/riemann_barth_400x400x5"))
     parser.add_argument("--output", type=Path, help="Default: ROOT/videos")
+    parser.add_argument("--slice-cache-root", type=Path,
+                        help="Reuse existing validated slices, e.g. ROOT/videos/slices")
+    parser.add_argument("--contours", type=int, default=25,
+                        help="Fixed, equally spaced interior contour levels per field; zero disables lines")
+    parser.add_argument("--cmap", default="coolwarm",
+                        help="Low-to-high color map; default coolwarm is blue-white-red")
     parser.add_argument("--cases", nargs="+", default=["RP1", "RP2", "RP3", "RP4"])
     parser.add_argument("--series-name", default="series.pvtu.series")
     parser.add_argument("--ffmpeg", type=Path)
@@ -270,12 +292,13 @@ def main():
                         help="Report z spans above this threshold in validation.json")
     args = parser.parse_args()
     if (args.workers < 1 or args.fps < 1 or args.seconds <= 0 or args.final_hold < 0
-            or args.width % 4 or args.height % 2):
-        parser.error("Use positive workers/fps/seconds, nonnegative hold, width divisible by 4 and even height")
-    if len(args.cases) != 4:
-        parser.error("The 2x2 overview requires exactly four cases")
+            or args.width % 4 or args.height % 2 or args.contours < 0):
+        parser.error("Use positive workers/fps/seconds, nonnegative hold/contours, width divisible by 4 and even height")
+    if len(args.cases) not in (1, 4):
+        parser.error("Select one case, or four cases for the 2x2 overview")
     ffmpeg = locate_ffmpeg(args.ffmpeg)
     output = (args.output or args.root / "videos").resolve()
+    slice_root = (args.slice_cache_root or output / "slices").resolve()
     output.mkdir(parents=True, exist_ok=True)
     cases = {}
     validation = {}
@@ -283,7 +306,7 @@ def main():
     for name in args.cases:
         entries, times = load_series(args.root / name / args.series_name)
         tasks = [(entry["path"], args.z,
-                  str(output / "slices" / name / f"{k:06d}.vtp"))
+                  str(slice_root / name / f"{k:06d}.vtp"))
                  for k, entry in enumerate(entries)]
         if args.workers == 1:
             results = list(map(prepare_slice, tasks))
@@ -312,7 +335,8 @@ def main():
     for name, case in cases.items():
         case["images"] = render_case(name, case["entries"], case["caches"], clims,
                                       output / "frames" / name,
-                                      (args.width, args.height), args.z)
+                                      (args.width, args.height), args.z,
+                                      contour_count=args.contours, cmap=args.cmap)
         case["indices"] = np.minimum(np.searchsorted(case["times"], timeline + 1e-12,
                                                      side="right") - 1,
                                      len(case["times"]) - 1)
@@ -320,26 +344,34 @@ def main():
                output / f"{name}_density_pressure.mp4", args.fps)
         shutil.copyfile(case["images"][-1], output / f"{name}_final_density_pressure.png")
 
-    overview_dir = output / "frames" / "overview"
-    overview_dir.mkdir(parents=True, exist_ok=True)
-    composed, overview = {}, []
-    for index in range(len(timeline)):
-        key = tuple(int(case["indices"][index]) for case in cases.values())
-        if key not in composed:
-            canvas = Image.new("RGB", (args.width, 2 * args.height), "white")
-            for panel, (name, saved_index) in enumerate(zip(args.cases, key)):
-                with Image.open(cases[name]["images"][saved_index]) as frame:
-                    density = frame.crop((0, 0, args.width // 2, args.height))
-                    canvas.paste(density, ((panel % 2) * (args.width // 2),
-                                           (panel // 2) * args.height))
-            destination = overview_dir / f"{len(composed):06d}.png"
-            canvas.save(destination)
-            composed[key] = destination
-        overview.append(composed[key])
-    encode(ffmpeg, overview, output / "RP1_RP4_density_overview.mp4", args.fps)
-    shutil.copyfile(overview[-1], output / "RP1_RP4_final_density_overview.png")
+    if len(args.cases) == 4:
+        overview_dir = output / "frames" / "overview"
+        overview_dir.mkdir(parents=True, exist_ok=True)
+        composed, overview = {}, []
+        for index in range(len(timeline)):
+            key = tuple(int(case["indices"][index]) for case in cases.values())
+            if key not in composed:
+                canvas = Image.new("RGB", (args.width, 2 * args.height), "white")
+                for panel, (name, saved_index) in enumerate(zip(args.cases, key)):
+                    with Image.open(cases[name]["images"][saved_index]) as frame:
+                        density = frame.crop((0, 0, args.width // 2, args.height))
+                        canvas.paste(density, ((panel % 2) * (args.width // 2),
+                                               (panel // 2) * args.height))
+                destination = overview_dir / f"{len(composed):06d}.png"
+                canvas.save(destination)
+                composed[key] = destination
+            overview.append(composed[key])
+        encode(ffmpeg, overview, output / "RP1_RP4_density_overview.mp4", args.fps)
+        shutil.copyfile(overview[-1], output / "RP1_RP4_final_density_overview.png")
     manifest = {
         "slice_z": args.z, "fps": args.fps,
+        "colormap": args.cmap,
+        "color_direction": "low blue, high red" if args.cmap == "coolwarm" else "increasing along colormap",
+        "contour_count_per_field": args.contours,
+        "contour_levels": {field: np.linspace(*clims[field], args.contours + 2)[1:-1].tolist()
+                           for field in FIELDS},
+        "contour_style": {"color": "black", "line_width": .7, "opacity": .65},
+        "slice_cache_root": str(slice_root),
         "color_limits_global_all_cases_all_saved_volume_states": clims,
         "timeline": "Absolute physical time; hold preceding saved output; freeze each case after t_end",
         "temporal_interpolation": False, "final_hold_seconds": args.final_hold,
@@ -350,7 +382,7 @@ def main():
                          "video": f"{name}_density_pressure.mp4"}
                   for name, case in cases.items()},
         "overview_panel_order": args.cases,
-        "overview_video": "RP1_RP4_density_overview.mp4",
+        "overview_video": "RP1_RP4_density_overview.mp4" if len(args.cases) == 4 else None,
     }
     (output / "render_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Videos, final figures, validation and time mapping: {output}", flush=True)

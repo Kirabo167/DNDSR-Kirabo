@@ -1,0 +1,131 @@
+{
+  "solver": {
+    "type": "Euler",
+    "discretization": "CFV",
+    "model": "NS_3D",
+    "fieldNVariables": 5
+  },
+  "$schema": "../euler3D_schema.json",
+  "timeMarchControl": {
+    "dtImplicit": 0.00125,
+    "nTimeStep": 8,
+    "tEnd": 0.01,
+    "steadyQuit": false,
+    "odeCode": 2
+  },
+  "outputControl": {
+    "nConsoleCheck": 8,
+    "nConsoleCheckInternal": 1000,
+    "consoleOutputMode": 0,
+    "nDataOutC": 1000000,
+    "nDataOut": 1000000,
+    "nDataOutCInternal": 1000000,
+    "nDataOutInternal": 1000000000,
+    "tDataOut": 1e+100,
+    "dataOutAtInit": false
+  },
+  "implicitCFLControl": {
+    "useLocalDt": false
+  },
+  "dataIOControl": {
+    "uniqueStamps": false,
+    "meshFile": "../cases/euler/3D/isentropic_vortex_prism/iv20_cfv_periodic.cgns",
+    "outPltName": "../data/out/CFV/iv_prism20/solution",
+    "outLogName": "../data/out/CFV/iv_prism20/run",
+    "outPltMode": 0,
+    "readMeshMode": 0,
+    "outPltTecplotFormat": false,
+    "outPltVTKFormat": true,
+    "outPltVTKHDFFormat": false,
+    "outAtPointData": false,
+    "outAtCellData": true
+  },
+  "boundaryDefinition": {
+    "PeriodicTranslation1": [
+      10,
+      0,
+      0
+    ],
+    "PeriodicTranslation2": [
+      0,
+      10,
+      0
+    ],
+    "PeriodicTranslation3": [
+      0,
+      0,
+      4
+    ]
+  },
+  "implicitReconstructionControl": {
+    "nInternalRecStep": 1,
+    "zeroGrads": false,
+    "recLinearScheme": 1,
+    "nGmresSpace": 12,
+    "nGmresIter": 8,
+    "recThreshold": 1e-12,
+    "nRecConsolCheck": 100
+  },
+  "limiterControl": {
+    "useLimiter": false,
+    "usePPRecLimiter": false,
+    "smoothIndicatorProcedure": 0,
+    "limiterProcedure": 1,
+    "nPartialLimiterStart": 1000000,
+    "nPartialLimiterStartLocal": 1000000
+  },
+  "vfvSettings": {
+    "maxOrder": 2,
+    "intOrder": 3,
+    "cacheDiffBase": true,
+    "jacobiRelax": 1,
+    "SORInstead": false,
+    "smoothThreshold": 0.001,
+    "WBAP_nStd": 10,
+    "normWBAP": false,
+    "subs2ndOrder": 1,
+    "baseSettings": {
+      "localOrientation": false,
+      "anisotropicLengths": false
+    },
+    "functionalSettings": {
+      "scaleType": "BaryDiff",
+      "scaleMultiplier": 1,
+      "dirWeightScheme": "HQM_OPT",
+      "geomWeightScheme": "HQM_SD"
+    }
+  },
+  "linearSolverControl": {
+    "gmresCode": 0,
+    "nGmresSpace": 8,
+    "nGmresIter": 2
+  },
+  "eulerSettings": {
+    "ignoreSourceTerm": true,
+    "useScalarJacobian": true,
+    "riemannSolverType": "Roe",
+    "specialBuiltinInitializer": 2,
+    "rsMeanValueEig": 1,
+    "nCentralSmoothStep": 0,
+    "constMassForce": [
+      0,
+      0,
+      0
+    ],
+    "farFieldStaticValue": [
+      1,
+      1,
+      1,
+      0,
+      3.5
+    ],
+    "idealGasProperty": {
+      "gamma": 1.4,
+      "Rgas": 289,
+      "muGas": 1e-200,
+      "prGas": 0.72,
+      "TRef": 273.15,
+      "CSutherland": 110.4
+    }
+  }
+}

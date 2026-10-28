@@ -239,7 +239,7 @@
     },
     "C_Cpp.exclusionPolicy": "checkFilesAndFolders",
     "clangd.path": "clangd",
-    "C_Cpp.intelliSenseEngine": "disabled",
+    "C_Cpp.intelliSenseEngine": "default",
     // "C_Cpp.intelliSenseEngine": "Tag Parser"
     "[cpp]": {
         "editor.wordBasedSuggestions": "off",
