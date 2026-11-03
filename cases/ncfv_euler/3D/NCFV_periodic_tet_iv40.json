@@ -14,7 +14,7 @@
         "periodicBoundaryPairs": ["bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"]
     },
     "algorithm": {"mode": "EfficientDifferential", "quadratureOrder": 4, "retainMicroGeometry": false},
-    "reconstruction": {"enableLimiter": false, "stencilSizeFactor": 1.7, "maximumStencilRings": 4},
+    "reconstruction": {"stencilSelectionStrategy": "Original", "enableLimiter": false, "stencilSizeFactor": 1.7, "maximumStencilRings": 4},
     "physics": {
         "gamma": 1.4, "riemannSolver": "Roe", "initialPrimitive": [1, 1, 1, 0, 1],
         "farFieldPrimitive": [1, 1, 1, 0, 1], "requireBoundaryZoneCoverage": true,

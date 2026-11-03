@@ -173,6 +173,48 @@ TEST_CASE("NCFV rejects the scalar Roe_M2 Rusanov path")
         std::exception);
 }
 
+TEST_CASE("NCFV stencil selection is configurable and preserves legacy defaults")
+{
+    auto configuration = MakeConfiguration();
+    CHECK(configuration.reconstruction.stencilSelectionStrategy == StencilSelectionStrategy::Original);
+    for (const auto strategy : {StencilSelectionStrategy::Original, StencilSelectionStrategy::RankAware})
+    {
+        configuration.reconstruction.stencilSelectionStrategy = strategy;
+        const nlohmann::ordered_json encoded = configuration;
+        const auto decoded = encoded.get<Configuration>();
+        decoded.Validate();
+        CHECK(decoded.reconstruction.stencilSelectionStrategy == strategy);
+        CHECK(encoded["reconstruction"]["stencilSelectionStrategy"] ==
+              (strategy == StencilSelectionStrategy::Original ? "Original" : "RankAware"));
+    }
+
+    const auto directory = TestDirectory();
+    PrepareDirectory(directory);
+    const auto file = directory / "legacy-stencil.json";
+    if (gMPI.rank == 0)
+    {
+        nlohmann::ordered_json legacy = configuration;
+        legacy["reconstruction"].erase("stencilSelectionStrategy");
+        std::ofstream output(file);
+        REQUIRE(output.good());
+        output << legacy.dump(2);
+    }
+    MPI_Barrier(gMPI.comm);
+    CHECK(LoadConfiguration(file.string(), {}, {}).configuration.reconstruction.stencilSelectionStrategy ==
+          StencilSelectionStrategy::Original);
+    CHECK(LoadConfiguration(file.string(), {"/reconstruction/stencilSelectionStrategy"}, {"RankAware"})
+              .configuration.reconstruction.stencilSelectionStrategy == StencilSelectionStrategy::RankAware);
+    CHECK_THROWS_AS(LoadConfiguration(file.string(), {"/reconstruction/stencilSelectionStrategy"}, {"invalid"}),
+                    std::exception);
+    configuration.reconstruction.stencilSelectionStrategy = StencilSelectionStrategy::Unknown;
+    CHECK_THROWS_AS(configuration.Validate(), std::exception);
+
+    const auto schema = Configuration::schema("NCFV strategy test");
+    const auto field = schema["properties"]["reconstruction"]["properties"]["stencilSelectionStrategy"];
+    CHECK(field["default"] == "Original");
+    CHECK(field["enum"] == nlohmann::ordered_json::array({"Original", "RankAware"}));
+}
+
 TEST_CASE("NCFV node field, VTK and HDF5 restart form an MPI I/O cycle")
 {
     const std::filesystem::path directory = TestDirectory();

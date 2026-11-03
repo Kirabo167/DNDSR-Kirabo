@@ -54,6 +54,22 @@ namespace DNDS::NCFV
             {ReconstructionMethod::Variational, "变分重构"},
         })
 
+    /** @brief Candidate ordering and acceptance policy for reconstruction stencils. */
+    enum class StencilSelectionStrategy
+    {
+        Unknown,
+        Original,
+        RankAware,
+    };
+
+    DNDS_DEFINE_ENUM_JSON(
+        StencilSelectionStrategy,
+        {
+            {StencilSelectionStrategy::Unknown, nullptr},
+            {StencilSelectionStrategy::Original, "Original"},
+            {StencilSelectionStrategy::RankAware, "RankAware"},
+        })
+
     /** @brief Boundary models supported by the standalone Navier--Stokes solver. */
     enum class BoundaryMode
     {
@@ -170,6 +186,7 @@ namespace DNDS::NCFV
     struct ReconstructionSettings
     {
         ReconstructionMethod method = ReconstructionMethod::SVDLeastSquares;
+        StencilSelectionStrategy stencilSelectionStrategy = StencilSelectionStrategy::Original;
         real stencilSizeFactor = 1.7;
         int maximumStencilRings = 4;
         bool completeStencilRings = false;
@@ -184,9 +201,13 @@ namespace DNDS::NCFV
         bool limitPointRecovery = false;
         bool barthZeroOrderFallback = false;
         bool sharedGradientFaceSweep = false;
+        bool sharedGradientFaceSweepParallel = false;
+        bool sharedGradientBudget = false;
         bool limitPressure = false;
         bool directionalPairBounds = false;
         bool limitFluxCorrection = false;
+        bool fluxCorrectionBinary = false;
+        bool fluxCorrectionEntropy = false;
         bool fluxCorrectionPairBounds = false;
         real maximumFluxCorrection = 1.0;
 
@@ -197,6 +218,9 @@ namespace DNDS::NCFV
                 "LeastSquares, SVDLeastSquares, or Variational; efficient Variational fluxes use the reconstructed first derivatives",
                 DNDS::Config::enum_values(
                     DNDS_ENUM_ALLOWED_VALUES(ReconstructionMethod)));
+            DNDS_FIELD(stencilSelectionStrategy,
+                       "Original preserves the original ring-by-ring selection; RankAware checks reflected-stencil rank/conditioning before compact fallback and stabilizes geometric ordering",
+                       DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(StencilSelectionStrategy)));
             DNDS_FIELD(stencilSizeFactor, "Stencil size divided by quadratic basis size",
                        DNDS::Config::range(1.0, 8.0));
             DNDS_FIELD(maximumStencilRings, "Maximum breadth-first node rings", DNDS::Config::range(1, 8));
@@ -222,9 +246,17 @@ namespace DNDS::NCFV
             DNDS_FIELD(barthZeroOrderFallback,
                        "Use a binary mean-anchored Barth decision: keep the high-order side or fall back to a constant conservative mean; absolute bound tolerance 1e-10");
             DNDS_FIELD(sharedGradientFaceSweep,
-                       "Single sequential sweep over owned interface means; update every contributing shared gradient in place; MPI rank blocks ordered");
+                       "Single sweep over interface means; update every contributing shared gradient in place");
+            DNDS_FIELD(sharedGradientFaceSweepParallel,
+                       "Color complete recovery/integration supports once, then process independent faces concurrently with sparse owner factor exchanges; changes face order");
             DNDS_FIELD(limitPressure,
                        "Also bound point and interface pressure by one-ring mean pressures; requires limitPointRecovery");
+            DNDS_FIELD(sharedGradientBudget,
+                       "Frozen complete recovery/interface positive-negative budgets; parallel owner minimum reduction and box positivity");
+            DNDS_FIELD(fluxCorrectionBinary,
+                       "Accept the complete high-order flux only if its full correction passes both bar-state constraints; otherwise use LLF");
+            DNDS_FIELD(fluxCorrectionEntropy,
+                       "Also preserve the minimum p/rho^gamma of the local means and LLF bar states during complete flux limiting");
             DNDS_FIELD(directionalPairBounds,
                        "Use endpoint mean bounds on each interface; requires limitPointRecovery and can reduce smooth accuracy");
             DNDS_FIELD(limitFluxCorrection,

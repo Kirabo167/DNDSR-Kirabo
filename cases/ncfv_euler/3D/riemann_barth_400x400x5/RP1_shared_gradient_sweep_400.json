@@ -19,6 +19,7 @@
         "retainMicroGeometry": false
     },
     "reconstruction": {
+        "stencilSelectionStrategy": "Original",
         "method": "SVDLeastSquares",
         "stencilSizeFactor": 1.7,
         "maximumStencilRings": 4,

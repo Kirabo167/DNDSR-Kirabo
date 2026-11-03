@@ -190,6 +190,15 @@
                         "\u53d8\u5206\u91cd\u6784"
                     ]
                 },
+                "stencilSelectionStrategy": {
+                    "type": "string",
+                    "default": "Original",
+                    "description": "Original preserves the original ring-by-ring selection; RankAware checks reflected-stencil rank/conditioning before compact fallback and stabilizes geometric ordering",
+                    "enum": [
+                        "Original",
+                        "RankAware"
+                    ]
+                },
                 "stencilSizeFactor": {
                     "type": "number",
                     "default": 1.7,
@@ -274,12 +283,32 @@
                 "sharedGradientFaceSweep": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Single sequential sweep over owned interface means; update every contributing shared gradient in place; MPI rank blocks ordered"
+                    "description": "Single sweep over interface means; update every contributing shared gradient in place"
+                },
+                "sharedGradientFaceSweepParallel": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Color complete recovery/integration supports once, then process independent faces concurrently with sparse owner factor exchanges; changes face order"
                 },
                 "limitPressure": {
                     "type": "boolean",
                     "default": false,
                     "description": "Also bound point and interface pressure by one-ring mean pressures; requires limitPointRecovery"
+                },
+                "sharedGradientBudget": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Frozen complete recovery/interface positive-negative budgets; parallel owner minimum reduction and box positivity"
+                },
+                "fluxCorrectionBinary": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use the full high-order correction only when both bar states satisfy all constraints; otherwise LLF"
+                },
+                "fluxCorrectionEntropy": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Preserve the local minimum of p/rho^gamma including physical LLF bar states"
                 },
                 "directionalPairBounds": {
                     "type": "boolean",

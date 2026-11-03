@@ -1,0 +1,58 @@
+{
+  "variants": [
+    {
+      "name": "SG_BJ_PRES",
+      "overrides": {
+        "/reconstruction/enableLimiter": true,
+        "/reconstruction/limitPointRecovery": true,
+        "/reconstruction/limitPressure": true,
+        "/reconstruction/sharedGradientFaceSweep": true,
+        "/reconstruction/sharedGradientFaceSweepParallel": true,
+        "/reconstruction/sharedGradientBudget": false,
+        "/reconstruction/fluxCorrectionBinary": false,
+        "/reconstruction/fluxCorrectionEntropy": false
+      }
+    },
+    {
+      "name": "SG_SIGN_BUDGET",
+      "overrides": {
+        "/reconstruction/enableLimiter": true,
+        "/reconstruction/limitPointRecovery": true,
+        "/reconstruction/limitPressure": false,
+        "/reconstruction/sharedGradientFaceSweep": true,
+        "/reconstruction/sharedGradientFaceSweepParallel": true,
+        "/reconstruction/sharedGradientBudget": true,
+        "/reconstruction/fluxCorrectionBinary": false,
+        "/reconstruction/fluxCorrectionEntropy": false
+      }
+    },
+    {
+      "name": "FC_IDP_BINARY",
+      "overrides": {
+        "/reconstruction/enableLimiter": false,
+        "/reconstruction/limitPointRecovery": false,
+        "/reconstruction/limitPressure": false,
+        "/reconstruction/sharedGradientFaceSweep": false,
+        "/reconstruction/sharedGradientFaceSweepParallel": false,
+        "/reconstruction/sharedGradientBudget": false,
+        "/reconstruction/fluxCorrectionBinary": true,
+        "/reconstruction/fluxCorrectionEntropy": true,
+        "/reconstruction/limitFluxCorrection": true
+      }
+    },
+    {
+      "name": "FC_IDP_CONT",
+      "overrides": {
+        "/reconstruction/enableLimiter": false,
+        "/reconstruction/limitPointRecovery": false,
+        "/reconstruction/limitPressure": false,
+        "/reconstruction/sharedGradientFaceSweep": false,
+        "/reconstruction/sharedGradientFaceSweepParallel": false,
+        "/reconstruction/sharedGradientBudget": false,
+        "/reconstruction/fluxCorrectionBinary": false,
+        "/reconstruction/fluxCorrectionEntropy": true,
+        "/reconstruction/limitFluxCorrection": true
+      }
+    }
+  ]
+}

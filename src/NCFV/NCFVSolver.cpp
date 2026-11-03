@@ -943,7 +943,11 @@ namespace DNDS::NCFV
                     log() << "NCFV shared-gradient sweep: updated faces="
                           << sweep->updatedFaces << ", zero-factor faces="
                           << sweep->zeroFactorFaces << ", minimum theta="
-                          << sweep->minimumFaceFactor << std::endl;
+                          << sweep->minimumFaceFactor << ", colors=" << sweep->colorGroups
+                          << ", limiter stages[s]=" << _lastStepTiming.rhs.limiterSeconds
+                          << ", last sweep[s]=" << sweep->totalSeconds
+                          << ", last sweep communication[s]=" << sweep->blockCommunicationSeconds
+                          << std::endl;
             }
 
             if (_configuration.io.writeVTK &&

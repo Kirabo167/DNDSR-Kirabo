@@ -640,8 +640,10 @@ add_custom_target(ncfv_unit_tests)
 add_dependencies(all_unit_tests ncfv_unit_tests)
 ncfv_add_unit_test(geometry "NCFV/test_NCFVGeometry.cpp" "ncfv;cfv;geom;dnds")
 ncfv_add_mpi_test(parallel "NCFV/test_NCFVParallel.cpp" "ncfv;cfv;geom;dnds")
+ncfv_add_mpi_test(shared_gradient "NCFV/test_NCFVSharedGradient.cpp" "ncfv;cfv;geom;dnds")
 ncfv_add_mpi_test(io "NCFV/test_NCFVIO.cpp" "ncfv;cfv;geom;dnds" 1 2)
 add_dependencies(ncfv_unit_tests
     ncfv_test_geometry
     ncfv_test_parallel
+    ncfv_test_shared_gradient
     ncfv_test_io)

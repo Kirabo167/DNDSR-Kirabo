@@ -1,0 +1,89 @@
+{
+    "$schema": "../ncfv_euler3D_schema.json",
+    "solver": {
+        "type": "ncfv_euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
+    "dimension": 3,
+    "mesh": {
+        "meshFile": "../data/mesh/riemann_800x800x5_Lz0p05.cgns",
+        "periodicLengths": [0, 0, 0.05],
+        "periodicBoundaryPairs": ["ZMIN", "ZMAX"]
+    },
+    "algorithm": {
+        "mode": "EfficientDifferential",
+        "quadratureOrder": 4,
+        "surfaceQuadratureOrder": 3,
+        "retainMicroGeometry": false
+    },
+    "reconstruction": {
+        "stencilSelectionStrategy": "Original",
+        "method": "SVDLeastSquares",
+        "stencilSizeFactor": 1.7,
+        "maximumStencilRings": 4,
+        "completeStencilRings": false,
+        "fluxCorrectionEntropy": true,
+        "enableLimiter": false,
+        "limitPointRecovery": false,
+        "barthZeroOrderFallback": false,
+        "sharedGradientFaceSweep": false,
+        "sharedGradientFaceSweepParallel": false,
+        "limitPressure": false,
+        "directionalPairBounds": false,
+        "limitFluxCorrection": true,
+        "fluxCorrectionPairBounds": false,
+        "maximumFluxCorrection": 1.0
+    },
+    "physics": {
+        "gamma": 1.4,
+        "riemannSolver": "Roe",
+        "boundaryMode": "SupersonicOutlet",
+        "initialPrimitive": [0.5313, 0, 0, 0, 0.4],
+        "farFieldPrimitive": [0.5313, 0, 0, 0, 0.4],
+        "requireBoundaryZoneCoverage": true,
+        "boundaryZones": [
+            {"name": "XMIN", "mode": "SupersonicOutlet"},
+            {"name": "XMAX", "mode": "SupersonicOutlet"},
+            {"name": "YMIN", "mode": "SupersonicOutlet"},
+            {"name": "YMAX", "mode": "SupersonicOutlet"},
+            {"name": "ZMIN", "mode": "Periodic"},
+            {"name": "ZMAX", "mode": "Periodic"}
+        ],
+        "viscous": {"enabled": false}
+    },
+    "initialField": {
+        "nodeFile": "../data/mesh/KT2002_Config12_800x800x5_initial/KT12.csv",
+        "nodeFileVariables": "Conservative",
+        "nodeFileIndexBase": 0,
+        "requireCompleteNodeFile": true
+    },
+    "time": {
+        "iterations": 1000000,
+        "endTime": 0.25,
+        "useCFLTimeStep": true,
+        "useLocalTimeStep": false,
+        "cfl": 0.475,
+        "minimumTimeStep": 1e-12,
+        "maximumTimeStep": 0.0001,
+        "reportInterval": 10,
+        "rejectNonPhysicalSteps": true,
+        "maximumStepRetries": 20
+    },
+    "io": {
+        "writeVTK": true,
+        "writeInitial": true,
+        "writeFinal": true,
+        "outputInterval": 1000000,
+        "outputPrefix": "../data/out/NCFV/KT2002_Config12_800x800x5_np128_20261102/FC_IDP_CONT/solution",
+        "vtkSeriesName": "../data/out/NCFV/KT2002_Config12_800x800x5_np128_20261102/FC_IDP_CONT/series",
+        "vtkFloatEncoding": "binary",
+        "restartInput": "",
+        "restartInterval": 200,
+        "writeFinalRestart": true,
+        "restartPrefix": "../data/out/NCFV/KT2002_Config12_800x800x5_np128_20261102/FC_IDP_CONT/restart",
+        "restartSerializer": {"type": "H5"},
+        "writeResolvedConfiguration": true
+    }
+}

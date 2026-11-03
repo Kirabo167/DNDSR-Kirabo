@@ -839,6 +839,7 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
 
 TEST_CASE("NCFV fixed-size compact stencils preserve coordinate-plane fields")
 {
+    for (const auto strategy : {StencilSelectionStrategy::Original, StencilSelectionStrategy::RankAware})
     for (const auto mode : {IntegrationMode::EfficientDifferential,
                            IntegrationMode::TraditionalQuadrature})
     for (const auto method : {ReconstructionMethod::SVDLeastSquares,
@@ -846,6 +847,7 @@ TEST_CASE("NCFV fixed-size compact stencils preserve coordinate-plane fields")
     {
         auto configuration = MakeExactPeriodicConfiguration(mode);
         configuration.reconstruction.method = method;
+        configuration.reconstruction.stencilSelectionStrategy = strategy;
         Solver<3> solver(gMPI, configuration);
         solver.Initialize();
         const auto &halo = solver.NodeCommunication();
@@ -909,6 +911,40 @@ TEST_CASE("NCFV fixed-size compact stencils preserve coordinate-plane fields")
         CHECK(maximum[0] < 2e-10);
         CHECK(maximum[1] < 2e-10);
         CHECK(maximum[2] < .25);
+    }
+}
+
+TEST_CASE("NCFV rank-aware selection repairs fixed-size LS13 prism stencils")
+{
+    for (const auto mode : {IntegrationMode::EfficientDifferential, IntegrationMode::TraditionalQuadrature})
+    {
+        auto configuration = MakeExactPeriodicConfiguration(mode);
+        configuration.mesh.meshFile = (ProjectRoot() / "cases/ncfv_euler/3D/iv20_3d_1_dnds.cgns").string();
+        configuration.reconstruction.method = ReconstructionMethod::LeastSquares;
+        configuration.reconstruction.stencilSelectionStrategy = StencilSelectionStrategy::RankAware;
+        configuration.reconstruction.stencilSizeFactor = std::nextafter(13.0 / 9.0, 0.0);
+        Solver<3> solver(gMPI, configuration);
+        solver.Initialize();
+        const auto &halo = solver.NodeCommunication();
+        DNDS::real localMaximum = 0, maximum = 0;
+        DNDS::index localInvalid = 0, invalid = 0;
+        for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); node++)
+        {
+            const auto &op = solver.ReconstructionData().Operator(node);
+            localInvalid += op.stencil.size() != 13 || op.numericalRank != 9;
+            Eigen::MatrixXd matrix(op.stencil.size(), 9);
+            for (std::size_t row = 0; row < op.stencil.size(); row++)
+                matrix.row(static_cast<Eigen::Index>(row)) =
+                    (Reconstruction::MeanBasis(halo.MomentsRelative(node, op.stencil[row]),
+                                              Vector3::Zero(), op.referenceLengths, 3) - op.targetBasisMean).transpose();
+            // Traditional mode checks all Hessian rows as well as gradients.
+            localMaximum = std::max(localMaximum,
+                (op.inverseRows * matrix - Eigen::MatrixXd::Identity(op.inverseRows.rows(), 9)).cwiseAbs().maxCoeff());
+        }
+        MPI_Allreduce(&localMaximum, &maximum, 1, DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+        MPI_Allreduce(&localInvalid, &invalid, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+        CHECK(invalid == 0);
+        CHECK(maximum < 2e-10);
     }
 }
 

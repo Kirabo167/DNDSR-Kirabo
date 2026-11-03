@@ -25,6 +25,7 @@
         "retainMicroGeometry": false
     },
     "reconstruction": {
+        "stencilSelectionStrategy": "Original",
         "enableLimiter": false,
         "stencilSizeFactor": 1.7,
         "maximumStencilRings": 4

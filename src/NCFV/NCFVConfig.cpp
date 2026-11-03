@@ -94,6 +94,15 @@ namespace DNDS::NCFV
         DNDS_check_throw_info(!reconstruction.sharedGradientFaceSweep ||
                                   (!reconstruction.limitFluxCorrection && !reconstruction.directionalPairBounds),
                               "NCFV sharedGradientFaceSweep cannot be combined with limitFluxCorrection or directionalPairBounds");
+        DNDS_check_throw_info(!reconstruction.sharedGradientFaceSweepParallel || reconstruction.sharedGradientFaceSweep,
+                              "NCFV sharedGradientFaceSweepParallel requires sharedGradientFaceSweep");
+        DNDS_check_throw_info(!reconstruction.sharedGradientBudget ||
+                                  (reconstruction.sharedGradientFaceSweep && reconstruction.sharedGradientFaceSweepParallel &&
+                                   reconstruction.limitPointRecovery && !reconstruction.limitPressure),
+                              "NCFV shared-gradient budgets require parallel shared gradients and point recovery, without pressure extrema; box positivity remains active");
+        DNDS_check_throw_info((!reconstruction.fluxCorrectionBinary && !reconstruction.fluxCorrectionEntropy) ||
+                                  reconstruction.limitFluxCorrection,
+                              "NCFV binary/entropy flux correction requires limitFluxCorrection");
         DNDS_check_throw_info(!reconstruction.limitPressure || reconstruction.limitPointRecovery,
                               "NCFV limitPressure requires mean-anchored point recovery limiting");
         DNDS_check_throw_info(!reconstruction.directionalPairBounds || reconstruction.limitPointRecovery,
@@ -176,6 +185,10 @@ namespace DNDS::NCFV
                               "NCFV surface quadrature order must be at least three and within DNDSR's supported range");
         DNDS_check_throw_info(reconstruction.stencilSizeFactor >= 1.0,
                               "NCFV stencil size factor must be at least one");
+        DNDS_check_throw_info(
+            reconstruction.stencilSelectionStrategy == StencilSelectionStrategy::Original ||
+                reconstruction.stencilSelectionStrategy == StencilSelectionStrategy::RankAware,
+            "NCFV reconstruction.stencilSelectionStrategy must be Original or RankAware");
         DNDS_check_throw_info(
             reconstruction.method != ReconstructionMethod::Unknown,
             "NCFV reconstruction.method must be LeastSquares, SVDLeastSquares, or Variational");

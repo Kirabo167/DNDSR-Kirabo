@@ -20,6 +20,7 @@
         "retainMicroGeometry": false
     },
     "reconstruction": {
+        "stencilSelectionStrategy": "Original",
         "method": "Variational",
         "variationalWeight": 5.0,
         "variationalIterations": 3,

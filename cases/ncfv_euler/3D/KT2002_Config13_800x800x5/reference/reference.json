@@ -1,0 +1,51 @@
+{
+  "configuration": 13,
+  "figure": "3.13",
+  "printed_initial_state_page": 601,
+  "pdf_initial_state_page": 18,
+  "printed_figure_page": 602,
+  "pdf_figure_page": 19,
+  "target_time": 0.3,
+  "paper_gridpoints": [
+    400,
+    400
+  ],
+  "paper_cfl": 0.475,
+  "pdf_sha256": "c24583fdb45cefac3173a1cef46784a36d66ec327287e7efe1480e6e18f4fdde",
+  "quadrants_order": "BL,BR,TL,TR",
+  "variables": "rho,u,v,w,p",
+  "states": [
+    [
+      1.0625,
+      0,
+      0.8145,
+      0,
+      0.4
+    ],
+    [
+      0.5313,
+      0,
+      0.4276,
+      0,
+      0.4
+    ],
+    [
+      2,
+      0,
+      0.3,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      -0.3,
+      0,
+      1
+    ]
+  ],
+  "reference_panels": [
+    "Second order, theta=1.3",
+    "Third order"
+  ]
+}

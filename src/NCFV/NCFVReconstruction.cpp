@@ -430,6 +430,7 @@ namespace DNDS::NCFV
     {
         const int dimension = _mesh->getDim();
         const int nBasis = QuadraticBasisSize(dimension);
+        const bool rankAware = _settings.stencilSelectionStrategy == StencilSelectionStrategy::RankAware;
         const int targetStencilSize = std::max(
             nBasis,
             static_cast<int>(std::ceil(_settings.stencilSizeFactor * nBasis)));
@@ -470,13 +471,21 @@ namespace DNDS::NCFV
                     continue;
                 const Vector3 scaledDisplacement =
                     _nodeHalo.Displacement(iNode, neighbor) / lengthScale;
-                candidates.push_back(
-                    {neighbor, global, ring,
-                     {std::llround(
-                          scaledDisplacement.squaredNorm() * 1e12),
-                      std::llround(scaledDisplacement(0) * 1e10),
-                      std::llround(scaledDisplacement(1) * 1e10),
-                      std::llround(scaledDisplacement(2) * 1e10)}});
+                std::array<long long, 4> geometricKey{
+                    std::llround(scaledDisplacement.squaredNorm() * 1e12),
+                    std::llround(scaledDisplacement(0) * 1e10),
+                    std::llround(scaledDisplacement(1) * 1e10),
+                    std::llround(scaledDisplacement(2) * 1e10)};
+                if (rankAware)
+                {
+                    // Derive both keys from the same rounded coordinates to
+                    // keep geometric ties stable after MPI repartitioning.
+                    Vector3 orderingDisplacement;
+                    for (int d = 0; d < 3; d++)
+                        orderingDisplacement(d) = geometricKey[d + 1] * 1e-10;
+                    geometricKey[0] = std::llround(orderingDisplacement.squaredNorm() * 1e12);
+                }
+                candidates.push_back({neighbor, global, ring, geometricKey});
             }
 
         // Prefer direct graph neighbours when completing the compact stencil.
@@ -535,6 +544,10 @@ namespace DNDS::NCFV
         const int maximumCandidateRing = std::min(
             _settings.maximumStencilRings,
             static_cast<int>(rings.size()));
+        // Original keeps its single ring search. RankAware first searches for
+        // reliable reflected sets, then permits compact spectral fallback.
+        const int selectionPasses = rankAware && dimension == 3 && !_settings.completeStencilRings ? 2 : 1;
+        for (int selectionPass = 0; selectionPass < selectionPasses && !accepted; selectionPass++)
         for (int allowedRing = 1;
              allowedRing <= maximumCandidateRing && !accepted;
              allowedRing++)
@@ -718,7 +731,8 @@ namespace DNDS::NCFV
                 select(candidate);
             }
 
-            if (dimension == 3 && !_settings.completeStencilRings)
+            bool rejectReflectedStencil = false;
+            if (dimension == 3 && !_settings.completeStencilRings && (!rankAware || selectionPass == 0))
             {
                 // Select complete directional groups within the original point
                 // budget. In particular, centrosymmetric pairs alone need not
@@ -892,8 +906,35 @@ namespace DNDS::NCFV
                     for (int candidate : groups[best])
                         select(candidate);
                 }
+                if (rankAware)
+                {
+                    // Test the design matrix directly: normal equations can
+                    // hide a missing quadratic mode at floating-point roundoff.
+                    const auto stencilCondition = [&](const std::vector<int> &order)
+                    {
+                        Eigen::MatrixXd weighted(order.size(), nBasis);
+                        for (std::size_t row = 0; row < order.size(); row++)
+                        {
+                            const int candidate = order[row];
+                            weighted.row(static_cast<Eigen::Index>(row)) =
+                                candidateWeights(candidate) * candidateMatrix.row(candidate);
+                        }
+                        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(weighted);
+                        const auto singular = svd.singularValues();
+                        if (singular.size() != nBasis || singular(0) <= verySmallReal ||
+                            singular(nBasis - 1) <= _settings.svdTolerance * singular(0))
+                            return veryLargeReal;
+                        return singular(0) / singular(nBasis - 1);
+                    };
+                    const real reflectedCondition = stencilCondition(selectionOrder);
+                    const real compactCondition = stencilCondition(compactFallback);
+                    // Reflection may cost at most one decimal digit relative
+                    // to a compact selection with the same number of points.
+                    rejectReflectedStencil = reflectedCondition >= veryLargeReal ||
+                                             compactCondition < reflectedCondition / 10;
+                }
             }
-            else
+            else if (!rankAware || dimension != 3 || _settings.completeStencilRings)
             {
                 // Preserve the existing complete-ring and 2-D fallbacks.
                 while (selectionOrder.size() < pool.size())
@@ -943,7 +984,7 @@ namespace DNDS::NCFV
                 for (int row = 0; row < count; row++)
                     acceptedCubic.row(row) = candidateCubic.row(
                         selectionOrder[static_cast<std::size_t>(row)]);
-                accepted = acceptedRank == nBasis &&
+                accepted = !rejectReflectedStencil && acceptedRank == nBasis &&
                            acceptedCondition <=
                                _settings.maximumConditionNumber;
                 if (accepted && dimension == 3 && !_settings.completeStencilRings)
@@ -1090,6 +1131,10 @@ namespace DNDS::NCFV
                   << (_settings.method == ReconstructionMethod::Variational
                           ? fmt::format(", w={}", _settings.variationalWeight)
                           : "")
+                  << ", stencil selection="
+                  << (_settings.stencilSelectionStrategy == StencilSelectionStrategy::RankAware
+                          ? "RankAware"
+                          : "Original")
                   << ", max rings=" << globalMaximumRings
                   << ", max condition=" << globalMaximumCondition
                   << ", max cubic-gradient indicator="

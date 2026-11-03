@@ -630,12 +630,14 @@ namespace DNDS::NCFV
             const State self = means[iNode];
             State minimum = self, maximum = self;
             real pressureMinimum = Pressure(self);
+            real entropyMinimum = pressureMinimum / std::pow(self(0), _physics.gamma);
             const auto include = [&](const State &state)
             {
                 DNDS_check_throw_info(IsPhysical(state), "NCFV LLF bar state must be physical");
                 minimum = minimum.cwiseMin(state);
                 maximum = maximum.cwiseMax(state);
                 pressureMinimum = std::min(pressureMinimum, Pressure(state));
+                entropyMinimum = std::min(entropyMinimum, Pressure(state) / std::pow(state(0), _physics.gamma));
             };
             for (const auto &incidence : _topology.Node2Edge(iNode))
             {
@@ -666,6 +668,8 @@ namespace DNDS::NCFV
             _fluxCorrectionBounds[iNode].template topRows<dimension + 2>().col(1) = maximum;
             _fluxCorrectionBounds[iNode](dimension + 2, 0) = pressureMinimum;
             _fluxCorrectionBounds[iNode](dimension + 2, 1) = pressureMinimum;
+            _fluxCorrectionBounds[iNode](dimension + 3, 0) = entropyMinimum;
+            _fluxCorrectionBounds[iNode](dimension + 3, 1) = entropyMinimum;
         }
         _fluxCorrectionBounds.trans.startPersistentPull();
         _fluxCorrectionBounds.trans.waitPersistentPull();
@@ -690,12 +694,15 @@ namespace DNDS::NCFV
         {
             const index node = surface.nodes[side];
             const State increment = (side == 0 ? -1.0 : 1.0) * correction / dissipation;
-            Eigen::Matrix<real, dimension + 3, 2> bounds = _fluxCorrectionBounds[node];
+            Eigen::Matrix<real, dimension + 4, 2> bounds = _fluxCorrectionBounds[node];
             if (_reconstructionSettings.fluxCorrectionPairBounds)
             {
                 bounds.template topRows<dimension + 2>().col(0) = left.cwiseMin(right).cwiseMin(bar);
                 bounds.template topRows<dimension + 2>().col(1) = left.cwiseMax(right).cwiseMax(bar);
                 bounds(dimension + 2, 0) = std::min({Pressure(left), Pressure(right), Pressure(bar)});
+                bounds(dimension + 3, 0) = std::min({Pressure(left) / std::pow(left(0), _physics.gamma),
+                                                   Pressure(right) / std::pow(right(0), _physics.gamma),
+                                                   Pressure(bar) / std::pow(bar(0), _physics.gamma)});
             }
             for (int component = 0; component < dimension + 2; component++)
             {
@@ -715,7 +722,9 @@ namespace DNDS::NCFV
             const auto admissible = [&](real theta)
             {
                 const State candidate = bar + theta * increment;
-                return IsPhysical(candidate) && Pressure(candidate) >= pressureMinimum - pressurePadding;
+                return IsPhysical(candidate) && Pressure(candidate) >= pressureMinimum - pressurePadding &&
+                       (!_reconstructionSettings.fluxCorrectionEntropy ||
+                        Pressure(candidate) >= bounds(dimension + 3, 0) * std::pow(candidate(0), _physics.gamma) - pressurePadding);
             };
             if (!admissible(factor))
             {
@@ -731,6 +740,8 @@ namespace DNDS::NCFV
                 factor = lower;
             }
         }
+        if (_reconstructionSettings.fluxCorrectionBinary && factor < _reconstructionSettings.maximumFluxCorrection)
+            factor = 0;
         _edgeFluxCorrectionFactors[iEdge](0) = factor;
         // A single owner-computed flux is shared by both incident volumes.
         return lowOrder + factor * correction;
@@ -1154,7 +1165,7 @@ namespace DNDS::NCFV
         AllocateEdgeField(_edgeSpectralRadius, "NCFV.edgeSpectralRadius", 1);
         if (_reconstructionSettings.limitFluxCorrection)
         {
-            AllocateNodeMatrix(_fluxCorrectionBounds, "NCFV.fluxCorrectionBounds", dimension + 3, 2);
+            AllocateNodeMatrix(_fluxCorrectionBounds, "NCFV.fluxCorrectionBounds", dimension + 4, 2);
             AllocateEdgeField(_edgeFluxCorrectionFactors, "NCFV.edgeFluxCorrectionFactors", 1);
         }
 
@@ -1168,7 +1179,8 @@ namespace DNDS::NCFV
             _sharedGradientFaceSweep =
                 std::make_unique<SharedGradientFaceSweep<dimension>>(
                     _mpi, _mesh, _topology, _geometry, _nodeHalo);
-            _sharedGradientFaceSweep->Initialize();
+            _sharedGradientFaceSweep->Initialize(_reconstructionSettings.sharedGradientFaceSweepParallel,
+                                                 _reconstructionSettings.sharedGradientBudget);
         }
     }
 
