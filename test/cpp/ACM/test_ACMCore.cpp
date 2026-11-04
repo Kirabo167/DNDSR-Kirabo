@@ -247,6 +247,37 @@ TEST_CASE("ACM general-alpha Roe dissipation matches matrix reference")
     }
 }
 
+TEST_CASE("ACM fast Roe projection matches characteristic reference with entropy smoothing")
+{
+    for (const DNDS::real alpha : {-1.0, 0.0, 0.5, 1.0})
+        for (int sample = 0; sample < 80; sample++)
+        {
+            Settings settings;
+            settings.alpha = alpha;
+            settings.rho0 = 1.1;
+            settings.beta2 = 2.7;
+            settings.entropyFixRatio = 0.05;
+            const DNDS::real x = sample * 0.31;
+            State mean, jump;
+            mean << 2.0 * std::sin(x), 0.4 * std::cos(x), 0.3 * std::sin(2 * x), 0.2;
+            jump << 0.13 * std::cos(x), 0.2, -0.1, 0.09;
+            Matrix4 left, right;
+            if (!TryCharacteristicMatricesGlobal(mean, Vector3::UnitX(), settings, left, right))
+                continue;
+            Eigenvalues eigenvalues;
+            const State actual = RoeDissipationLocal(mean - 0.5 * jump, mean + 0.5 * jump, settings, eigenvalues);
+            const DNDS::real delta = settings.entropyFixRatio *
+                std::max(eigenvalues.SpectralRadius(), std::sqrt(settings.beta2 / settings.rho0));
+            Matrix4 absolute = Matrix4::Zero();
+            absolute.diagonal() << EntropyFixedAbs(eigenvalues.lambdaMinus, delta),
+                EntropyFixedAbs(eigenvalues.lambdaTangential, delta),
+                EntropyFixedAbs(eigenvalues.lambdaTangential, delta),
+                EntropyFixedAbs(eigenvalues.lambdaPlus, delta);
+            const State expected = GammaLocal(mean, settings.beta2, alpha) * right * absolute * left * jump;
+            CheckVectorNear(actual, expected, 1e-9);
+        }
+}
+
 /// @test Verify the exact matrix-absolute/Jordan limit at a defective positive collision.
 TEST_CASE("ACM Roe collision fallback matches the confluent Jordan limit")
 {

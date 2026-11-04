@@ -597,9 +597,12 @@ namespace DNDS::ACM
     {
         DNDS_check_throw_info(_initialized,
                               "ACM turbulence Prepare requires Initialize first");
+        if (_reusePreparation && _prepared && _preparedTime == time)
+            return;
+        ++_preparationCount;
         EvaluateGradients(flow, time);
-        EvaluateLimiter(flow, time);
-        _faceEddyViscosity.clear();
+        if (!_limiterFrozen)
+            EvaluateLimiter(flow, time);
         _faceEddyViscosity.resize(static_cast<std::size_t>(_mesh->NumFaceProc()));
 
 #if defined(DNDS_DIST_MT_USE_OMP)
@@ -759,6 +762,7 @@ namespace DNDS::ACM
                         _turbulenceSettings);
             }
         }
+        _preparedTime = time;
         _prepared = true;
     }
 
@@ -952,18 +956,62 @@ namespace DNDS::ACM
     }
 
     template <int gDim>
+    TurbulenceState ACMTurbulenceTransport<gDim>::FrozenFaceAdvectionValue(const TFlowDof &flow, index face, real time) const
+    {
+        DNDS_check_throw_info(bool(_faceVolumeFlux), "ACM frozen advection requires shared continuity flux");
+        const auto cells = _mesh->face2cell[face];
+        const auto boundary = cells[1] == UnInitIndex ? _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(face))
+                                                     : BoundaryType::BCOut;
+        if (cells[1] == UnInitIndex &&
+            (boundary == BoundaryType::BCWall || boundary == BoundaryType::BCWallIsothermal ||
+             boundary == BoundaryType::BCWallInvis || boundary == BoundaryType::BCSym))
+            return TurbulenceState::Zero();
+        TurbulenceState result = TurbulenceState::Zero();
+        real area = 0;
+        const auto quadrature = _vfv->GetFaceQuad(face);
+        for (int point = 0; point < quadrature.GetNumPoints(); point++)
+        {
+            const real flux = _faceVolumeFlux(face, point, time);
+            const TurbulenceState left = ReconstructTurbulenceState(cells[0], face, 0, point);
+            TurbulenceState upwind = left;
+            if (flux < 0)
+                upwind = cells[1] == UnInitIndex ? GenerateBoundary(face, left, cells[0])
+                                                 : ReconstructTurbulenceState(cells[1], face, 1, point);
+            if (cells[1] == UnInitIndex && boundary == BoundaryType::BCFar &&
+                ReconstructFlowState(flow, cells[0], face, 0, point).template head<3>().dot(
+                    ToVector3(_vfv->GetFaceNorm(face, point))) >= 0)
+                upwind = left;
+            const real weight = quadrature.GetWeight(point) * _vfv->GetFaceJacobiDet(face, point);
+            result += weight * upwind;
+            area += weight;
+        }
+        DNDS_check_throw_info(area > 0, "ACM turbulence face has nonpositive area");
+        return result / area;
+    }
+
+    template <int gDim>
     // See ACMTurbulenceTransport.hpp for the function contract.
     void ACMTurbulenceTransport<gDim>::EvaluateImplicitDiagonal(
         TFlowDof &flow,
         std::vector<Eigen::Matrix<real, 2, 2>> &diagonal,
-        real time)
+        real time, FaceJacobianField *faceJacobians)
     {
         Prepare(flow, time);
         diagonal.assign(static_cast<std::size_t>(_mesh->NumCell()), Eigen::Matrix<real, 2, 2>::Zero());
+        if (faceJacobians)
+            faceJacobians->assign(static_cast<std::size_t>(_mesh->NumFaceProc()),
+                                  {Eigen::Matrix<real, 2, 2>::Zero(), Eigen::Matrix<real, 2, 2>::Zero()});
         const int active = ActiveVariableCount();
         for (index cell = 0; cell < _mesh->NumCell(); cell++)
         {
             const TurbulenceState state = _state[cell];
+            if (_turbulenceSettings.model == TurbulenceModel::KOmegaSST)
+            {
+                diagonal[static_cast<std::size_t>(cell)] = SSTImplicitDestructionJacobian(
+                    state, CellTurbulenceGradient(cell), _cellWallDistance[static_cast<std::size_t>(cell)],
+                    _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings);
+                continue;
+            }
             const auto source = [&](const TurbulenceState &value)
             {
                 return TurbulenceSource(value, CellVelocityGradient(cell), CellTurbulenceGradient(cell),
@@ -985,13 +1033,18 @@ namespace DNDS::ACM
         for (index face = 0; face < _mesh->NumFaceProc(); face++)
         {
             const auto cells = _mesh->face2cell[face];
-            TurbulenceState rate = TurbulenceState::Zero();
+            Eigen::Matrix<real, 2, 4> rate = Eigen::Matrix<real, 2, 4>::Zero();
             auto quadrature = _vfv->GetFaceQuad(face);
-            quadrature.IntegrationSimple(rate, [&](TurbulenceState &contribution, int pointIndex, real)
+            quadrature.IntegrationSimple(rate, [&](Eigen::Matrix<real, 2, 4> &contribution, int pointIndex, real)
             {
                 const Vector3 normal = ToVector3(_vfv->GetFaceNorm(face, pointIndex));
                 const State left = ReconstructFlowState(flow, cells[0], face, 0, pointIndex);
                 State right = left;
+                TurbulenceState qLeft = ReconstructTurbulenceState(cells[0], face, 0, pointIndex);
+                TurbulenceState qRight, qRightCell;
+                TurbulenceGradient gradient = CellTurbulenceGradient(cells[0]);
+                Eigen::Matrix<real, 2, 2> ghostDerivative = Eigen::Matrix<real, 2, 2>::Identity();
+                bool impermeable = false;
                 Vector3 displacement;
                 const auto center = _vfv->GetCellQuadraturePPhys(cells[0], -1);
                 if (cells[1] != UnInitIndex)
@@ -1000,32 +1053,100 @@ namespace DNDS::ACM
                     Eigen::RowVector<real, 4> row = right.transpose();
                     _vfv->ApplyPeriodicTransform(1, _mesh->GetFaceZone(face), row);
                     right = row.transpose();
+                    qRight = ReconstructTurbulenceState(cells[1], face, 1, pointIndex);
+                    qRightCell = _state[cells[1]];
+                    auto otherGradient = CellTurbulenceGradient(cells[1]);
+                    Eigen::Matrix<real, 2, gDim> transpose = otherGradient.template topRows<gDim>().transpose();
+                    _vfv->ApplyPeriodicTransform(1, _mesh->GetFaceZone(face), transpose);
+                    otherGradient.template topRows<gDim>() = transpose.transpose();
+                    gradient = 0.5 * (gradient + otherGradient);
                     displacement = ToVector3(_vfv->GetOtherCellPointFromCell(
                         cells[0], cells[1], face, 0, _vfv->GetCellQuadraturePPhys(cells[1], -1)) - center);
                 }
                 else
-                    displacement = 2 * (ToVector3(_vfv->GetFaceQuadraturePPhys(face, pointIndex)) - ToVector3(center));
-                const real distance = std::max(std::abs(displacement.dot(normal)), _turbulenceSettings.minimumWallDistance);
-                const real advection = _faceVolumeFlux ? std::abs(_faceVolumeFlux(face, pointIndex, time))
-                    : std::max(std::abs(left.template head<3>().dot(normal)), std::abs(right.template head<3>().dot(normal)));
+                {
+                    const Vector3 point = ToVector3(_vfv->GetFaceQuadraturePPhys(face, pointIndex));
+                    const auto boundary = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(face));
+                    right = GenerateBoundaryState(_boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(face)),
+                                                  left, normal, _flowSettings, point, time);
+                    qRight = GenerateBoundary(face, qLeft, cells[0]);
+                    qRightCell = GenerateBoundary(face, TurbulenceState(_state[cells[0]]), cells[0]);
+                    displacement = 2 * normal * (point - ToVector3(center)).dot(normal);
+                    impermeable = boundary == BoundaryType::BCWall || boundary == BoundaryType::BCWallIsothermal ||
+                                  boundary == BoundaryType::BCWallInvis || boundary == BoundaryType::BCSym;
+                    if (boundary == BoundaryType::BCWall || boundary == BoundaryType::BCWallIsothermal ||
+                        boundary == BoundaryType::BCIn || boundary == BoundaryType::BCInPsTs ||
+                        boundary == BoundaryType::BCSpecial || boundary == BoundaryType::BCFar)
+                        ghostDerivative = -Eigen::Matrix<real, 2, 2>::Identity();
+                    if (boundary == BoundaryType::BCFar && left.template head<3>().dot(normal) >= 0)
+                    {
+                        qRight = qLeft;
+                        qRightCell = _state[cells[0]];
+                        ghostDerivative.setIdentity();
+                    }
+                    if ((boundary == BoundaryType::BCWall || boundary == BoundaryType::BCWallIsothermal) &&
+                        _turbulenceSettings.model == TurbulenceModel::RealizableKEpsilon)
+                    {
+                        const real d = _cellWallDistance[static_cast<std::size_t>(cells[0])];
+                        const real epsilon = 2 * _flowSettings.dynamicViscosity / _flowSettings.rho0 *
+                                             _state[cells[0]](0) / (d * d);
+                        if (epsilon > _turbulenceSettings.minimumValue[1] &&
+                            epsilon < _turbulenceSettings.maximumValue[1] &&
+                            _state[cells[0]](0) > _turbulenceSettings.minimumValue[0])
+                            ghostDerivative(1, 0) = 4 * _flowSettings.dynamicViscosity / _flowSettings.rho0 / (d * d);
+                    }
+                }
+                const real projection = displacement.dot(normal);
+                if (std::abs(projection) > 1e-14)
+                    gradient += normal * (qRightCell - TurbulenceState(_state[cells[0]]) -
+                                           gradient.transpose() * displacement).transpose() / projection;
+                const TurbulenceState diffusion = TurbulenceDiffusivity(
+                    ClampTurbulenceState(0.5 * (qLeft + qRight), _turbulenceSettings), gradient,
+                    _faceWallDistance[static_cast<std::size_t>(face)], _flowSettings.rho0,
+                    _flowSettings.dynamicViscosity, FaceEddyViscosity(face, pointIndex), _turbulenceSettings);
+                real advLeft = 0, advRight = 0;
+                if (!impermeable)
+                {
+                    if (_faceVolumeFlux)
+                    {
+                        const real flux = _faceVolumeFlux(face, pointIndex, time);
+                        advLeft = std::max(flux, 0.0);
+                        advRight = std::min(flux, 0.0);
+                    }
+                    else
+                    {
+                        const real vl = left.template head<3>().dot(normal), vr = right.template head<3>().dot(normal);
+                        const real speed = std::max(std::abs(vl), std::abs(vr));
+                        advLeft = 0.5 * (vl + speed);
+                        advRight = 0.5 * (vr - speed);
+                    }
+                }
                 contribution.setZero();
                 for (int variable = 0; variable < active; variable++)
                 {
-                    TurbulenceGradient gradient = TurbulenceGradient::Zero();
-                    gradient.col(variable) = normal;
-                    const TurbulenceState diffusion = TurbulenceDiffusiveFlux(
-                        TurbulenceState(_state[cells[0]]), gradient, normal,
-                        _faceWallDistance[static_cast<std::size_t>(face)], _flowSettings.rho0,
-                        _flowSettings.dynamicViscosity, FaceEddyViscosity(face, pointIndex), _turbulenceSettings);
-                    contribution(variable) = (advection + 2 * std::abs(diffusion(variable)) / distance) *
-                                             _vfv->GetFaceJacobiDet(face, pointIndex);
+                    const real diff = std::abs(projection) > 1e-14 ? diffusion(variable) / projection : 0;
+                    contribution(variable, variable) = advLeft + diff;
+                    contribution(variable, variable + 2) = advRight - diff;
                 }
+                if (cells[1] == UnInitIndex)
+                {
+                    contribution.template leftCols<2>() += contribution.template rightCols<2>() * ghostDerivative;
+                    contribution.template rightCols<2>().setZero();
+                }
+                contribution *= _vfv->GetFaceJacobiDet(face, pointIndex);
             });
-            for (int side = 0; side < 2; side++)
-                if (cells[side] != UnInitIndex && cells[side] < _mesh->NumCell())
-                    for (int variable = 0; variable < active; variable++)
-                        diagonal[static_cast<std::size_t>(cells[side])](variable, variable) +=
-                            rate(variable) / _vfv->GetCellVol(cells[side]);
+            // Both contributions on a self-periodic face cancel identically.
+            if (cells[0] == cells[1])
+                continue;
+            if (faceJacobians)
+            {
+                (*faceJacobians)[static_cast<std::size_t>(face)][0] = rate.template leftCols<2>();
+                (*faceJacobians)[static_cast<std::size_t>(face)][1] = rate.template rightCols<2>();
+            }
+            if (cells[0] < _mesh->NumCell())
+                diagonal[static_cast<std::size_t>(cells[0])] += rate.template leftCols<2>() / _vfv->GetCellVol(cells[0]);
+            if (cells[1] != UnInitIndex && cells[1] < _mesh->NumCell())
+                diagonal[static_cast<std::size_t>(cells[1])] -= rate.template rightCols<2>() / _vfv->GetCellVol(cells[1]);
         }
     }
 

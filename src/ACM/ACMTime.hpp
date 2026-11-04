@@ -139,6 +139,14 @@ namespace DNDS::ACM
         real cfl = 0.5;                                                     ///< CFL multiplier for spectral-radius stepping.
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
+        int dualTimeRANSStartupSteps = 0;                                  ///< Initial physical steps with an extended RANS iteration budget.
+        int dualTimeRANSStartupIterations = 100;                            ///< Maximum corrections during those startup steps.
+        int dualTimeRANSContinuationSteps = 0;                              ///< Initial physical steps using nonlinear mass continuation.
+        real dualTimeRANSContinuationFactor = 10;                           ///< Initial auxiliary mass multiplier, reduced to one before acceptance.
+        int RANSInnerIterationLimit(index completedSteps) const
+        {
+            return completedSteps < dualTimeRANSStartupSteps ? dualTimeRANSStartupIterations : maxImplicitIterations;
+        }
         real implicitTolerance = 1e-8;                                      ///< Global RMS steady or physical defect absolute tolerance.
         std::string dualTimeConvergenceCriterion = "Absolute";              ///< Defect criterion, or RelativeUpdate for laminar flow.
         real dualTimeUpdateRelativeTolerance = 1e-5;                       ///< Applied-update L2 / updated-state L2; zero disables early exit.
@@ -148,6 +156,8 @@ namespace DNDS::ACM
         std::array<real, 6> dualTimeResidualScales{1, 1, 1, 1, 1, 1};         ///< Characteristic residual scales for [u,v,w,p,q1,q2].
         std::array<real, 6> dualTimeRelativeTolerances{};                    ///< Per-equation target relative to the initial physical defect; zero disables it.
         bool dualTimeRequireConvergence = true;                            ///< Reject an unconverged physical step before committing histories.
+        int dualTimeRANSAndersonDepth = 0;                                 ///< Optional unified RANS nonlinear residual mixing; zero disables it.
+        bool dualTimeRANSMatrixFreeJacobian = false;                       ///< Coupled RANS Jacobian action with frozen flow reconstruction coefficients.
         real steadyRelativeTolerance = 0;                                 ///< Steady inner target relative to this outer step's spatial RMS.
         bool steadyAdaptiveCFL = false;                                   ///< Adapt CFL using post-step spatial residual and inner success.
         real steadyCFLMin = 0.1;
@@ -180,6 +190,10 @@ namespace DNDS::ACM
             DNDS_FIELD(maximumPseudoTimeStep, "Maximum CFL-derived pseudo-time step", DNDS::Config::range(0.0));
             DNDS_FIELD(maxImplicitIterations, "Maximum inner iterations per implicit or physical step",
                        DNDS::Config::range(1));
+            DNDS_FIELD(dualTimeRANSStartupSteps, "Initial RANS BDF physical steps with extended inner budget", DNDS::Config::range(0));
+            DNDS_FIELD(dualTimeRANSStartupIterations, "Maximum inner iterations during RANS BDF startup", DNDS::Config::range(1));
+            DNDS_FIELD(dualTimeRANSContinuationSteps, "Initial RANS BDF steps with nonlinear mass continuation", DNDS::Config::range(0));
+            DNDS_FIELD(dualTimeRANSContinuationFactor, "Initial nonlinear continuation mass factor; final physical equation is unchanged", DNDS::Config::range(1.0));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
             DNDS_FIELD(dualTimeConvergenceCriterion, "BDF convergence: Absolute, Relative, AbsoluteOrRelative, or laminar RelativeUpdate; residuals remain reported",
@@ -195,6 +209,9 @@ namespace DNDS::ACM
             DNDS_FIELD(dualTimeResidualScales, "Positive characteristic residual scales for BDF [u,v,w,p,q1,q2]");
             DNDS_FIELD(dualTimeRelativeTolerances, "BDF per-equation relative defect targets in [0,1); zero uses only the scaled absolute target");
             DNDS_FIELD(dualTimeRequireConvergence, "Reject unconverged BDF physical steps; false explicitly enables diagnostic budget-limited marching");
+            DNDS_FIELD(dualTimeRANSAndersonDepth, "Unified RANS BDF nonlinear Anderson history depth; zero disables acceleration",
+                       DNDS::Config::range(0, 10));
+            DNDS_FIELD(dualTimeRANSMatrixFreeJacobian, "Coupled RANS BDF finite-difference Jacobian action; flow reconstruction remains frozen within the linear solve");
             DNDS_FIELD(steadyRelativeTolerance, "Steady inner defect relative to current outer spatial residual; zero uses absolute tolerance",
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(steadyAdaptiveCFL, "Adapt steady implicit CFL using actual spatial residual progress");

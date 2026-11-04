@@ -190,6 +190,13 @@ namespace DNDS::ACM
         real molecularViscosity,
         const TurbulenceSettings &settings);
 
+    /** @brief Diffusion coefficients frozen at the supplied state and actual gradients. */
+    TurbulenceState TurbulenceDiffusivity(
+        const TurbulenceState &turbulence,
+        const TurbulenceGradient &turbulenceGradient,
+        real wallDistance, real rho0, real molecularViscosity,
+        real turbulentViscosity, const TurbulenceSettings &settings);
+
     /**
      * @brief Evaluate diffusive turbulence flux projected onto a face normal.
      * @param turbulence Primitive face turbulence variables.
@@ -231,6 +238,14 @@ namespace DNDS::ACM
         real rho0,
         real molecularViscosity,
         const TurbulenceSettings &settings);
+
+    /** @brief Stable SST negative-source Jacobian approximation with production,
+     *  cross diffusion and blending frozen, retaining implicit destruction only.
+     *  The physical source is still evaluated by TurbulenceSource without modification.
+     */
+    Eigen::Matrix<real, 2, 2> SSTImplicitDestructionJacobian(
+        const TurbulenceState &turbulence, const TurbulenceGradient &turbulenceGradient,
+        real wallDistance, real rho0, real molecularViscosity, const TurbulenceSettings &settings);
 
     /**
      * @brief Construct a turbulence ghost state using ACM boundary semantics.

@@ -410,10 +410,9 @@ namespace DNDS::ACM
     }
 
     /** @copydoc TurbulenceDiffusiveFlux */
-    TurbulenceState TurbulenceDiffusiveFlux(
+    TurbulenceState TurbulenceDiffusivity(
         const TurbulenceState &turbulenceInput,
         const TurbulenceGradient &turbulenceGradient,
-        const Vector3 &unitNormalInput,
         real wallDistance,
         real rho0,
         real molecularViscosity,
@@ -421,33 +420,26 @@ namespace DNDS::ACM
         const TurbulenceSettings &settings)
     {
         DNDS_check_throw_info(
-            turbulenceGradient.allFinite() && unitNormalInput.allFinite() &&
-                unitNormalInput.norm() > 0 && std::isfinite(turbulentViscosity) &&
+            turbulenceGradient.allFinite() && std::isfinite(turbulentViscosity) &&
                 turbulentViscosity >= 0,
             "Invalid input to ACM turbulence diffusion closure");
-        const Vector3 unitNormal = unitNormalInput.normalized();
         const TurbulenceState turbulence =
             ClampTurbulenceState(turbulenceInput, settings);
         TurbulenceState flux = TurbulenceState::Zero();
         if (settings.model == TurbulenceModel::Laminar)
             return flux;
 
-        const Eigen::RowVector<real, 2> normalDerivative =
-            unitNormal.transpose() * turbulenceGradient;
         if (settings.model == TurbulenceModel::SpalartAllmaras)
         {
             constexpr real sigma = 2.0 / 3.0;
-            flux(0) = normalDerivative(0) *
-                      (molecularViscosity / rho0 + turbulence(0)) / sigma;
+            flux(0) = (molecularViscosity / rho0 + turbulence(0)) / sigma;
         }
         else if (settings.model == TurbulenceModel::KOmegaWilcox)
         {
             constexpr real sigmaK = 0.5;
             constexpr real sigmaOmega = 0.5;
-            flux(0) = normalDerivative(0) *
-                      (molecularViscosity + sigmaK * turbulentViscosity) / rho0;
-            flux(1) = normalDerivative(1) *
-                      (molecularViscosity + sigmaOmega * turbulentViscosity) / rho0;
+            flux(0) = (molecularViscosity + sigmaK * turbulentViscosity) / rho0;
+            flux(1) = (molecularViscosity + sigmaOmega * turbulentViscosity) / rho0;
         }
         else if (settings.model == TurbulenceModel::KOmegaSST)
         {
@@ -464,23 +456,31 @@ namespace DNDS::ACM
             const real sigmaK = sigmaK1 * blending.f1 + sigmaK2 * (1.0 - blending.f1);
             const real sigmaOmega =
                 sigmaOmega1 * blending.f1 + sigmaOmega2 * (1.0 - blending.f1);
-            flux(0) = normalDerivative(0) *
-                      (molecularViscosity + sigmaK * turbulentViscosity) / rho0;
-            flux(1) = normalDerivative(1) *
-                      (molecularViscosity + sigmaOmega * turbulentViscosity) / rho0;
+            flux(0) = (molecularViscosity + sigmaK * turbulentViscosity) / rho0;
+            flux(1) = (molecularViscosity + sigmaOmega * turbulentViscosity) / rho0;
         }
         else
         {
             constexpr real sigmaK = 1.0;
             constexpr real sigmaEpsilon = 1.3;
-            flux(0) = normalDerivative(0) *
-                      (molecularViscosity + turbulentViscosity / sigmaK) / rho0;
-            flux(1) = normalDerivative(1) *
-                      (molecularViscosity + turbulentViscosity / sigmaEpsilon) / rho0;
+            flux(0) = (molecularViscosity + turbulentViscosity / sigmaK) / rho0;
+            flux(1) = (molecularViscosity + turbulentViscosity / sigmaEpsilon) / rho0;
         }
         DNDS_check_throw_info(flux.allFinite(),
                               "ACM turbulence diffusion closure produced non-finite flux");
         return flux;
+    }
+
+    TurbulenceState TurbulenceDiffusiveFlux(
+        const TurbulenceState &turbulenceInput, const TurbulenceGradient &turbulenceGradient,
+        const Vector3 &unitNormalInput, real wallDistance, real rho0,
+        real molecularViscosity, real turbulentViscosity, const TurbulenceSettings &settings)
+    {
+        DNDS_check_throw_info(unitNormalInput.allFinite() && unitNormalInput.norm() > 0,
+                              "Invalid normal in ACM turbulence diffusion closure");
+        return TurbulenceDiffusivity(turbulenceInput, turbulenceGradient, wallDistance, rho0,
+                                    molecularViscosity, turbulentViscosity, settings).cwiseProduct(
+            TurbulenceState(turbulenceGradient.transpose() * unitNormalInput.normalized()));
     }
 
     // See ACMTurbulence.hpp for the function contract.
@@ -706,6 +706,28 @@ namespace DNDS::ACM
         DNDS_check_throw_info(source.allFinite(),
                               "ACM turbulence source closure produced non-finite values");
         return source;
+    }
+
+    Eigen::Matrix<real, 2, 2> SSTImplicitDestructionJacobian(
+        const TurbulenceState &input, const TurbulenceGradient &gradient,
+        real wallDistance, real rho0, real molecularViscosity, const TurbulenceSettings &settings)
+    {
+        DNDS_check_throw_info(settings.model == TurbulenceModel::KOmegaSST && input.allFinite() &&
+                                  gradient.allFinite() && std::isfinite(wallDistance) && wallDistance > 0 &&
+                                  std::isfinite(rho0) && rho0 > 0 &&
+                                  std::isfinite(molecularViscosity) && molecularViscosity > 0,
+                              "Invalid input to SST implicit destruction Jacobian");
+        Eigen::Matrix<real, 2, 2> result = Eigen::Matrix<real, 2, 2>::Zero();
+        if (!settings.enableSourceTerms)
+            return result;
+        const TurbulenceState state = ClampTurbulenceState(input, settings);
+        const auto blending = EvaluateSSTBlending(state, gradient,
+            std::max(wallDistance, settings.minimumWallDistance), rho0, molecularViscosity);
+        const real beta = 0.075 * blending.f1 + 0.0828 * (1 - blending.f1);
+        result(0, 0) = betaStar * state(1);
+        result(0, 1) = betaStar * state(0);
+        result(1, 1) = 2 * beta * state(1);
+        return result;
     }
 
     /** @copydoc GenerateTurbulenceBoundaryState */

@@ -121,6 +121,33 @@ TEST_CASE("ACM SST near-wall homogeneous shear follows the model equations")
                                            0.5 * turbulentViscosity)));
 }
 
+TEST_CASE("ACM SST implicit destruction stays positive under limited production")
+{
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::KOmegaSST;
+    TurbulenceState state;
+    state << 1e-5, 10;
+    VelocityGradient velocity = VelocityGradient::Zero();
+    velocity(0, 1) = 100;
+    const TurbulenceGradient gradient = TurbulenceGradient::Zero();
+    const auto source = TurbulenceSource(state, velocity, gradient, 0.01, 1, 0.001, settings);
+    CHECK(source(0) == doctest::Approx(1.71e-4));
+    TurbulenceState plus = state, minus = state;
+    plus(0) += 1e-8;
+    minus(0) -= 1e-8;
+    const real negativeFullDerivative = -(TurbulenceSource(plus, velocity, gradient, 0.01, 1, 0.001, settings)(0) -
+        TurbulenceSource(minus, velocity, gradient, 0.01, 1, 0.001, settings)(0)) / 2e-8;
+    CHECK(negativeFullDerivative == doctest::Approx(-17.1));
+    const auto implicit = SSTImplicitDestructionJacobian(state, gradient, 0.01, 1, 0.001, settings);
+    CHECK(implicit(0, 0) == doctest::Approx(0.9));
+    CHECK(implicit(0, 1) == doctest::Approx(9e-7));
+    CHECK(implicit(1, 0) == 0);
+    CHECK(implicit(1, 1) == doctest::Approx(1.5));
+    CHECK((SSTImplicitDestructionJacobian(state, gradient, 0.01, 3, 0.003, settings) - implicit).norm() < 1e-14);
+    settings.enableSourceTerms = false;
+    CHECK(SSTImplicitDestructionJacobian(state, gradient, 0.01, 1, 0.001, settings).norm() == 0);
+}
+
 /// @test Verify the realizable k-epsilon E correction responds to turbulent-time gradients.
 TEST_CASE("ACM realizable k-epsilon includes the gradient source correction")
 {

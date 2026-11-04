@@ -3,11 +3,72 @@
 #include "Solver/Linear.hpp"
 #include "DNDS/Errors.hpp"
 
+#include <Eigen/LU>
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace DNDS::ACM
 {
+    struct AcceptAnyImplicitLinearResidual
+    {
+        template <class Field>
+        bool operator()(const Field &) const { return true; }
+    };
+
+    /** @brief Central FD step bounded before probing, never by projecting a probe state. */
+    inline real CentralJacobianProbeStep(real baseNorm, real directionNorm, real safeStep)
+    {
+        DNDS_check_throw_info(std::isfinite(baseNorm) && baseNorm >= 0 &&
+                                  std::isfinite(directionNorm) && directionNorm > 0 &&
+                                  std::isfinite(safeStep) && safeStep > 0,
+                              "Invalid ACM central Jacobian probe scales");
+        const real result = std::min(std::cbrt(std::numeric_limits<real>::epsilon()) *
+                                     (1 + baseNorm) / directionNorm, safeStep);
+        DNDS_check_throw_info(std::isfinite(result) && result > 0, "ACM central Jacobian step underflowed");
+        return result;
+    }
+
+    /**
+     * @brief Solve a small implicit block after row and column equilibration.
+     * @details Independent equation/variable units must not determine numerical rank. Scaling
+     *     preserves the original system; genuinely singular or non-finite blocks still fail.
+     * @param matrix Finite local implicit block.
+     * @param rhs Finite local right-hand side in the original equation units.
+     * @return Correction in the original variable units.
+     * @tparam size Number of active entries in the local block.
+     */
+    template <int size>
+    Eigen::Vector<real, size> SolveEquilibratedImplicitBlock(
+        const Eigen::Matrix<real, size, size> &matrix,
+        const Eigen::Vector<real, size> &rhs)
+    {
+        DNDS_check_throw_info(matrix.allFinite() && rhs.allFinite(),
+                              "ACM implicit block or right-hand side is non-finite");
+        Eigen::Matrix<real, size, size> scaled = matrix;
+        Eigen::Vector<real, size> scaledRhs = rhs, columnScale;
+        for (int row = 0; row < size; row++)
+        {
+            const real scale = scaled.row(row).cwiseAbs().maxCoeff();
+            DNDS_check_throw_info(scale > 0, "ACM implicit block has a zero row");
+            scaled.row(row) /= scale;
+            scaledRhs(row) /= scale;
+        }
+        for (int column = 0; column < size; column++)
+        {
+            columnScale(column) = scaled.col(column).cwiseAbs().maxCoeff();
+            DNDS_check_throw_info(columnScale(column) > 0, "ACM implicit block has a zero column");
+            scaled.col(column) /= columnScale(column);
+        }
+        DNDS_check_throw_info(scaledRhs.allFinite(), "ACM scaled implicit right-hand side is non-finite");
+        const auto decomposition = scaled.fullPivLu();
+        DNDS_check_throw_info(decomposition.isInvertible(), "ACM equilibrated implicit block is singular");
+        const Eigen::Vector<real, size> result = decomposition.solve(scaledRhs).cwiseQuotient(columnScale);
+        DNDS_check_throw_info(result.allFinite(), "ACM equilibrated implicit correction is non-finite");
+        return result;
+    }
+
     /**
      * @brief Convergence diagnostics for one linear correction system A*increment = rhs.
      * @details Norms are true unpreconditioned residual RMS values, measured before nonlinear
@@ -50,12 +111,14 @@ namespace DNDS::ACM
      * @pre At least one tolerance is positive; every rank participating in the field collectives calls this
      *     function.
      */
-    template <class Field, class ApplyOperator, class Precondition, class BuildField>
+    template <class Field, class ApplyOperator, class Precondition, class BuildField,
+              class CheckResidual = AcceptAnyImplicitLinearResidual>
     ImplicitLinearReport SolveImplicitLinearSystem(
         Field &rhs, Field &increment, bool useLUSGS,
         int maximumSweeps, int subspace, int restarts,
         real absoluteTolerance, real relativeTolerance, real rmsDivisor,
-        ApplyOperator &&applyOperator, Precondition &&precondition, BuildField &&buildField)
+        ApplyOperator &&applyOperator, Precondition &&precondition, BuildField &&buildField,
+        CheckResidual &&checkResidual = CheckResidual{})
     {
         DNDS_check_throw_info(
             std::isfinite(absoluteTolerance) && absoluteTolerance >= 0 &&
@@ -73,7 +136,7 @@ namespace DNDS::ACM
         DNDS_check_throw_info(std::isfinite(report.initialResidual), "Non-finite ACM linear right-hand side");
         report.finalResidual = report.initialResidual;
         report.tolerance = std::max(absoluteTolerance, relativeTolerance * report.initialResidual);
-        if (report.finalResidual <= report.tolerance)
+        if (report.finalResidual <= report.tolerance && checkResidual(rhs))
         {
             report.converged = true;
             return report;
@@ -88,7 +151,8 @@ namespace DNDS::ACM
             residual.addTo(product, -1.0);
             report.finalResidual = residual.norm2() / rmsDivisor;
             DNDS_check_throw_info(std::isfinite(report.finalResidual), "Non-finite ACM true linear residual");
-            report.converged = report.finalResidual <= report.tolerance;
+            const bool accepted = checkResidual(residual);
+            report.converged = report.finalResidual <= report.tolerance && accepted;
             return report.converged;
         };
         if (useLUSGS)

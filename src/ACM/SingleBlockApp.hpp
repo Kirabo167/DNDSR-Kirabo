@@ -133,8 +133,8 @@ namespace DNDS::ACM
         }
         catch (const std::exception &exception)
         {
-            if (mpi.rank == 0)
-                std::cerr << "DNDS ACM top-level exception: " << exception.what() << std::endl;
+            std::cerr << "DNDS ACM top-level exception: rank=" << mpi.rank
+                      << "\n" << exception.what() << std::endl;
             return 1;
         }
         return 0;

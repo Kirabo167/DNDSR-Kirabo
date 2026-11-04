@@ -179,6 +179,30 @@
                     "description": "Maximum inner iterations per implicit or physical step",
                     "minimum": 1.0
                 },
+                "dualTimeRANSStartupSteps": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Initial RANS BDF physical steps with extended inner budget"
+                },
+                "dualTimeRANSStartupIterations": {
+                    "type": "integer",
+                    "default": 100,
+                    "minimum": 1,
+                    "description": "Maximum inner iterations during RANS BDF startup"
+                },
+                "dualTimeRANSContinuationSteps": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Initial RANS BDF steps using nonlinear mass continuation"
+                },
+                "dualTimeRANSContinuationFactor": {
+                    "type": "number",
+                    "default": 10.0,
+                    "minimum": 1.0,
+                    "description": "Initial auxiliary mass factor; removed before physical acceptance"
+                },
                 "implicitTolerance": {
                     "type": "number",
                     "default": 1e-08,
@@ -251,6 +275,18 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Reject unconverged BDF physical steps; false explicitly enables diagnostic budget-limited marching"
+                },
+                "dualTimeRANSAndersonDepth": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Unified RANS BDF nonlinear Anderson history depth; zero disables acceleration"
+                },
+                "dualTimeRANSMatrixFreeJacobian": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Coupled RANS Jacobian action with frozen flow reconstruction during GMRES"
                 },
                 "steadyRelativeTolerance": {
                     "type": "number",
@@ -700,6 +736,17 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Require turbulence variables in a RANS restart file"
+                },
+                "initializeBDF2History": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Start new BDF2 history from a field using one backward-Euler step"
+                },
+                "physicalTime": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Physical time represented by the restart field"
                 }
             }
         },

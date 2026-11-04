@@ -160,6 +160,30 @@ namespace DNDS::ACM
         /** @brief Return read-only distributed primitive turbulence variables. */
         const TTurbulenceDof &GetState() const { return _state; }
 
+        /** @brief Current cell source for diagnostics, after Prepare/EvaluateRHS. */
+        TurbulenceState CellSource(index cell) const
+        {
+            return TurbulenceSource(TurbulenceState(_state[cell]), CellVelocityGradient(cell),
+                                    CellTurbulenceGradient(cell), _cellWallDistance.at(static_cast<std::size_t>(cell)),
+                                    _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings);
+        }
+
+        /** @brief Positive cell wall distance used by the closure. */
+        real CellWallDistance(index cell) const { return _cellWallDistance.at(static_cast<std::size_t>(cell)); }
+
+        /** @brief Internal Jacobian probes retain the current scalar/flow limiter branches. */
+        void SetLimiterFrozen(bool value) { _limiterFrozen = value; InvalidatePreparation(); }
+
+        /** @brief Opt-in reuse for an owning solver that invalidates after every state/reconstruction change. */
+        void SetPreparationReuse(bool value) { _reusePreparation = value; InvalidatePreparation(); }
+        void InvalidatePreparation() { _prepared = false; }
+        index PreparationCount() const { return _preparationCount; }
+
+        /** @brief Surface-averaged upwind primitive state multiplying the shared continuity flux.
+         *  Impermeable faces return zero; only valid when SetFaceVolumeFlux has been installed.
+         */
+        TurbulenceState FrozenFaceAdvectionValue(const TFlowDof &flow, index face, real time = 0) const;
+
         /** @brief Return the selected runtime turbulence model. */
         TurbulenceModel GetModel() const { return _turbulenceSettings.model; }
 
@@ -176,17 +200,20 @@ namespace DNDS::ACM
         }
 
         /**
-         * @brief Approximate -dR/dq by a local source Jacobian and positive transport spectra.
+         * @brief Assemble -dR/dq with a local source Jacobian and frozen first-order transport.
          * @details For constant density this is also the Jacobian of rho*R with
          * respect to rho*q. Closure gradients and face diffusivities are frozen.
          * @param flow Current distributed flow state used to freeze transport and closure data.
          * @param [out] diagonal One 2x2 negative-spatial-Jacobian approximation per owned cell; only the active
          *     closure block is used.
          * @param time Current time for boundary and coefficient preparation.
+         * @param faceJacobians Optional integrated left/right flux derivatives for neighbour coupling.
          */
+        using FaceJacobianField = std::vector<std::array<Eigen::Matrix<real, 2, 2>, 2>>;
+
         void EvaluateImplicitDiagonal(TFlowDof &flow,
                                       std::vector<Eigen::Matrix<real, 2, 2>> &diagonal,
-                                      real time = 0);
+                                      real time = 0, FaceJacobianField *faceJacobians = nullptr);
 
     private:
         ssp<Geom::UnstructuredMesh> _mesh;          ///< Prepared distributed mesh.
@@ -206,6 +233,10 @@ namespace DNDS::ACM
         std::function<real(index, int, real)> _faceVolumeFlux; ///< Optional shared ACM continuity flux.
         bool _initialized = false;                   ///< Wall-distance/state initialization guard.
         bool _prepared = false;                      ///< Frozen-viscosity cache validity guard.
+        bool _reusePreparation = false;               ///< Only enabled by the unified solver with explicit invalidation.
+        real _preparedTime = 0;
+        index _preparationCount = 0;
+        bool _limiterFrozen = false;                 ///< Keep nonlinear limiter branches fixed during Jacobian probes.
         BDF2TurbulenceHistory _physicalHistory;       ///< Active-variable-aware completed physical levels.
         std::array<real, 2> _physicalEquationDefectNorms{};
         std::array<index, 2> _physicalBackwardEulerCounts{};

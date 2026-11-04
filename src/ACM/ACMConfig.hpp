@@ -159,6 +159,8 @@ namespace DNDS::ACM
         int completedSteps = 0;        ///< Absolute steady-step index represented by flowFile.
         int writerRanks = 0;           ///< Required original MPI size; zero is valid only without a file.
         bool requireTurbulence = false; ///< Reject a RANS restart without turbulence datasets.
+        bool initializeBDF2History = false; ///< Explicitly start new BE/BDF2 history from this field.
+        real physicalTime = 0; ///< Physical time represented by the restart field.
 
         DNDS_DECLARE_CONFIG(RestartSettings)
         {
@@ -168,6 +170,8 @@ namespace DNDS::ACM
             DNDS_FIELD(writerRanks, "MPI ranks that wrote the VTK-HDF field",
                        DNDS::Config::range(0));
             DNDS_FIELD(requireTurbulence, "Require turbulence variables in a RANS restart file");
+            DNDS_FIELD(initializeBDF2History, "Start new BDF2 history from a field using one backward-Euler step");
+            DNDS_FIELD(physicalTime, "Physical time represented by the restart field", DNDS::Config::range(0));
         }
     };
 

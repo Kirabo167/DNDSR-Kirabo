@@ -158,6 +158,19 @@ namespace DNDS::ACM
             "ACM BDF grouped relative tolerances must be finite and in [0,1)");
         const bool physicalBDF = integrator == TimeIntegratorType::BDF2DualTimeLUSGS ||
                                  integrator == TimeIntegratorType::BDF2DualTimeGMRES;
+        DNDS_check_throw_info(dualTimeRANSContinuationSteps >= 0 &&
+                                  std::isfinite(dualTimeRANSContinuationFactor) && dualTimeRANSContinuationFactor >= 1 &&
+                                  (dualTimeRANSContinuationSteps == 0 || physicalBDF),
+                              "ACM RANS continuation requires BDF, nonnegative steps and a finite factor >=1");
+        DNDS_check_throw_info(dualTimeRANSStartupSteps >= 0 && dualTimeRANSStartupIterations > 0 &&
+                                  (dualTimeRANSStartupSteps == 0 ||
+                                   (physicalBDF && dualTimeRANSStartupIterations >= maxImplicitIterations)),
+                              "ACM RANS startup budget requires BDF, nonnegative steps and an extended positive iteration limit");
+        DNDS_check_throw_info(!dualTimeRANSMatrixFreeJacobian || integrator == TimeIntegratorType::BDF2DualTimeGMRES,
+                              "ACM RANS matrix-free Jacobian requires BDF2DualTimeGMRES");
+        DNDS_check_throw_info(dualTimeRANSAndersonDepth >= 0 && dualTimeRANSAndersonDepth <= 10 &&
+                                  (physicalBDF || dualTimeRANSAndersonDepth == 0),
+                              "ACM RANS Anderson depth must be in [0,10] and requires physical BDF marching");
         DNDS_check_throw_info(dualTimeConvergenceCriterion == "Absolute" || dualTimeConvergenceCriterion == "Relative" ||
                                   dualTimeConvergenceCriterion == "AbsoluteOrRelative" || dualTimeConvergenceCriterion == "RelativeUpdate",
                               "ACM dualTimeConvergenceCriterion must be Absolute, Relative, AbsoluteOrRelative, or RelativeUpdate");
