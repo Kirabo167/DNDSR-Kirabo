@@ -503,3 +503,16 @@ authorization is consumed by the first commit — do NOT commit again without
 a fresh authorization, even for follow-up fixes.
 
 **Draft PR by default** You must use --draft on new prs.
+
+## Frozen ACM / NCFV CPU baseline (2026-11-03)
+
+The user froze the current CPU versions. Preserve `src/ACM`, `src/NCFV`,
+`app/ACM`, and `app/NCFV` during GPU development. The user subsequently requested
+an update before GPU implementation; the active baseline is now `3e7cb94` plus
+preserved local CPU changes. Its snapshot is selected by
+`frozen/active_cpu_snapshot.txt`; the earlier `ACM_NCFV_CPU_20261103` snapshot
+remains available as history.
+Run `python3 scripts/verify_cpu_freeze.py` to check it. Develop the independent
+GPU copies in `src/ACMGPU`, `src/NCFVGPU`, `app/ACMGPU`, `app/NCFVGPU`, and
+`src/GPU`; see `docs/guides/gpu_solver_copies.md`. CPU baseline updates need
+a new user request that explicitly includes changing the frozen CPU version.

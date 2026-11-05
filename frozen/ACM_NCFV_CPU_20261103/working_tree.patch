@@ -1,0 +1,519 @@
+diff --git a/cases/ncfv_euler/3D/diagnostics/benchmark_reconstruction.cpp b/cases/ncfv_euler/3D/diagnostics/benchmark_reconstruction.cpp
+index fede4e2..8ee7ec5 100644
+--- a/cases/ncfv_euler/3D/diagnostics/benchmark_reconstruction.cpp
++++ b/cases/ncfv_euler/3D/diagnostics/benchmark_reconstruction.cpp
+@@ -157,6 +157,8 @@ int main(int argc, char **argv)
+             const double initializeStart = MPI_Wtime();
+             Solver<3> solver(mpi, cfg);
+             solver.Initialize();
++            const bool midpointFlux = std::getenv("NCFV_TRADITIONAL_EDGE_MIDPOINT") != nullptr;
++            solver.SetTraditionalEdgeMidpointFluxForDiagnostics(midpointFlux);
+             const double initializeSeconds = RankMaximum(mpi, MPI_Wtime() - initializeStart);
+             const double initializedRSS = RankSum(mpi, PeakRSSMiB());
+             const bool auditFlux = std::getenv("NCFV_AUDIT_FLUX_BUDGET") != nullptr;
+@@ -168,6 +170,10 @@ int main(int argc, char **argv)
+             const double marchSeconds = RankMaximum(mpi, MPI_Wtime() - marchStart);
+             const double lastStepSeconds = RankMaximum(mpi, solver.LastStepTiming().totalSeconds);
+             const double finalRSS = RankSum(mpi, PeakRSSMiB());
++            const DNDS::index localRiemannCalls = solver.LastStepRiemannSolverCalls();
++            DNDS::index globalRiemannCalls = 0;
++            MPI_Allreduce(&localRiemannCalls, &globalRiemannCalls, 1,
++                          DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
+             if (auditFlux)
+                 finalBudget = RiemannFluxBudget(mpi, cfg, solver);
+             DNDS_check_throw_info(std::abs(solver.SimulationTime() - endTime) < 1e-12,
+@@ -178,6 +184,7 @@ int main(int argc, char **argv)
+                     ReadDiagnostics(cfg.io.outputPrefix + ".diagnostics.csv");
+                 nlohmann::ordered_json result = {
+                     {"mesh", cfg.mesh.meshFile}, {"mode", mode}, {"method", method},
++                    {"traditional_edge_midpoint_flux", midpointFlux},
+                     {"riemann_solver", nlohmann::ordered_json(cfg.physics.riemannSolver)},
+                     {"configuration", nlohmann::ordered_json(cfg)},
+                     {"nodes", solver.Mesh()->NumNodeGlobal()},
+@@ -188,6 +195,7 @@ int main(int argc, char **argv)
+                     {"initialization_seconds", initializeSeconds},
+                     {"march_seconds", marchSeconds},
+                     {"last_step_core_seconds", lastStepSeconds},
++                    {"last_step_riemann_calls", globalRiemannCalls},
+                     {"initialization_peak_rss_sum_mib", initializedRSS},
+                     {"final_peak_rss_sum_mib", finalRSS},
+                     {"initial", initial}, {"final", final}};
+diff --git a/cases/ncfv_euler/3D/diagnostics/run_entropy_weight_accuracy.py b/cases/ncfv_euler/3D/diagnostics/run_entropy_weight_accuracy.py
+index dce900d..3a61466 100644
+--- a/cases/ncfv_euler/3D/diagnostics/run_entropy_weight_accuracy.py
++++ b/cases/ncfv_euler/3D/diagnostics/run_entropy_weight_accuracy.py
+@@ -27,11 +27,19 @@ def main():
+     parser.add_argument("--ranks", type=int, default=8)
+     parser.add_argument("--jobs", type=int, default=2)
+     parser.add_argument("--end-time", type=float, default=1.6)
++    parser.add_argument("--dt-numerator", type=float, default=2)
+     parser.add_argument("--stencil", type=int, default=16)
++    parser.add_argument("--edge-midpoint", action="store_true")
++    parser.add_argument("--method", choices=["LeastSquares", "Variational"], default="LeastSquares")
++    parser.add_argument("--reference-roe", action="store_true")
++    parser.add_argument("--reference-document", action="store_true")
+     args = parser.parse_args()
++    if args.reference_document:
++        args.edge_midpoint = True
++        args.reference_roe = True
+     if not args.levels or min(args.levels) <= 0 or min(args.weights) < 0:
+         parser.error("Levels and weights must be nonnegative, with positive levels")
+-    if args.ranks < 1 or args.jobs < 1 or args.end_time <= 0 or args.stencil < 9:
++    if args.ranks < 1 or args.jobs < 1 or args.end_time <= 0 or args.dt_numerator <= 0 or args.stencil < 9:
+         parser.error("Invalid ranks, jobs, end time, or stencil size")
+ 
+     output = args.output.resolve()
+@@ -43,6 +51,15 @@ def main():
+     env = dict(os.environ, OMP_NUM_THREADS="1", DNDS_DIST_OMP_NUM_THREADS="1",
+                OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
+                HWLOC_COMPONENTS="-gl,-cuda,-nvml")
++    env.pop("NCFV_TRADITIONAL_EDGE_MIDPOINT", None)
++    if args.edge_midpoint:
++        env["NCFV_TRADITIONAL_EDGE_MIDPOINT"] = "1"
++    env.pop("NCFV_REFERENCE_ROE_HARTEN", None)
++    if args.reference_roe:
++        env["NCFV_REFERENCE_ROE_HARTEN"] = "1"
++    env.pop("NCFV_REFERENCE_DOCUMENT_FLUX", None)
++    if args.reference_document:
++        env["NCFV_REFERENCE_DOCUMENT_FLUX"] = "1"
+ 
+     def run(case):
+         level, mode, power = case
+@@ -51,7 +68,7 @@ def main():
+         result = raw / f"{name}.json"
+         manifest_file = raw / f"{name}.manifest.json"
+         mesh = ROOT / f"cases/ncfv_euler/3D/iv{level}_3d_1_dnds.cgns"
+-        dt = 2 / level
++        dt = args.dt_numerator / level
+         steps = round(args.end_time / dt)
+         if not math.isclose(steps * dt, args.end_time, abs_tol=1e-12):
+             raise ValueError(f"End time {args.end_time} is not a multiple of dt={dt}")
+@@ -59,7 +76,12 @@ def main():
+                    "--bind-to", "none", "-np", str(args.ranks), str(binary),
+                    str(CONFIG), str(result), "entropy", str(dt), str(args.end_time),
+                    str(args.stencil), mode, str(power), str(mesh)]
++        if args.method != "LeastSquares":
++            command.append(args.method)
+         manifest = {"command": command, "binary_sha256": binary_hash,
++                    "edge_midpoint": args.edge_midpoint,
++                    "reference_roe": args.reference_roe,
++                    "reference_document": args.reference_document,
+                     "config_sha256": config_hash,
+                     "mesh_sha256": hashlib.sha256(mesh.read_bytes()).hexdigest()}
+         if result.exists():
+@@ -74,6 +96,14 @@ def main():
+                 subprocess.run(command, cwd=ROOT / "build", env=env,
+                                stdout=log, stderr=subprocess.STDOUT, check=True)
+         data = json.loads(result.read_text())
++        if data.get("reference_document_flux", False) != args.reference_document:
++            raise RuntimeError(f"Unexpected reference document implementation: {result}")
++        if data.get("reference_roe_harten", False) != args.reference_roe:
++            raise RuntimeError(f"Unexpected Roe implementation: {result}")
++        if data.get("method", "LeastSquares") != args.method:
++            raise RuntimeError(f"Unexpected reconstruction method: {result}")
++        if data.get("traditional_edge_midpoint_flux") != args.edge_midpoint:
++            raise RuntimeError(f"Unexpected interface flux selection: {result}")
+         if data["problem"] != "entropy" or data["mode"] != mode or data["mpi_ranks"] != args.ranks:
+             raise RuntimeError(f"Unexpected result metadata: {result}")
+         density_mean = data["mean_conservative"]["L2"][0]
+diff --git a/cases/ncfv_euler/3D/diagnostics/run_taylor_green_self_convergence.py b/cases/ncfv_euler/3D/diagnostics/run_taylor_green_self_convergence.py
+index d0c91e2..9053444 100644
+--- a/cases/ncfv_euler/3D/diagnostics/run_taylor_green_self_convergence.py
++++ b/cases/ncfv_euler/3D/diagnostics/run_taylor_green_self_convergence.py
+@@ -28,7 +28,14 @@ def main():
+     parser.add_argument("--stencil", type=int, default=16)
+     parser.add_argument("--ranks", type=int, default=8)
+     parser.add_argument("--jobs", type=int, default=2)
++    parser.add_argument("--edge-midpoint", action="store_true")
++    parser.add_argument("--method", choices=["LeastSquares", "Variational"], default="LeastSquares")
++    parser.add_argument("--reference-roe", action="store_true")
++    parser.add_argument("--reference-document", action="store_true")
+     args = parser.parse_args()
++    if args.reference_document:
++        args.edge_midpoint = True
++        args.reference_roe = True
+     if min(args.levels) <= 0 or min(args.weight, args.mach, args.end_time,
+                                      args.dt_numerator) <= 0:
+         parser.error("Levels, weight, Mach, end time, and time step must be positive")
+@@ -44,6 +51,15 @@ def main():
+     env = dict(os.environ, OMP_NUM_THREADS="1", DNDS_DIST_OMP_NUM_THREADS="1",
+                OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
+                HWLOC_COMPONENTS="-gl,-cuda,-nvml")
++    env.pop("NCFV_TRADITIONAL_EDGE_MIDPOINT", None)
++    if args.edge_midpoint:
++        env["NCFV_TRADITIONAL_EDGE_MIDPOINT"] = "1"
++    env.pop("NCFV_REFERENCE_ROE_HARTEN", None)
++    if args.reference_roe:
++        env["NCFV_REFERENCE_ROE_HARTEN"] = "1"
++    env.pop("NCFV_REFERENCE_DOCUMENT_FLUX", None)
++    if args.reference_document:
++        env["NCFV_REFERENCE_DOCUMENT_FLUX"] = "1"
+ 
+     def run(case):
+         level, mode = case
+@@ -60,7 +76,12 @@ def main():
+                    str(CONFIG), str(result), str(args.mach), str(dt),
+                    str(args.end_time), str(args.stencil), mode, str(args.weight),
+                    str(mesh)]
++        if args.method != "LeastSquares":
++            command.append(args.method)
+         manifest = {"command": command, "binary_sha256": binary_hash,
++                    "edge_midpoint": args.edge_midpoint,
++                    "reference_roe": args.reference_roe,
++                    "reference_document": args.reference_document,
+                     "config_sha256": config_hash,
+                     "mesh_sha256": hashlib.sha256(mesh.read_bytes()).hexdigest()}
+         if result.exists():
+@@ -75,6 +96,14 @@ def main():
+                 subprocess.run(command, cwd=ROOT / "build", env=env,
+                                stdout=log, stderr=subprocess.STDOUT, check=True)
+         data = json.loads(result.read_text())
++        if data.get("reference_document_flux", False) != args.reference_document:
++            raise RuntimeError(f"Unexpected reference document implementation: {result}")
++        if data.get("reference_roe_harten", False) != args.reference_roe:
++            raise RuntimeError(f"Unexpected Roe implementation: {result}")
++        if data.get("method", "LeastSquares") != args.method:
++            raise RuntimeError(f"Unexpected reconstruction method: {result}")
++        if data.get("traditional_edge_midpoint_flux") != args.edge_midpoint:
++            raise RuntimeError(f"Unexpected interface flux selection: {result}")
+         if data["problem"] != "compressible_taylor_green" or data["mode"] != mode:
+             raise RuntimeError(f"Unexpected output metadata: {result}")
+         for rank in range(args.ranks):
+diff --git a/docs/reports/taylor_green_2d_rhs_20260929/report.md b/docs/reports/taylor_green_2d_rhs_20260929/report.md
+index dc8954b..da5b0cb 100644
+--- a/docs/reports/taylor_green_2d_rhs_20260929/report.md
++++ b/docs/reports/taylor_green_2d_rhs_20260929/report.md
+@@ -30,7 +30,8 @@ p=100+\frac{A^2}{4}(\cos 2x+\cos 2y).
+ 对每个节点的动量右端误差向量 `eᵢ`，以对偶体积 `Vᵢ` 定义
+ `L₂=[ΣVᵢ|eᵢ|²/ΣVᵢ]^(1/2)`。相邻加密级别的观测阶为
+ `p=log₂(L₂(N)/L₂(2N))`。原始数值见 [metrics.csv](metrics.csv)，
+-图见 [convergence.svg](convergence.svg)。
++图见 [convergence.svg](convergence.svg)，可直接查看和筛选的 Excel 工作簿见
++[taylor_green_2d_rhs_accuracy.xlsx](taylor_green_2d_rhs_accuracy.xlsx)。
+ 
+ ## 结果
+ 
+@@ -66,12 +67,12 @@ p=100+\frac{A^2}{4}(\cos 2x+\cos 2y).
+ 
+ ```bash
+ cmake --build build -t ncfv_taylor_green_2d_rhs_probe -j4
+-venv/bin/python cases/NCFV/diagnostics/run_taylor_green_2d_rhs.py
++venv/bin/python cases/ncfv_euler/3D/diagnostics/run_taylor_green_2d_rhs.py
+ ```
+ 
+ 默认脚本使用 `data/mesh/taylor_green/tgv_hex_{8,16,32,64,128}.cgns`，运行
+ `t=0,8` 的两种积分模式，并写出 CSV、SVG 与每组运行日志。源代码为
+-`cases/NCFV/diagnostics/taylor_green_2d_rhs_probe.cpp`。数据来源于
++`cases/ncfv_euler/3D/diagnostics/taylor_green_2d_rhs_probe.cpp`。数据来源于
+ [二维 TGV 解析解文献](https://doi.org/10.1063/5.0159551)；实现中压力的
+ 空间常数 `100` 不影响解析动量方程。
+ 
+diff --git a/src/NCFV/NCFVSolver.hpp b/src/NCFV/NCFVSolver.hpp
+index 1b3f33a..410595e 100644
+--- a/src/NCFV/NCFVSolver.hpp
++++ b/src/NCFV/NCFVSolver.hpp
+@@ -214,6 +214,12 @@ namespace DNDS::NCFV
+          * @pre Initialize() has completed; all ranks participate.
+          */
+         real EvaluateResidual() { return _spatial->EvaluateRHS(_state, _rhs); }
++        void SetTraditionalEdgeMidpointFluxForDiagnostics(bool enabled)
++        {
++            DNDS_check_throw_info(_spatial != nullptr,
++                                  "Initialize solver before selecting midpoint flux");
++            _spatial->SetTraditionalEdgeMidpointFluxForDiagnostics(enabled);
++        }
+         /**
+          * @brief Enable intrusive internal-edge flux timing after Initialize().
+          * @param enabled True to collect intrusive internal-edge kernel timings; false to retain ordinary phase
+diff --git a/src/NCFV/NCFVSpatial.cpp b/src/NCFV/NCFVSpatial.cpp
+index 7c8859a..789dc75 100644
+--- a/src/NCFV/NCFVSpatial.cpp
++++ b/src/NCFV/NCFVSpatial.cpp
+@@ -248,6 +248,44 @@ namespace DNDS::NCFV
+         const SpatialVector &unitNormal) const
+     {
+         ++_riemannSolverCallCount;
++        if (_referenceRoeHarten)
++        {
++            const real rhoL = left(0), rhoR = right(0);
++            const SpatialVector vL = left.template segment<dimension>(1) / rhoL;
++            const SpatialVector vR = right.template segment<dimension>(1) / rhoR;
++            const real pL = Pressure(left), pR = Pressure(right);
++            const real ratio = std::sqrt(rhoR / rhoL);
++            const real rho = std::sqrt(rhoL * rhoR);
++            const SpatialVector velocity = (vL + ratio * vR) / (1 + ratio);
++            const real enthalpy = ((left(dimension + 1) + pL) / rhoL +
++                                   ratio * (right(dimension + 1) + pR) / rhoR) / (1 + ratio);
++            const real aSquared = (_physics.gamma - 1) *
++                (enthalpy - 0.5 * velocity.squaredNorm());
++            DNDS_check_throw_info(aSquared > 0, "Reference Roe sound speed is nonpositive");
++            const real sound = std::sqrt(aSquared);
++            const real un = velocity.dot(unitNormal);
++            const real threshold = 0.15 * sound;
++            const auto fixed = [threshold](real value)
++            {
++                value = std::abs(value);
++                return value < threshold ? 0.5 * (value * value / threshold + threshold) : value;
++            };
++            const real contact = fixed(un);
++            const SpatialVector dv = vR - vL;
++            const real dun = dv.dot(unitNormal);
++            const real b0 = contact * (rhoR - rhoL - (pR - pL) / aSquared);
++            const real bp = 0.5 * fixed(un + sound) * (pR - pL + rho * sound * dun) / aSquared;
++            const real bm = 0.5 * fixed(un - sound) * (pR - pL - rho * sound * dun) / aSquared;
++            const real mass = b0 + bp + bm;
++            const real normal = sound * (bp - bm);
++            const SpatialVector shear = contact * rho * (dv - unitNormal * dun);
++            State dissipation;
++            dissipation(0) = mass;
++            dissipation.template segment<dimension>(1) = velocity * mass + unitNormal * normal + shear;
++            dissipation(dimension + 1) = enthalpy * mass + un * normal +
++                velocity.dot(shear) - aSquared * b0 / (_physics.gamma - 1);
++            return 0.5 * (PhysicalFlux(left, unitNormal) + PhysicalFlux(right, unitNormal) - dissipation);
++        }
+         State flux = State::Zero();
+         SpatialVector gridVelocity = SpatialVector::Zero();
+         real acousticMinus = 0;
+@@ -330,6 +368,20 @@ namespace DNDS::NCFV
+         DNDS_check_throw_info(volume > verySmallReal,
+                               "NCFV traditional reconstruction has a zero-volume anchor");
+         const Vector3 referenceLengths = _reconstruction.ReferenceLengths(anchorNode);
++        if (_referenceDocumentFlux)
++        {
++            DNDS_assert(_referenceMeans != nullptr);
++            const State mean = (*_referenceMeans)[anchorNode];
++            const State candidate = mean + _coefficients[anchorNode].transpose() *
++                (Reconstruction::EvaluateBasis(
++                     _nodeHalo.DisplacementToPoint(anchorNode, point), referenceLengths, dimension) -
++                 _referenceBasisMeans[static_cast<std::size_t>(anchorNode)]);
++            if (candidate.allFinite() && candidate(0) > 0 &&
++                candidate(dimension + 1) > 0 && Pressure(candidate) > 0)
++                return candidate;
++            ++_referenceMeanFallbackCount;
++            return mean;
++        }
+         State state = _pointValues[anchorNode];
+         state += _coefficients[anchorNode].transpose() *
+                  Reconstruction::EvaluateBasis(
+@@ -753,6 +805,22 @@ namespace DNDS::NCFV
+ 
+         if (_mode == IntegrationMode::TraditionalQuadrature)
+         {
++            if (_traditionalEdgeMidpointFlux)
++            {
++                // Use the edge's minimum-image frame, including periodic edges.
++                const Vector3 midpoint = 0.5 *
++                    (surface.nodeCoordinates[0] + surface.nodeCoordinates[1]);
++                const real effectiveArea = surface.vectorMeasure.template head<dimension>().norm();
++                const State left = EvaluateTraditionalState(node0, midpoint);
++                const State right = EvaluateTraditionalState(node1, midpoint);
++                State flux = NumericalFlux(left, right, unitNormal);
++                if (_physics.viscous.enabled)
++                    flux -= InternalViscousFlux(
++                        left, right, EvaluateTraditionalGradient(node0, midpoint),
++                        EvaluateTraditionalGradient(node1, midpoint),
++                        unitNormal, characteristicDistance);
++                return effectiveArea * flux;
++            }
+             State integral = State::Zero();
+             for (const auto &point : surface.quadrature)
+             {
+@@ -1175,6 +1243,7 @@ namespace DNDS::NCFV
+     template <int dimension>
+     void SpatialOperator<dimension>::Reconstruct(NodeStatePair &means)
+     {
++        _referenceMeans = &means;
+         double phaseStart = MPI_Wtime();
+         means.trans.startPersistentPull();
+         means.trans.waitPersistentPull();
+@@ -1532,7 +1601,16 @@ namespace DNDS::NCFV
+         {
+             State residual = EvaluateOwnedBoundaryFlux(iNode, means);
+             for (const auto &incidence : _topology.Node2Edge(iNode))
++            {
+                 residual += incidence.outwardSign * State(_edgeFlux[incidence.edge]);
++                if (_referenceDocumentFlux)
++                {
++                    SpatialVector areaVector;
++                    for (int d = 0; d < dimension; d++)
++                        areaVector(d) = _geometry.EdgeMetrics()(incidence.edge, d);
++                    residual -= incidence.outwardSign * PhysicalFlux(State(means[iNode]), areaVector);
++                }
++            }
+             const real volume = _geometry.NodeVolume(iNode).moments.measure;
+             rhs[iNode] = -residual / volume;
+         }
+diff --git a/src/NCFV/NCFVSpatial.hpp b/src/NCFV/NCFVSpatial.hpp
+index bc61753..f400a16 100644
+--- a/src/NCFV/NCFVSpatial.hpp
++++ b/src/NCFV/NCFVSpatial.hpp
+@@ -167,6 +167,12 @@ namespace DNDS::NCFV
+         const NodeHalo &_nodeHalo;
+         real _maximumStep = veryLargeReal;
+         bool _detailedFluxTiming = false;
++        bool _traditionalEdgeMidpointFlux = false;
++        bool _referenceRoeHarten = false;
++        bool _referenceDocumentFlux = false;
++        const NodeStatePair *_referenceMeans = nullptr;
++        std::vector<Eigen::VectorXd> _referenceBasisMeans;
++        mutable index _referenceMeanFallbackCount = 0;
+         State _interiorInviscidCorrectionScales = State::Ones();
+         bool _scaleInteriorInviscidCorrection = false;
+         int _singleZeroInviscidCorrectionComponent = -1;
+@@ -584,6 +590,46 @@ namespace DNDS::NCFV
+          *     instrumentation.
+          */
+         void EnableDetailedFluxTiming(bool enabled) { _detailedFluxTiming = enabled; }
++        /** Evaluate each internal macro-interface once at its primal-edge midpoint. */
++        void SetTraditionalEdgeMidpointFluxForDiagnostics(bool enabled)
++        {
++            DNDS_check_throw_info(!enabled || _mode == IntegrationMode::TraditionalQuadrature,
++                                  "Edge midpoint flux requires traditional reconstruction");
++            _traditionalEdgeMidpointFlux = enabled;
++        }
++        /** Static-grid Roe--Pike flux with the supplied reference's delta=0.15*a fix. */
++        void SetReferenceRoeHartenForDiagnostics(bool enabled)
++        {
++            DNDS_check_throw_info(!enabled || _physics.riemannSolver == Euler::Gas::Roe,
++                                  "Reference Harten flux requires Roe");
++            _referenceRoeHarten = enabled;
++        }
++        State EvaluateNumericalFluxForDiagnostics(
++            const State &left, const State &right, const SpatialVector &normal) const
++        {
++            return NumericalFlux(left, right, normal);
++        }
++        /** Literal stationary, periodic InvisFluxRoeHO assembly for accuracy diagnostics. */
++        void SetReferenceDocumentFluxForDiagnostics(bool enabled)
++        {
++            if (enabled)
++            {
++                DNDS_check_throw_info(!_physics.viscous.enabled,
++                                      "Reference document diagnostic requires inviscid flow");
++                for (const auto &volume : _geometry.NodeVolumes())
++                    DNDS_check_throw_info(volume.boundaryPieces.empty(),
++                                          "Reference document diagnostic requires stitched periodic geometry");
++                SetTraditionalEdgeMidpointFluxForDiagnostics(true);
++                SetReferenceRoeHartenForDiagnostics(true);
++                _referenceBasisMeans.resize(static_cast<std::size_t>(_nodeHalo.NumNodeProc()));
++                for (index node = 0; node < _nodeHalo.NumNodeProc(); node++)
++                    _referenceBasisMeans[static_cast<std::size_t>(node)] = Reconstruction::MeanBasis(
++                        _nodeHalo.MomentsRelative(node, node), Vector3::Zero(),
++                        _reconstruction.ReferenceLengths(node), dimension);
++            }
++            _referenceDocumentFlux = enabled;
++        }
++        [[nodiscard]] index ReferenceMeanFallbackCount() const { return _referenceMeanFallbackCount; }
+         /**
+          * @brief Scale the interior numerical-minus-central flux by conserved component.
+          * @param scales dimension+2 finite factors in [0,1] multiplying the interior numerical-minus-central flux
+diff --git a/test/cpp/NCFV/test_NCFVParallel.cpp b/test/cpp/NCFV/test_NCFVParallel.cpp
+index 07511da..fb07603 100644
+--- a/test/cpp/NCFV/test_NCFVParallel.cpp
++++ b/test/cpp/NCFV/test_NCFVParallel.cpp
+@@ -837,6 +837,105 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
+     }
+ }
+ 
++TEST_CASE("NCFV traditional edge midpoint flux preserves periodic uniform flow with one solve per edge")
++{
++    const auto configuration = MakeExactPeriodicConfiguration(IntegrationMode::TraditionalQuadrature);
++    Solver<3> solver(gMPI, configuration);
++    solver.Initialize();
++    solver.SetTraditionalEdgeMidpointFluxForDiagnostics(true);
++    CHECK(solver.EvaluateResidual() < 5e-12);
++    solver.Run();
++    const DNDS::index localCalls = solver.LastStepRiemannSolverCalls();
++    DNDS::index globalCalls = 0;
++    MPI_Allreduce(&localCalls, &globalCalls, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
++    CHECK(globalCalls == 3 * solver.EdgeTopology().NumEdgeGlobal());
++    CHECK(solver.EvaluateResidual() < 5e-12);
++}
++
++TEST_CASE("NCFV reference Roe matches unfixed Roe and applies the supplied contact fix")
++{
++    const auto cfg = MakeExactPeriodicConfiguration(IntegrationMode::TraditionalQuadrature);
++    Solver<3> solver(gMPI, cfg);
++    solver.Initialize();
++    SpatialOperator<3> spatial(gMPI, solver.Mesh(), solver.EdgeTopology(), solver.Geometry(),
++                               solver.ReconstructionData(), solver.Boundaries(), cfg.algorithm.mode,
++                               cfg.reconstruction, cfg.physics, cfg.time, solver.NodeCommunication());
++    spatial.SetReferenceRoeHartenForDiagnostics(true);
++    const auto state = [&](DNDS::real rho, const Eigen::Vector3d &v, DNDS::real p)
++    {
++        Eigen::Vector<DNDS::real, 5> u;
++        u << rho, rho * v, p / (cfg.physics.gamma - 1) + 0.5 * rho * v.squaredNorm();
++        return u;
++    };
++    const auto left = state(1.0, Eigen::Vector3d(20, 10, 7), 1.0);
++    const auto right = state(1.2, Eigen::Vector3d(21, 9, 6.5), 1.1);
++    for (Eigen::Vector3d n : {Eigen::Vector3d(1, 0, 0), Eigen::Vector3d(1, 2, 3).normalized().eval()})
++    {
++        Eigen::Vector<DNDS::real, 5> expected;
++        DNDS::real lm = 0, lc = 0, lp = 0;
++        DNDS::Euler::Gas::RoeFlux_IdealGas_HartenYee<3, 0>(
++            left, right, left, right, Eigen::Vector3d::Zero().eval(), n,
++            cfg.physics.gamma, cfg.physics.gamma, expected, 0, 0, 1,
++            []() {}, lm, lc, lp);
++        const auto reference = spatial.EvaluateNumericalFluxForDiagnostics(left, right, n);
++        CHECK((reference - expected).norm() / expected.norm() < 2e-12);
++    }
++    const auto stationaryL = state(1, Eigen::Vector3d::Zero(), 1);
++    const auto stationaryR = state(2, Eigen::Vector3d::Zero(), 1);
++    const auto flux = spatial.EvaluateNumericalFluxForDiagnostics(
++        stationaryL, stationaryR, Eigen::Vector3d(1, 0, 0));
++    const DNDS::real ratio = std::sqrt(2.0);
++    const DNDS::real h = (cfg.physics.gamma / (cfg.physics.gamma - 1) +
++                          ratio * cfg.physics.gamma / (2 * (cfg.physics.gamma - 1))) / (1 + ratio);
++    const DNDS::real sound = std::sqrt((cfg.physics.gamma - 1) * h);
++    CHECK(flux(0) == doctest::Approx(-0.0375 * sound).epsilon(1e-12));
++    CHECK(flux(1) == doctest::Approx(1).epsilon(1e-12));
++    CHECK(std::abs(flux(4)) < 1e-12);
++}
++
++TEST_CASE("NCFV reference document flux agrees on closed periodic volumes")
++{
++    const auto cfg = MakeExactPeriodicConfiguration(IntegrationMode::TraditionalQuadrature);
++    Solver<3> solver(gMPI, cfg);
++    solver.Initialize();
++    SpatialOperator<3> spatial(gMPI, solver.Mesh(), solver.EdgeTopology(), solver.Geometry(),
++                               solver.ReconstructionData(), solver.Boundaries(), cfg.algorithm.mode,
++                               cfg.reconstruction, cfg.physics, cfg.time, solver.NodeCommunication());
++    spatial.Initialize();
++    spatial.SetTraditionalEdgeMidpointFluxForDiagnostics(true);
++    spatial.SetReferenceRoeHartenForDiagnostics(true);
++    NodeStatePair means, previous, literal;
++    const auto allocate = [&](NodeStatePair &field, const std::string &name)
++    {
++        field.InitPair(name, gMPI);
++        field.father->Resize(solver.Mesh()->NumNode(), 5, 1);
++        field.son->Resize(solver.NodeCommunication().NumNodeGhost(), 5, 1);
++        field.BorrowSetup(solver.NodeCommunication().Layout());
++        field.trans.initPersistentPull();
++    };
++    allocate(means, "NCFV.document.means");
++    allocate(previous, "NCFV.document.previous");
++    allocate(literal, "NCFV.document.literal");
++    for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); node++)
++    {
++        const auto x = solver.Mesh()->coords[node];
++        const DNDS::real rho = 1 + 0.1 * std::sin(2 * pi * x.x() / 10);
++        means[node] << rho, 0.2 * rho, -0.1 * rho, 0.05 * rho,
++            1 / (cfg.physics.gamma - 1) + 0.5 * rho * (0.04 + 0.01 + 0.0025);
++    }
++    spatial.EvaluateRHS(means, previous, false, false);
++    spatial.SetReferenceDocumentFluxForDiagnostics(true);
++    spatial.ResetRiemannSolverCallCount();
++    spatial.EvaluateRHS(means, literal, false, false);
++    DNDS::real localDifference = 0, globalDifference = 0;
++    for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); node++)
++        localDifference = std::max(localDifference, (literal[node] - previous[node]).norm());
++    MPI_Allreduce(&localDifference, &globalDifference, 1, DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
++    CHECK(globalDifference < 5e-12);
++    CHECK(spatial.ReferenceMeanFallbackCount() == 0);
++    CHECK(spatial.RiemannSolverCallCount() == solver.EdgeTopology().NumEdge());
++}
++
+ TEST_CASE("NCFV fixed-size compact stencils preserve coordinate-plane fields")
+ {
+     for (const auto mode : {IntegrationMode::EfficientDifferential,

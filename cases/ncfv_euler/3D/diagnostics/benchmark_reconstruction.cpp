@@ -157,6 +157,8 @@ int main(int argc, char **argv)
             const double initializeStart = MPI_Wtime();
             Solver<3> solver(mpi, cfg);
             solver.Initialize();
+            const bool midpointFlux = std::getenv("NCFV_TRADITIONAL_EDGE_MIDPOINT") != nullptr;
+            solver.SetTraditionalEdgeMidpointFluxForDiagnostics(midpointFlux);
             const double initializeSeconds = RankMaximum(mpi, MPI_Wtime() - initializeStart);
             const double initializedRSS = RankSum(mpi, PeakRSSMiB());
             const bool auditFlux = std::getenv("NCFV_AUDIT_FLUX_BUDGET") != nullptr;
@@ -168,6 +170,10 @@ int main(int argc, char **argv)
             const double marchSeconds = RankMaximum(mpi, MPI_Wtime() - marchStart);
             const double lastStepSeconds = RankMaximum(mpi, solver.LastStepTiming().totalSeconds);
             const double finalRSS = RankSum(mpi, PeakRSSMiB());
+            const DNDS::index localRiemannCalls = solver.LastStepRiemannSolverCalls();
+            DNDS::index globalRiemannCalls = 0;
+            MPI_Allreduce(&localRiemannCalls, &globalRiemannCalls, 1,
+                          DNDS::DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
             if (auditFlux)
                 finalBudget = RiemannFluxBudget(mpi, cfg, solver);
             DNDS_check_throw_info(std::abs(solver.SimulationTime() - endTime) < 1e-12,
@@ -178,6 +184,7 @@ int main(int argc, char **argv)
                     ReadDiagnostics(cfg.io.outputPrefix + ".diagnostics.csv");
                 nlohmann::ordered_json result = {
                     {"mesh", cfg.mesh.meshFile}, {"mode", mode}, {"method", method},
+                    {"traditional_edge_midpoint_flux", midpointFlux},
                     {"riemann_solver", nlohmann::ordered_json(cfg.physics.riemannSolver)},
                     {"configuration", nlohmann::ordered_json(cfg)},
                     {"nodes", solver.Mesh()->NumNodeGlobal()},
@@ -188,6 +195,7 @@ int main(int argc, char **argv)
                     {"initialization_seconds", initializeSeconds},
                     {"march_seconds", marchSeconds},
                     {"last_step_core_seconds", lastStepSeconds},
+                    {"last_step_riemann_calls", globalRiemannCalls},
                     {"initialization_peak_rss_sum_mib", initializedRSS},
                     {"final_peak_rss_sum_mib", finalRSS},
                     {"initial", initial}, {"final", final}};

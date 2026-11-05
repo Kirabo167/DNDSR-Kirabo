@@ -1,0 +1,21 @@
+/** @file acmSA2D.cpp
+ *  @brief Compiled 2-D ACM SA conservative-state executable.
+ */
+#include "ACMGPU/SingleBlockApp.hpp"
+
+/**
+ * @brief Run the acmSA2D solver command-line entry point.
+ * @param argc Number of command-line arguments, including the executable name.
+ * @param argv Argument strings selecting a case or schema/check mode and optional JSON-pointer/value overrides.
+ * @return Exit status from the dimension/model-specific application driver; zero denotes successful completion.
+ */
+int main(int argc, char *argv[])
+{
+    DNDS::MPI::Init_thread(&argc, &argv);
+    const int error = DNDS::ACMGPU::RunSingleBlockConsoleApp<
+        DNDS::ACMGPU::ACMModel::ConstantDensitySA2D>(argc, argv);
+    if (error != 0)
+        MPI_Abort(MPI_COMM_WORLD, error);
+    MPI_Finalize();
+    return error;
+}

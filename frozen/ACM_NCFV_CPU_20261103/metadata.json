@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-03T17:31:55.189766",
+  "git_head": "54c33894d1a9eed7e56d59fd816d9eebb5820a2b",
+  "description": "Current working tree, including uncommitted CPU changes. No commit created.",
+  "source_files": 1652,
+  "cpu_module_files": 307
+}

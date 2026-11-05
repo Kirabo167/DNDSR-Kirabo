@@ -131,6 +131,27 @@ endif()
 # 8. Application executables (euler, test apps, etc.)
 include(cmake/DndsApps.cmake)
 
+# Independent GPU-resident copies. The existing CPU targets keep their sources.
+option(DNDS_BUILD_GPU_SOLVERS "Build independent GPU-resident ACM/NCFV solvers" OFF)
+if(DNDS_BUILD_GPU_SOLVERS)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    add_subdirectory(src/GPU)
+    add_subdirectory(src/ACMGPU)
+    add_subdirectory(src/NCFVGPU)
+    foreach(dimension 2 3)
+        ADD_EXE_APP("acm_gpu${dimension}D" "app/ACMGPU"
+            "acm_gpu_${dimension}D;dnds_gpu_flux" ON cpp)
+        ADD_EXE_APP("acm2EQ_gpu${dimension}D" "app/ACMGPU"
+            "acm_gpu_rans_${dimension}D;dnds_gpu_flux" ON cpp)
+        ADD_EXE_APP("ncfv_euler_gpu${dimension}D" "app/NCFVGPU"
+            "ncfv_gpu_${dimension}D;dnds_gpu_flux" ON cpp)
+    endforeach()
+    add_custom_target(all_gpu_solvers DEPENDS
+        acm_gpu2D acm_gpu3D acm2EQ_gpu2D acm2EQ_gpu3D ncfv_euler_gpu2D ncfv_euler_gpu3D)
+    ADD_EXE_APP("gpu_flux_verify" "test/cpp/GPU" "dnds_gpu_flux;acm_core" ON cpp)
+endif()
+
 # 9. Doxygen documentation target
 include(cmake/DndsDocs.cmake)
 

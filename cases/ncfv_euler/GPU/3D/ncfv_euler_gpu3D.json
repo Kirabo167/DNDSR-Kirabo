@@ -1,0 +1,20 @@
+{
+    "solver": {"type": "ncfv_euler", "discretization": "NCFV", "model": "IdealGas", "fieldNVariables": 5},
+    "dimension": 3,
+    "mesh": {"meshFile": "../data/mesh/ACMVariable_verify3D.cgns"},
+    "algorithm": {"mode": "EfficientDifferential", "quadratureOrder": 4},
+    "reconstruction": {"method": "SVDLeastSquares", "stencilSelectionStrategy": "Original", "enableLimiter": true, "limitPointRecovery": true, "barthZeroOrderFallback": true},
+    "physics": {
+        "gamma": 1.4, "riemannSolver": "Roe", "boundaryMode": "FarField",
+        "initialPrimitive": [1.0, 0.1, 0.0, 0.0, 1.0],
+        "farFieldPrimitive": [1.0, 0.1, 0.0, 0.0, 1.0]
+    },
+    "initialField": {"planes": [{"a": 1, "h": -0.5, "primitive": [0.8, 0.05, 0.0, 0.0, 0.7]}]},
+    "time": {"iterations": 3, "timeStep": 0.0001, "reportInterval": 1},
+    "io": {
+        "writeVTK": true, "writeInitial": true, "writeFinal": true, "outputInterval": 1,
+        "outputPrefix": "../data/out/GPU/NCFV3D/flow", "vtkSeriesName": "../data/out/GPU/NCFV3D/series",
+        "vtkFloatEncoding": "ascii", "asciiPrecision": 17,
+        "writeFinalRestart": true, "restartPrefix": "../data/out/GPU/NCFV3D/restart"
+    }
+}

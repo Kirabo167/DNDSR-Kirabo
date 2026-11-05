@@ -27,11 +27,19 @@ def main():
     parser.add_argument("--ranks", type=int, default=8)
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--end-time", type=float, default=1.6)
+    parser.add_argument("--dt-numerator", type=float, default=2)
     parser.add_argument("--stencil", type=int, default=16)
+    parser.add_argument("--edge-midpoint", action="store_true")
+    parser.add_argument("--method", choices=["LeastSquares", "Variational"], default="LeastSquares")
+    parser.add_argument("--reference-roe", action="store_true")
+    parser.add_argument("--reference-document", action="store_true")
     args = parser.parse_args()
+    if args.reference_document:
+        args.edge_midpoint = True
+        args.reference_roe = True
     if not args.levels or min(args.levels) <= 0 or min(args.weights) < 0:
         parser.error("Levels and weights must be nonnegative, with positive levels")
-    if args.ranks < 1 or args.jobs < 1 or args.end_time <= 0 or args.stencil < 9:
+    if args.ranks < 1 or args.jobs < 1 or args.end_time <= 0 or args.dt_numerator <= 0 or args.stencil < 9:
         parser.error("Invalid ranks, jobs, end time, or stencil size")
 
     output = args.output.resolve()
@@ -43,6 +51,15 @@ def main():
     env = dict(os.environ, OMP_NUM_THREADS="1", DNDS_DIST_OMP_NUM_THREADS="1",
                OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
                HWLOC_COMPONENTS="-gl,-cuda,-nvml")
+    env.pop("NCFV_TRADITIONAL_EDGE_MIDPOINT", None)
+    if args.edge_midpoint:
+        env["NCFV_TRADITIONAL_EDGE_MIDPOINT"] = "1"
+    env.pop("NCFV_REFERENCE_ROE_HARTEN", None)
+    if args.reference_roe:
+        env["NCFV_REFERENCE_ROE_HARTEN"] = "1"
+    env.pop("NCFV_REFERENCE_DOCUMENT_FLUX", None)
+    if args.reference_document:
+        env["NCFV_REFERENCE_DOCUMENT_FLUX"] = "1"
 
     def run(case):
         level, mode, power = case
@@ -51,7 +68,7 @@ def main():
         result = raw / f"{name}.json"
         manifest_file = raw / f"{name}.manifest.json"
         mesh = ROOT / f"cases/ncfv_euler/3D/iv{level}_3d_1_dnds.cgns"
-        dt = 2 / level
+        dt = args.dt_numerator / level
         steps = round(args.end_time / dt)
         if not math.isclose(steps * dt, args.end_time, abs_tol=1e-12):
             raise ValueError(f"End time {args.end_time} is not a multiple of dt={dt}")
@@ -59,7 +76,12 @@ def main():
                    "--bind-to", "none", "-np", str(args.ranks), str(binary),
                    str(CONFIG), str(result), "entropy", str(dt), str(args.end_time),
                    str(args.stencil), mode, str(power), str(mesh)]
+        if args.method != "LeastSquares":
+            command.append(args.method)
         manifest = {"command": command, "binary_sha256": binary_hash,
+                    "edge_midpoint": args.edge_midpoint,
+                    "reference_roe": args.reference_roe,
+                    "reference_document": args.reference_document,
                     "config_sha256": config_hash,
                     "mesh_sha256": hashlib.sha256(mesh.read_bytes()).hexdigest()}
         if result.exists():
@@ -74,6 +96,14 @@ def main():
                 subprocess.run(command, cwd=ROOT / "build", env=env,
                                stdout=log, stderr=subprocess.STDOUT, check=True)
         data = json.loads(result.read_text())
+        if data.get("reference_document_flux", False) != args.reference_document:
+            raise RuntimeError(f"Unexpected reference document implementation: {result}")
+        if data.get("reference_roe_harten", False) != args.reference_roe:
+            raise RuntimeError(f"Unexpected Roe implementation: {result}")
+        if data.get("method", "LeastSquares") != args.method:
+            raise RuntimeError(f"Unexpected reconstruction method: {result}")
+        if data.get("traditional_edge_midpoint_flux") != args.edge_midpoint:
+            raise RuntimeError(f"Unexpected interface flux selection: {result}")
         if data["problem"] != "entropy" or data["mode"] != mode or data["mpi_ranks"] != args.ranks:
             raise RuntimeError(f"Unexpected result metadata: {result}")
         density_mean = data["mean_conservative"]["L2"][0]

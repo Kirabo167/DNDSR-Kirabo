@@ -30,7 +30,8 @@ p=100+\frac{A^2}{4}(\cos 2x+\cos 2y).
 对每个节点的动量右端误差向量 `eᵢ`，以对偶体积 `Vᵢ` 定义
 `L₂=[ΣVᵢ|eᵢ|²/ΣVᵢ]^(1/2)`。相邻加密级别的观测阶为
 `p=log₂(L₂(N)/L₂(2N))`。原始数值见 [metrics.csv](metrics.csv)，
-图见 [convergence.svg](convergence.svg)。
+图见 [convergence.svg](convergence.svg)，可直接查看和筛选的 Excel 工作簿见
+[taylor_green_2d_rhs_accuracy.xlsx](taylor_green_2d_rhs_accuracy.xlsx)。
 
 ## 结果
 
@@ -66,12 +67,12 @@ p=100+\frac{A^2}{4}(\cos 2x+\cos 2y).
 
 ```bash
 cmake --build build -t ncfv_taylor_green_2d_rhs_probe -j4
-venv/bin/python cases/NCFV/diagnostics/run_taylor_green_2d_rhs.py
+venv/bin/python cases/ncfv_euler/3D/diagnostics/run_taylor_green_2d_rhs.py
 ```
 
 默认脚本使用 `data/mesh/taylor_green/tgv_hex_{8,16,32,64,128}.cgns`，运行
 `t=0,8` 的两种积分模式，并写出 CSV、SVG 与每组运行日志。源代码为
-`cases/NCFV/diagnostics/taylor_green_2d_rhs_probe.cpp`。数据来源于
+`cases/ncfv_euler/3D/diagnostics/taylor_green_2d_rhs_probe.cpp`。数据来源于
 [二维 TGV 解析解文献](https://doi.org/10.1063/5.0159551)；实现中压力的
 空间常数 `100` 不影响解析动量方程。
 

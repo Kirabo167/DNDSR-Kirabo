@@ -1,0 +1,1527 @@
+#include "NCFVReconstruction.hpp"
+
+#include "DNDS/Errors.hpp"
+
+#include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <set>
+
+namespace DNDS::NCFVGPU
+{
+    namespace
+    {
+        /**
+         * @brief Validate active reconstruction scales and compute their reciprocals.
+         * @param lengths Three reference lengths; active entries must be finite and strictly positive.
+         * @param dimension Active spatial dimension, two or three.
+         * @return Three reciprocals, with inactive components left at one.
+         */
+        Vector3 InverseReferenceLengths(const Vector3 &lengths, int dimension)
+        {
+            DNDS_check_throw_info(dimension == 2 || dimension == 3,
+                                  "NCFV quadratic basis requires dimension 2 or 3");
+            DNDS_check_throw_info(lengths.head(dimension).allFinite() &&
+                                      lengths.head(dimension).minCoeff() > verySmallReal,
+                                  "NCFV reconstruction has invalid reference lengths");
+            Vector3 inverse = Vector3::Ones();
+            inverse.head(dimension) = lengths.head(dimension).cwiseInverse();
+            return inverse;
+        }
+
+        /**
+         * @brief Evaluate normalized cubic Taylor modes used to assess stencil truncation error.
+         * @param displacement Physical point-minus-anchor offset.
+         * @param referenceLengths Positive anchor normalization lengths.
+         * @param dimension Active dimension, two or three.
+         * @return Four cubic modes in 2-D or ten in 3-D, with Taylor factorial scaling.
+         */
+        Eigen::VectorXd CubicPointBasis(
+            const Vector3 &displacement,
+            const Vector3 &referenceLengths,
+            int dimension)
+        {
+            const Vector3 x = displacement.cwiseProduct(
+                InverseReferenceLengths(referenceLengths, dimension));
+            if (dimension == 2)
+            {
+                Eigen::VectorXd basis(4);
+                basis << x.x() * x.x() * x.x() / 6.0,
+                    x.x() * x.x() * x.y() / 2.0,
+                    x.x() * x.y() * x.y() / 2.0,
+                    x.y() * x.y() * x.y() / 6.0;
+                return basis;
+            }
+            Eigen::VectorXd basis(10);
+            basis << x.x() * x.x() * x.x() / 6.0,
+                x.x() * x.x() * x.y() / 2.0,
+                x.x() * x.x() * x.z() / 2.0,
+                x.x() * x.y() * x.y() / 2.0,
+                x.x() * x.y() * x.z(),
+                x.x() * x.z() * x.z() / 2.0,
+                x.y() * x.y() * x.y() / 6.0,
+                x.y() * x.y() * x.z() / 2.0,
+                x.y() * x.z() * x.z() / 2.0,
+                x.z() * x.z() * x.z() / 6.0;
+            return basis;
+        }
+
+        /**
+         * @brief Find and emphasize weakly resolved polynomial directions of a weighted stencil matrix.
+         * @param weighted Distance-weighted design matrix, with stencil equations as rows and basis modes as
+         *     columns.
+         * @param method SVDLeastSquares selects singular vectors; other supported methods use normal-matrix
+         *     eigenvectors.
+         * @return Basis-direction matrix with inverse-strength scaling; identity is returned for degenerate/failed
+         *     decompositions.
+         */
+        Eigen::MatrixXd WeightedWeakDirections(
+            const Eigen::MatrixXd &weighted,
+            ReconstructionMethod method)
+        {
+            const Eigen::Index nBasis = weighted.cols();
+            Eigen::VectorXd singularValues;
+            Eigen::MatrixXd directions;
+            if (method == ReconstructionMethod::SVDLeastSquares)
+            {
+                Eigen::JacobiSVD<Eigen::MatrixXd> svd(
+                    weighted, Eigen::ComputeFullV);
+                singularValues = svd.singularValues();
+                directions = svd.matrixV();
+            }
+            else
+            {
+                const Eigen::MatrixXd normalMatrix =
+                    weighted.transpose() * weighted;
+                Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(
+                    normalMatrix);
+                if (eigen.info() != Eigen::Success)
+                    return Eigen::MatrixXd::Identity(nBasis, nBasis);
+                singularValues = eigen.eigenvalues()
+                                     .cwiseMax(0.0)
+                                     .cwiseSqrt();
+                directions = eigen.eigenvectors();
+            }
+
+            const real largest =
+                singularValues.size() ? singularValues.maxCoeff() : 0;
+            if (largest <= verySmallReal)
+                return Eigen::MatrixXd::Identity(nBasis, nBasis);
+            const real regularization = std::max(
+                largest * 1e-6, verySmallReal);
+            for (Eigen::Index i = 0; i < nBasis; i++)
+            {
+                const real singular =
+                    i < singularValues.size() ? singularValues(i) : 0;
+                directions.col(i) *=
+                    largest / std::max(singular, regularization);
+            }
+            return directions;
+        }
+
+        struct WeightedLeastSquaresOperator
+        {
+            Eigen::MatrixXd inverse;
+            int rank = 0;
+            real condition = veryLargeReal;
+        };
+
+        /**
+         * @brief Build a weighted polynomial recovery operator and estimate its rank and condition number.
+         * @param weighted Already row-weighted design matrix, with stencil equations as rows.
+         * @param weights Row weights additionally applied to the unweighted state-jump right-hand side.
+         * @param method Selects truncated SVD or full-rank normal-equation LDLT inversion.
+         * @param relativeTolerance Relative singular-value threshold for rank decisions.
+         * @return Recovery inverse, accepted numerical rank, and condition estimate; failed normal-equation solves
+         *     leave an empty inverse.
+         */
+        WeightedLeastSquaresOperator BuildWeightedLeastSquaresOperator(
+            const Eigen::MatrixXd &weighted,
+            const Eigen::VectorXd &weights,
+            ReconstructionMethod method,
+            real relativeTolerance)
+        {
+            WeightedLeastSquaresOperator result;
+            const Eigen::Index nBasis = weighted.cols();
+            if (method == ReconstructionMethod::SVDLeastSquares)
+            {
+                Eigen::JacobiSVD<Eigen::MatrixXd> svd(
+                    weighted, Eigen::ComputeThinU | Eigen::ComputeThinV);
+                const auto singularValues = svd.singularValues();
+                const real largest = singularValues.size()
+                                         ? singularValues(0)
+                                         : 0;
+                const real cutoff = relativeTolerance * largest;
+                Eigen::VectorXd inverseSingular = singularValues;
+                real smallestAccepted = veryLargeReal;
+                for (Eigen::Index i = 0;
+                     i < singularValues.size(); i++)
+                {
+                    if (singularValues(i) > cutoff)
+                    {
+                        inverseSingular(i) = 1.0 / singularValues(i);
+                        result.rank++;
+                        smallestAccepted = singularValues(i);
+                    }
+                    else
+                        inverseSingular(i) = 0;
+                }
+                result.condition = result.rank == nBasis
+                                       ? largest / smallestAccepted
+                                       : veryLargeReal;
+                result.inverse =
+                    svd.matrixV() * inverseSingular.asDiagonal() *
+                    svd.matrixU().transpose() * weights.asDiagonal();
+                return result;
+            }
+
+            const Eigen::MatrixXd normalMatrix =
+                weighted.transpose() * weighted;
+            Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eigen(
+                normalMatrix, Eigen::EigenvaluesOnly);
+            if (eigen.info() != Eigen::Success ||
+                eigen.eigenvalues().size() != nBasis)
+                return result;
+
+            const auto eigenvalues = eigen.eigenvalues();
+            const real largestSquared = std::max<real>(
+                eigenvalues(nBasis - 1), 0);
+            const real cutoffSquared =
+                std::max(relativeTolerance * relativeTolerance,
+                         std::numeric_limits<real>::epsilon()) *
+                largestSquared;
+            real smallestAcceptedSquared = veryLargeReal;
+            for (Eigen::Index i = 0; i < eigenvalues.size(); i++)
+                if (eigenvalues(i) > cutoffSquared)
+                {
+                    result.rank++;
+                    smallestAcceptedSquared = std::min(
+                        smallestAcceptedSquared, eigenvalues(i));
+                }
+            result.condition = result.rank == nBasis
+                                   ? std::sqrt(largestSquared /
+                                               smallestAcceptedSquared)
+                                   : veryLargeReal;
+            if (result.rank != nBasis)
+                return result;
+
+            Eigen::LDLT<Eigen::MatrixXd> factorization(normalMatrix);
+            if (factorization.info() != Eigen::Success)
+            {
+                result.rank = 0;
+                result.condition = veryLargeReal;
+                return result;
+            }
+            result.inverse = factorization.solve(weighted.transpose()) *
+                             weights.asDiagonal();
+            if (factorization.info() != Eigen::Success ||
+                !result.inverse.allFinite())
+            {
+                result.inverse.resize(0, 0);
+                result.rank = 0;
+                result.condition = veryLargeReal;
+            }
+            return result;
+        }
+
+        /**
+         * @brief Form physical second derivatives of the normalized quadratic basis.
+         * @param referenceLengths Positive normalization lengths in active directions.
+         * @param dimension Spatial dimension, two or three.
+         * @return dimension*dimension by BasisSize matrix with Hessian directions flattened in row-major (i,j)
+         *     order.
+         */
+        Eigen::MatrixXd QuadraticHessianRows(
+            const Vector3 &referenceLengths, int dimension)
+        {
+            const Vector3 inverse = InverseReferenceLengths(
+                referenceLengths, dimension);
+            const int nBasis = dimension + dimension * (dimension + 1) / 2;
+            Eigen::MatrixXd hessian = Eigen::MatrixXd::Zero(
+                dimension * dimension, nBasis);
+            if (dimension == 2)
+            {
+                hessian(0, 2) = inverse.x() * inverse.x();
+                hessian(1, 3) = inverse.x() * inverse.y();
+                hessian(2, 3) = inverse.x() * inverse.y();
+                hessian(3, 4) = inverse.y() * inverse.y();
+            }
+            else
+            {
+                hessian(0, 3) = inverse.x() * inverse.x();
+                hessian(1, 4) = hessian(3, 4) =
+                    inverse.x() * inverse.y();
+                hessian(2, 5) = hessian(6, 5) =
+                    inverse.x() * inverse.z();
+                hessian(4, 6) = inverse.y() * inverse.y();
+                hessian(5, 7) = hessian(7, 7) =
+                    inverse.y() * inverse.z();
+                hessian(8, 8) = inverse.z() * inverse.z();
+            }
+            return hessian;
+        }
+
+        /**
+         * @brief Build value, gradient, and Hessian rows for a variational neighbor constraint.
+         * @param displacement Physical evaluation-point offset from the polynomial anchor.
+         * @param referenceLengths Positive normalization lengths of the anchor polynomial.
+         * @param meanBasis Anchor dual-volume mean basis subtracted from the point-value row.
+         * @param edgeLength Physical endpoint distance setting derivative penalty scales.
+         * @param sqrtWeight Weight multiplier for the value and first-derivative constraint rows.
+         * @param dimension Spatial dimension, two or three.
+         * @return Constraint matrix with one value row, dimension gradient rows, and dimension*dimension Hessian
+         *     rows.
+         */
+        Eigen::MatrixXd VariationalDifferentialRows(
+            const Vector3 &displacement,
+            const Vector3 &referenceLengths,
+            const Eigen::VectorXd &meanBasis,
+            real edgeLength,
+            real sqrtWeight,
+            int dimension)
+        {
+            const int nBasis = dimension + dimension * (dimension + 1) / 2;
+            Eigen::MatrixXd rows(
+                1 + dimension + dimension * dimension, nBasis);
+            rows.row(0) =
+                sqrtWeight * (Reconstruction::EvaluateBasis(
+                     displacement, referenceLengths, dimension) -
+                 meanBasis)
+                    .transpose();
+            rows.middleRows(1, dimension) =
+                sqrtWeight * 0.5 * edgeLength *
+                Reconstruction::EvaluateBasisGradient(
+                    displacement, referenceLengths, dimension);
+            rows.bottomRows(dimension * dimension) =
+                0.25 * edgeLength * edgeLength *
+                QuadraticHessianRows(referenceLengths, dimension);
+            return rows;
+        }
+    }
+
+    int Reconstruction::QuadraticBasisSize(int dimension)
+    {
+        DNDS_check_throw_info(dimension == 2 || dimension == 3,
+                              "NCFV quadratic basis requires dimension 2 or 3");
+        return dimension + dimension * (dimension + 1) / 2;
+    }
+
+    Eigen::VectorXd Reconstruction::EvaluateBasis(
+        const Vector3 &displacement,
+        const Vector3 &referenceLengths,
+        int dimension)
+    {
+        const Vector3 coordinate = displacement.cwiseProduct(
+            InverseReferenceLengths(referenceLengths, dimension));
+        Eigen::VectorXd basis(QuadraticBasisSize(dimension));
+        if (dimension == 2)
+        {
+            basis << coordinate.x(), coordinate.y(),
+                0.5 * sqr(coordinate.x()),
+                coordinate.x() * coordinate.y(),
+                0.5 * sqr(coordinate.y());
+        }
+        else
+        {
+            basis << coordinate.x(), coordinate.y(), coordinate.z(),
+                0.5 * sqr(coordinate.x()),
+                coordinate.x() * coordinate.y(),
+                coordinate.x() * coordinate.z(),
+                0.5 * sqr(coordinate.y()),
+                coordinate.y() * coordinate.z(),
+                0.5 * sqr(coordinate.z());
+        }
+        return basis;
+    }
+
+    Eigen::MatrixXd Reconstruction::EvaluateBasisGradient(
+        const Vector3 &displacement,
+        const Vector3 &referenceLengths,
+        int dimension)
+    {
+        const Vector3 inverseLengths = InverseReferenceLengths(referenceLengths, dimension);
+        const Vector3 coordinate = displacement.cwiseProduct(inverseLengths);
+        Eigen::MatrixXd gradient(
+            dimension, QuadraticBasisSize(dimension));
+        gradient.setZero();
+        if (dimension == 2)
+        {
+            gradient.row(0) << 1.0, 0.0,
+                coordinate.x(), coordinate.y(), 0.0;
+            gradient.row(1) << 0.0, 1.0,
+                0.0, coordinate.x(), coordinate.y();
+        }
+        else
+        {
+            gradient.row(0) << 1.0, 0.0, 0.0,
+                coordinate.x(), coordinate.y(), coordinate.z(),
+                0.0, 0.0, 0.0;
+            gradient.row(1) << 0.0, 1.0, 0.0,
+                0.0, coordinate.x(), 0.0,
+                coordinate.y(), coordinate.z(), 0.0;
+            gradient.row(2) << 0.0, 0.0, 1.0,
+                0.0, 0.0, coordinate.x(),
+                0.0, coordinate.y(), coordinate.z();
+        }
+        return inverseLengths.head(dimension).asDiagonal() * gradient;
+    }
+
+    Eigen::VectorXd Reconstruction::MeanBasis(
+        const RawMoments &moments,
+        const Vector3 &anchor,
+        const Vector3 &referenceLengths,
+        int dimension)
+    {
+        DNDS_check_throw_info(moments.measure > verySmallReal,
+                              "NCFV reconstruction received a zero-volume moment set");
+        const Vector3 mean = moments.first / moments.measure;
+        Matrix3 centredSecond = moments.second / moments.measure;
+        centredSecond -= anchor * mean.transpose();
+        centredSecond -= mean * anchor.transpose();
+        centredSecond += anchor * anchor.transpose();
+
+        Eigen::VectorXd result(QuadraticBasisSize(dimension));
+        const Vector3 inverseLengths = InverseReferenceLengths(referenceLengths, dimension);
+        const Vector3 first = (mean - anchor).cwiseProduct(inverseLengths);
+        centredSecond = (inverseLengths.asDiagonal() * centredSecond *
+                         inverseLengths.asDiagonal())
+                            .eval();
+        if (dimension == 2)
+        {
+            result << first.x(), first.y(),
+                0.5 * centredSecond(0, 0), centredSecond(0, 1),
+                0.5 * centredSecond(1, 1);
+        }
+        else
+        {
+            result << first.x(), first.y(), first.z(),
+                0.5 * centredSecond(0, 0), centredSecond(0, 1), centredSecond(0, 2),
+                0.5 * centredSecond(1, 1), centredSecond(1, 2),
+                0.5 * centredSecond(2, 2);
+        }
+        return result;
+    }
+
+    void Reconstruction::BuildNodeGraph()
+    {
+        _nodeGraph.assign(
+            static_cast<std::size_t>(_nodeHalo.NumNodeProc()), {});
+        _nodeGraphGlobals.assign(
+            static_cast<std::size_t>(_mesh->NumNode()), {});
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            const auto &rings = _nodeHalo.RingsGlobal(iNode);
+            if (rings.empty())
+                continue;
+            _nodeGraphGlobals[static_cast<std::size_t>(iNode)] = rings.front();
+            auto &neighbors = _nodeGraph[static_cast<std::size_t>(iNode)];
+            neighbors.reserve(rings.front().size());
+            for (index global : rings.front())
+                neighbors.push_back(_nodeHalo.GlobalToLocal(global));
+        }
+    }
+
+    ReconstructionOperator Reconstruction::BuildOperator(index iNode) const
+    {
+        const int dimension = _mesh->getDim();
+        const int nBasis = QuadraticBasisSize(dimension);
+        const bool rankAware = _settings.stencilSelectionStrategy == StencilSelectionStrategy::RankAware;
+        const int targetStencilSize = std::max(
+            nBasis,
+            static_cast<int>(std::ceil(_settings.stencilSizeFactor * nBasis)));
+        const index graphNode = iNode;
+        const Vector3 anchor = Vector3::Zero();
+        const real lengthScale = LengthScale(iNode);
+        const auto momentsAt = [&](index node)
+        {
+            return _nodeHalo.MomentsRelative(iNode, node);
+        };
+
+        ReconstructionOperator result;
+        result.node = iNode;
+        result.lengthScale = lengthScale;
+        result.referenceLengths = ReferenceLengths(iNode);
+        result.targetBasisMean = MeanBasis(
+            momentsAt(graphNode), anchor, result.referenceLengths, dimension);
+
+        struct Candidate
+        {
+            index node = UnInitIndex;
+            index global = UnInitIndex;
+            int ring = 0;
+            std::array<long long, 4> geometricKey{};
+        };
+
+        std::set<index> visited{graphNode};
+        std::vector<Candidate> candidates;
+        const auto &rings = _nodeHalo.RingsGlobal(iNode);
+        for (int ring = 1;
+             ring <= _settings.maximumStencilRings &&
+             ring <= static_cast<int>(rings.size());
+             ring++)
+            for (index global : rings[static_cast<std::size_t>(ring - 1)])
+            {
+                const index neighbor = _nodeHalo.GlobalToLocal(global);
+                if (!visited.insert(neighbor).second)
+                    continue;
+                const Vector3 scaledDisplacement =
+                    _nodeHalo.Displacement(iNode, neighbor) / lengthScale;
+                std::array<long long, 4> geometricKey{
+                    std::llround(scaledDisplacement.squaredNorm() * 1e12),
+                    std::llround(scaledDisplacement(0) * 1e10),
+                    std::llround(scaledDisplacement(1) * 1e10),
+                    std::llround(scaledDisplacement(2) * 1e10)};
+                if (rankAware)
+                {
+                    // Derive both keys from the same rounded coordinates to
+                    // keep geometric ties stable after MPI repartitioning.
+                    Vector3 orderingDisplacement;
+                    for (int d = 0; d < 3; d++)
+                        orderingDisplacement(d) = geometricKey[d + 1] * 1e-10;
+                    geometricKey[0] = std::llround(orderingDisplacement.squaredNorm() * 1e12);
+                }
+                candidates.push_back({neighbor, global, ring, geometricKey});
+            }
+
+        // Prefer direct graph neighbours when completing the compact stencil.
+        // Geometry, rather than rank-local numbering, orders equal-ring points.
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const Candidate &left, const Candidate &right)
+                  {
+                      const bool leftDirect = left.ring == 1;
+                      const bool rightDirect = right.ring == 1;
+                      if (leftDirect != rightDirect)
+                          return leftDirect;
+                      if (left.geometricKey != right.geometricKey)
+                          return left.geometricKey < right.geometricKey;
+                      if (left.ring != right.ring)
+                          return left.ring < right.ring;
+                      return left.global < right.global;
+                  });
+
+        DNDS_check_throw_info(
+            static_cast<int>(candidates.size()) >= nBasis,
+            fmt::format("NCFV node {} has only {} stencil candidates for {} quadratic unknowns",
+                        _mesh->NodeIndexLocal2Global(iNode), candidates.size(), nBasis));
+
+        Eigen::MatrixXd candidateMatrix(candidates.size(), nBasis);
+        const int nCubic = dimension == 2 ? 4 : 10;
+        Eigen::MatrixXd candidateCubic(candidates.size(), nCubic);
+        Eigen::VectorXd candidateWeights(candidates.size());
+        for (std::size_t row = 0; row < candidates.size(); row++)
+        {
+            const index neighbor = candidates[row].node;
+            candidateMatrix.row(static_cast<Eigen::Index>(row)) =
+                (MeanBasis(momentsAt(neighbor), anchor,
+                           result.referenceLengths, dimension) -
+                 result.targetBasisMean)
+                    .transpose();
+            candidateCubic.row(static_cast<Eigen::Index>(row)) =
+                CubicPointBasis(
+                    _nodeHalo.Displacement(iNode, neighbor),
+                    result.referenceLengths, dimension)
+                    .transpose();
+            const real normalizedDistance = std::max(
+                _nodeHalo.Displacement(iNode, neighbor).norm() /
+                    lengthScale,
+                _settings.distanceWeightFloor);
+            candidateWeights(static_cast<Eigen::Index>(row)) =
+                std::pow(normalizedDistance,
+                         -_settings.distanceWeightPower);
+        }
+
+        std::vector<index> stencil;
+        Eigen::MatrixXd acceptedInverse;
+        Eigen::MatrixXd acceptedCubic;
+        int acceptedRank = 0;
+        real acceptedCondition = veryLargeReal;
+        bool accepted = false;
+        const int maximumCandidateRing = std::min(
+            _settings.maximumStencilRings,
+            static_cast<int>(rings.size()));
+        // Original keeps its single ring search. RankAware first searches for
+        // reliable reflected sets, then permits compact spectral fallback.
+        const int selectionPasses = rankAware && dimension == 3 && !_settings.completeStencilRings ? 2 : 1;
+        for (int selectionPass = 0; selectionPass < selectionPasses && !accepted; selectionPass++)
+        for (int allowedRing = 1;
+             allowedRing <= maximumCandidateRing && !accepted;
+             allowedRing++)
+        {
+            std::vector<int> pool;
+            for (std::size_t candidate = 0;
+                 candidate < candidates.size(); candidate++)
+                if (candidates[candidate].ring <= allowedRing)
+                    pool.push_back(static_cast<int>(candidate));
+            if (static_cast<int>(pool.size()) < nBasis)
+                continue;
+            if (static_cast<int>(pool.size()) < targetStencilSize &&
+                allowedRing != maximumCandidateRing)
+                continue;
+
+            std::vector<int> selectionOrder;
+            selectionOrder.reserve(pool.size());
+            std::vector<bool> selected(candidates.size(), false);
+            Vector3 displacementBalance = Vector3::Zero();
+            Eigen::VectorXd cubicBalance = Eigen::VectorXd::Zero(nCubic);
+            const auto select = [&](int candidate)
+            {
+                if (!selected[static_cast<std::size_t>(candidate)])
+                {
+                    selected[static_cast<std::size_t>(candidate)] = true;
+                    selectionOrder.push_back(candidate);
+                    displacementBalance +=
+                        _nodeHalo.Displacement(
+                            iNode,
+                            candidates[static_cast<std::size_t>(candidate)].node)
+                            .cwiseQuotient(result.referenceLengths);
+                    cubicBalance += candidateCubic.row(candidate).transpose();
+                }
+            };
+
+            // A first-ring node is topologically indispensable. Retain the
+            // complete one-ring before geometrically compacting the stencil.
+            for (int candidate : pool)
+                if (candidates[static_cast<std::size_t>(candidate)].ring == 1)
+                    select(candidate);
+
+            const int initialStencilSize = _settings.completeStencilRings ? static_cast<int>(pool.size()) : std::min(
+                std::max({nBasis, targetStencilSize,
+                          static_cast<int>(selectionOrder.size())}),
+                static_cast<int>(pool.size()));
+
+            const auto quantize = [](real value)
+            {
+                return std::llround(
+                    std::clamp(value, 0.0, 1e8) * 1e10);
+            };
+            const auto weakDirections = [&]() -> Eigen::MatrixXd
+            {
+                if (selectionOrder.empty())
+                    return Eigen::MatrixXd::Identity(nBasis, nBasis).eval();
+                Eigen::MatrixXd selectedMatrix(
+                    static_cast<Eigen::Index>(selectionOrder.size()), nBasis);
+                for (std::size_t row = 0; row < selectionOrder.size(); row++)
+                {
+                    const int candidate = selectionOrder[row];
+                    selectedMatrix.row(static_cast<Eigen::Index>(row)) =
+                        candidateWeights(candidate) *
+                        candidateMatrix.row(candidate);
+                }
+                return WeightedWeakDirections(
+                    selectedMatrix, _settings.method);
+            };
+            const auto coverageScore = [&](
+                                           int candidate,
+                                           const Eigen::MatrixXd &weak)
+            {
+                const Eigen::RowVectorXd row =
+                    candidateWeights(candidate) *
+                    candidateMatrix.row(candidate);
+                return (row * weak).squaredNorm();
+            };
+            const auto singletonScore = [&](
+                                             int candidate,
+                                             const Eigen::MatrixXd &weak)
+            {
+                const Vector3 displacement =
+                    _nodeHalo.Displacement(
+                        iNode,
+                        candidates[static_cast<std::size_t>(candidate)].node)
+                        .cwiseQuotient(result.referenceLengths);
+                const Eigen::VectorXd cubic =
+                    cubicBalance + candidateCubic.row(candidate).transpose();
+                const real coverage = coverageScore(candidate, weak);
+                return std::array<long long, 5>{
+                    quantize(1.0 / std::max(coverage, 1e-30)),
+                    quantize(cubic.squaredNorm()),
+                    quantize((displacementBalance + displacement).squaredNorm()),
+                    quantize(displacement.squaredNorm()),
+                    static_cast<long long>(candidate)};
+            };
+            const auto bestSingleton = [&]()
+            {
+                int best = -1;
+                std::array<long long, 5> bestScore;
+                bestScore.fill(std::numeric_limits<long long>::max());
+                const Eigen::MatrixXd weak = weakDirections();
+                for (int candidate : pool)
+                    if (!selected[static_cast<std::size_t>(candidate)])
+                    {
+                        const auto score = singletonScore(candidate, weak);
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            best = candidate;
+                        }
+                    }
+                return best;
+            };
+
+            // Add approximately opposite pairs. Weak spectral directions are
+            // reinforced first; among equally useful choices the
+            // normalized cubic imbalance, first-moment imbalance, and pair
+            // opposition defect decide. This avoids traversal-order truncation
+            // and favours cancellation of the leading reconstruction error.
+            while (static_cast<int>(selectionOrder.size()) + 1 <
+                   initialStencilSize)
+            {
+                int bestLeft = -1;
+                int bestRight = -1;
+                std::array<long long, 7> bestScore;
+                bestScore.fill(std::numeric_limits<long long>::max());
+                const Eigen::MatrixXd weak = weakDirections();
+                for (std::size_t i = 0; i < pool.size(); i++)
+                {
+                    const int left = pool[i];
+                    if (selected[static_cast<std::size_t>(left)])
+                        continue;
+                    const Vector3 leftDisplacement =
+                        _nodeHalo.Displacement(
+                            iNode, candidates[static_cast<std::size_t>(left)].node)
+                            .cwiseQuotient(result.referenceLengths);
+                    for (std::size_t j = i + 1; j < pool.size(); j++)
+                    {
+                        const int right = pool[j];
+                        if (selected[static_cast<std::size_t>(right)])
+                            continue;
+                        const Vector3 rightDisplacement =
+                            _nodeHalo.Displacement(
+                                iNode, candidates[static_cast<std::size_t>(right)].node)
+                                .cwiseQuotient(result.referenceLengths);
+                        const Vector3 pairDisplacement =
+                            leftDisplacement + rightDisplacement;
+                        const Eigen::VectorXd cubic =
+                            cubicBalance + candidateCubic.row(left).transpose() +
+                            candidateCubic.row(right).transpose();
+                        const real coverage =
+                            coverageScore(left, weak) +
+                            coverageScore(right, weak);
+                        const auto score = std::array<long long, 7>{
+                            quantize(1.0 / std::max(coverage, 1e-30)),
+                            quantize(cubic.squaredNorm()),
+                            quantize((displacementBalance + pairDisplacement).squaredNorm()),
+                            quantize(pairDisplacement.squaredNorm()),
+                            quantize(std::max(leftDisplacement.squaredNorm(),
+                                              rightDisplacement.squaredNorm())),
+                            static_cast<long long>(left),
+                            static_cast<long long>(right)};
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            bestLeft = left;
+                            bestRight = right;
+                        }
+                    }
+                }
+                if (bestLeft < 0)
+                    break;
+                select(bestLeft);
+                select(bestRight);
+            }
+            while (static_cast<int>(selectionOrder.size()) < initialStencilSize)
+            {
+                const int candidate = bestSingleton();
+                DNDS_check_throw_info(candidate >= 0,
+                                      "NCFV compact stencil selection exhausted its pool");
+                select(candidate);
+            }
+
+            bool rejectReflectedStencil = false;
+            if (dimension == 3 && !_settings.completeStencilRings && (!rankAware || selectionPass == 0))
+            {
+                // Select complete directional groups within the original point
+                // budget. In particular, centrosymmetric pairs alone need not
+                // preserve a field independent of one coordinate. Available
+                // coordinate reflections form groups of at most eight points;
+                // their members consume the same fixed stencil budget.
+                const std::vector<int> compactFallback = selectionOrder;
+                std::vector<Vector3> directions(candidates.size());
+                std::vector<int> parent(candidates.size());
+                std::map<std::array<long long, 3>, int> position;
+                const auto positionKey = [](const Vector3 &point)
+                {
+                    return std::array<long long, 3>{
+                        std::llround(point(0) * 1e9),
+                        std::llround(point(1) * 1e9),
+                        std::llround(point(2) * 1e9)};
+                };
+                for (int candidate : pool)
+                {
+                    parent[static_cast<std::size_t>(candidate)] = candidate;
+                    const Vector3 offset = _nodeHalo.Displacement(
+                        iNode, candidates[static_cast<std::size_t>(candidate)].node)
+                                               .cwiseQuotient(result.referenceLengths);
+                    directions[static_cast<std::size_t>(candidate)] = offset.normalized();
+                    position.emplace(positionKey(offset), candidate);
+                }
+                const auto root = [&](int candidate)
+                {
+                    while (parent[static_cast<std::size_t>(candidate)] != candidate)
+                        candidate = parent[static_cast<std::size_t>(candidate)];
+                    return candidate;
+                };
+                for (const auto &[key, candidate] : position)
+                    for (int axis = 0; axis < dimension; axis++)
+                    {
+                        auto reflected = key;
+                        reflected[axis] = -reflected[axis];
+                        const auto found = position.find(reflected);
+                        if (found != position.end())
+                        {
+                            const int left = root(candidate), right = root(found->second);
+                            parent[static_cast<std::size_t>(std::max(left, right))] = std::min(left, right);
+                        }
+                    }
+                std::map<int, std::vector<int>> grouped;
+                for (int candidate : pool)
+                    grouped[root(candidate)].push_back(candidate);
+                std::vector<std::vector<int>> groups;
+                int mandatoryCount = 0;
+                const auto isMandatory = [&](const std::vector<int> &group)
+                {
+                    return std::any_of(group.begin(), group.end(), [&](int candidate)
+                                       { return candidates[static_cast<std::size_t>(candidate)].ring == 1; });
+                };
+                for (const auto &[key, group] : grouped)
+                {
+                    groups.push_back(group);
+                    if (isMandatory(group))
+                        mandatoryCount += static_cast<int>(group.size());
+                }
+                // A nonsymmetric first ring may already consume the budget.
+                // Keep its mandatory nodes and score the other nodes singly.
+                if (mandatoryCount > initialStencilSize)
+                {
+                    groups.clear();
+                    for (int candidate : pool)
+                        groups.push_back({candidate});
+                }
+                selectionOrder.clear();
+                std::fill(selected.begin(), selected.end(), false);
+                displacementBalance.setZero();
+                cubicBalance.setZero();
+                std::vector<bool> used(groups.size(), false);
+                for (std::size_t group = 0; group < groups.size(); group++)
+                    if (isMandatory(groups[group]))
+                    {
+                        used[group] = true;
+                        for (int candidate : groups[group])
+                            select(candidate);
+                    }
+                std::vector<Vector3> probes;
+                for (int x = -1; x <= 1; x++)
+                    for (int y = -1; y <= 1; y++)
+                        for (int z = -1; z <= 1; z++)
+                            if (x || y || z)
+                                probes.push_back(Vector3(x, y, z).normalized());
+
+                while (static_cast<int>(selectionOrder.size()) < initialStencilSize)
+                {
+                    const int remaining = initialStencilSize - static_cast<int>(selectionOrder.size());
+                    std::vector<std::size_t> available;
+                    for (std::size_t group = 0; group < groups.size(); group++)
+                        if (!used[group])
+                            available.push_back(group);
+                    // Prefix/suffix subset sums ensure that choosing a group
+                    // still permits filling the budget exactly, without
+                    // truncating its reflected directions or adding points.
+                    std::vector<std::vector<bool>> prefix(available.size() + 1, std::vector<bool>(remaining + 1));
+                    auto suffix = prefix;
+                    prefix.front()[0] = suffix.back()[0] = true;
+                    for (std::size_t j = 0; j < available.size(); j++)
+                    {
+                        const int count = static_cast<int>(groups[available[j]].size());
+                        prefix[j + 1] = prefix[j];
+                        for (int total = count; total <= remaining; total++)
+                            prefix[j + 1][total] = prefix[j + 1][total] || prefix[j][total - count];
+                    }
+                    for (std::size_t j = available.size(); j-- > 0;)
+                    {
+                        const int count = static_cast<int>(groups[available[j]].size());
+                        suffix[j] = suffix[j + 1];
+                        for (int total = count; total <= remaining; total++)
+                            suffix[j][total] = suffix[j][total] || suffix[j + 1][total - count];
+                    }
+                    const Eigen::MatrixXd weak = weakDirections();
+                    std::vector<real> covered(probes.size(), -1);
+                    for (std::size_t probe = 0; probe < probes.size(); probe++)
+                        for (int candidate : selectionOrder)
+                            covered[probe] = std::max(covered[probe], probes[probe].dot(directions[static_cast<std::size_t>(candidate)]));
+                    std::size_t best = groups.size();
+                    std::array<long long, 6> bestScore;
+                    bestScore.fill(std::numeric_limits<long long>::max());
+                    for (std::size_t j = 0; j < available.size(); j++)
+                    {
+                        const auto &group = groups[available[j]];
+                        const int rest = remaining - static_cast<int>(group.size());
+                        if (rest < 0)
+                            continue;
+                        bool canFill = false;
+                        for (int total = 0; total <= rest; total++)
+                            canFill = canFill || (prefix[j][total] && suffix[j + 1][rest - total]);
+                        if (!canFill)
+                            continue;
+                        real maximumHole = 0, squaredHoles = 0, coverage = 0;
+                        for (std::size_t probe = 0; probe < probes.size(); probe++)
+                        {
+                            real cosine = covered[probe];
+                            for (int candidate : group)
+                                cosine = std::max(cosine, probes[probe].dot(directions[static_cast<std::size_t>(candidate)]));
+                            const real hole = std::max(real(0), 1 - cosine);
+                            maximumHole = std::max(maximumHole, hole);
+                            squaredHoles += hole * hole;
+                        }
+                        Eigen::VectorXd cubic = cubicBalance;
+                        Vector3 balance = displacementBalance;
+                        for (int candidate : group)
+                        {
+                            coverage += coverageScore(candidate, weak);
+                            cubic += candidateCubic.row(candidate).transpose();
+                            balance += _nodeHalo.Displacement(
+                                iNode, candidates[static_cast<std::size_t>(candidate)].node)
+                                           .cwiseQuotient(result.referenceLengths);
+                        }
+                        const auto score = std::array<long long, 6>{
+                            quantize(maximumHole), quantize(squaredHoles),
+                            quantize(1 / std::max(coverage, real(1e-30))),
+                            quantize(cubic.squaredNorm()), quantize(balance.squaredNorm()),
+                            static_cast<long long>(group.front())};
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            best = available[j];
+                        }
+                    }
+                    if (best == groups.size())
+                    {
+                        selectionOrder = compactFallback;
+                        break;
+                    }
+                    used[best] = true;
+                    for (int candidate : groups[best])
+                        select(candidate);
+                }
+                if (rankAware)
+                {
+                    // Test the design matrix directly: normal equations can
+                    // hide a missing quadratic mode at floating-point roundoff.
+                    const auto stencilCondition = [&](const std::vector<int> &order)
+                    {
+                        Eigen::MatrixXd weighted(order.size(), nBasis);
+                        for (std::size_t row = 0; row < order.size(); row++)
+                        {
+                            const int candidate = order[row];
+                            weighted.row(static_cast<Eigen::Index>(row)) =
+                                candidateWeights(candidate) * candidateMatrix.row(candidate);
+                        }
+                        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(weighted);
+                        const auto singular = svd.singularValues();
+                        if (singular.size() != nBasis || singular(0) <= verySmallReal ||
+                            singular(nBasis - 1) <= _settings.svdTolerance * singular(0))
+                            return veryLargeReal;
+                        return singular(0) / singular(nBasis - 1);
+                    };
+                    const real reflectedCondition = stencilCondition(selectionOrder);
+                    const real compactCondition = stencilCondition(compactFallback);
+                    // Reflection may cost at most one decimal digit relative
+                    // to a compact selection with the same number of points.
+                    rejectReflectedStencil = reflectedCondition >= veryLargeReal ||
+                                             compactCondition < reflectedCondition / 10;
+                }
+            }
+            else if (!rankAware || dimension != 3 || _settings.completeStencilRings)
+            {
+                // Preserve the existing complete-ring and 2-D fallbacks.
+                while (selectionOrder.size() < pool.size())
+                {
+                    const int candidate = bestSingleton();
+                    DNDS_assert(candidate >= 0);
+                    select(candidate);
+                }
+            }
+
+            for (int count = initialStencilSize;
+                 count <= static_cast<int>(selectionOrder.size()); count++)
+            {
+                stencil.clear();
+                stencil.reserve(static_cast<std::size_t>(count));
+                result.rings = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    const Candidate &candidate =
+                        candidates[static_cast<std::size_t>(
+                            selectionOrder[static_cast<std::size_t>(i)])];
+                    stencil.push_back(candidate.node);
+                    result.rings = std::max(
+                        result.rings, candidate.ring);
+                }
+
+                Eigen::MatrixXd matrix(count, nBasis);
+                Eigen::VectorXd weights(count);
+                for (int row = 0; row < count; row++)
+                {
+                    const int candidate =
+                        selectionOrder[static_cast<std::size_t>(row)];
+                    matrix.row(row) = candidateMatrix.row(candidate);
+                    weights(row) = candidateWeights(candidate);
+                }
+
+                const Eigen::MatrixXd weighted =
+                    weights.asDiagonal() * matrix;
+                const WeightedLeastSquaresOperator leastSquares =
+                    BuildWeightedLeastSquaresOperator(
+                        weighted, weights, _settings.method,
+                        _settings.svdTolerance);
+                acceptedRank = leastSquares.rank;
+                acceptedCondition = leastSquares.condition;
+                acceptedInverse = leastSquares.inverse;
+                acceptedCubic.resize(count, nCubic);
+                for (int row = 0; row < count; row++)
+                    acceptedCubic.row(row) = candidateCubic.row(
+                        selectionOrder[static_cast<std::size_t>(row)]);
+                accepted = !rejectReflectedStencil && acceptedRank == nBasis &&
+                           acceptedCondition <=
+                               _settings.maximumConditionNumber;
+                if (accepted && dimension == 3 && !_settings.completeStencilRings)
+                {
+                    // Normal-equation eigenvalues can report a spurious last
+                    // mode at roundoff on a directionally incomplete set.
+                    // Validate the complete quadratic operator, including the
+                    // Hessian rows used by traditional/variational recovery.
+                    // Search a larger candidate ring at the same point count
+                    // when this set cannot reproduce every polynomial mode.
+                    const real reproductionError =
+                        (acceptedInverse * matrix - Eigen::MatrixXd::Identity(nBasis, nBasis))
+                            .cwiseAbs().maxCoeff();
+                    accepted = reproductionError < 1e-8;
+                }
+                if (accepted)
+                    break;
+            }
+        }
+
+        DNDS_check_throw_info(
+            acceptedRank == nBasis,
+            fmt::format("NCFV node {} quadratic stencil rank is {}/{}; increase maximumStencilRings",
+                        _mesh->NodeIndexLocal2Global(iNode), acceptedRank, nBasis));
+        DNDS_check_throw_info(
+            acceptedCondition <= _settings.maximumConditionNumber,
+            fmt::format("NCFV node {} quadratic stencil condition number {} exceeds {}",
+                        _mesh->NodeIndexLocal2Global(iNode), acceptedCondition,
+                        _settings.maximumConditionNumber));
+        DNDS_check_throw_info(
+            accepted,
+            "NCFV fixed-size stencil cannot reproduce the quadratic basis; increase maximumStencilRings");
+
+        result.numericalRank = acceptedRank;
+        result.conditionNumber = acceptedCondition;
+        result.cubicErrorIndicator =
+            (acceptedInverse.topRows(dimension) * acceptedCubic).norm();
+        result.stencil = std::move(stencil);
+        result.directNeighborCount = static_cast<int>(std::count_if(
+            result.stencil.begin(), result.stencil.end(),
+            [&](index node)
+            {
+                const auto &direct =
+                    _nodeGraph[static_cast<std::size_t>(iNode)];
+                return std::find(direct.begin(), direct.end(), node) !=
+                       direct.end();
+            }));
+        DNDS_check_throw_info(
+            result.directNeighborCount ==
+                static_cast<int>(
+                    _nodeGraph[static_cast<std::size_t>(iNode)].size()),
+            "NCFV compact stencil failed to retain every first-ring neighbor");
+        result.stencilGlobals.reserve(result.stencil.size());
+        for (index local : result.stencil)
+            result.stencilGlobals.push_back(
+                _nodeHalo.LocalToGlobal(local));
+        result.inverseRows = _mode == IntegrationMode::EfficientDifferential &&
+                                     _settings.method != ReconstructionMethod::Variational
+                                 ? acceptedInverse.topRows(dimension)
+                                 : acceptedInverse;
+        return result;
+    }
+
+    void Reconstruction::Build()
+    {
+        DNDS_check_throw_info(
+            _settings.method == ReconstructionMethod::LeastSquares ||
+                _settings.method == ReconstructionMethod::SVDLeastSquares ||
+                _settings.method == ReconstructionMethod::Variational,
+            "NCFV reconstruction selected an unsupported method/mode");
+        BuildNodeGraph();
+        _operators.clear();
+        _operators.resize(static_cast<std::size_t>(_mesh->NumNode()));
+        real localMaximumCondition = 0;
+        real localMaximumCubicError = 0;
+        int localMaximumRings = 0;
+        int localMinimumDirectNeighbors = std::numeric_limits<int>::max();
+        int localMaximumDirectNeighbors = 0;
+        int localMinimumStencil = std::numeric_limits<int>::max();
+        int localMaximumStencil = 0;
+        index localStencilSum = 0;
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            _operators[static_cast<std::size_t>(iNode)] = BuildOperator(iNode);
+            localMaximumCondition = std::max(
+                localMaximumCondition,
+                _operators[static_cast<std::size_t>(iNode)].conditionNumber);
+            localMaximumCubicError = std::max(
+                localMaximumCubicError,
+                _operators[static_cast<std::size_t>(iNode)].cubicErrorIndicator);
+            localMaximumRings = std::max(
+                localMaximumRings,
+                _operators[static_cast<std::size_t>(iNode)].rings);
+            const int stencilSize = static_cast<int>(
+                _operators[static_cast<std::size_t>(iNode)].stencil.size());
+            localMinimumStencil = std::min(localMinimumStencil, stencilSize);
+            localMaximumStencil = std::max(localMaximumStencil, stencilSize);
+            localStencilSum += stencilSize;
+            const int directNeighbors =
+                _operators[static_cast<std::size_t>(iNode)].directNeighborCount;
+            localMinimumDirectNeighbors = std::min(
+                localMinimumDirectNeighbors, directNeighbors);
+            localMaximumDirectNeighbors = std::max(
+                localMaximumDirectNeighbors, directNeighbors);
+        }
+        real globalMaximumCondition = 0;
+        real globalMaximumCubicError = 0;
+        int globalMaximumRings = 0;
+        int globalMinimumDirectNeighbors = 0;
+        int globalMaximumDirectNeighbors = 0;
+        int globalMinimumStencil = 0;
+        int globalMaximumStencil = 0;
+        index globalStencilSum = 0;
+        MPI_Allreduce(&localMaximumCondition, &globalMaximumCondition, 1,
+                      DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
+        MPI_Allreduce(&localMaximumCubicError, &globalMaximumCubicError, 1,
+                      DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
+        MPI_Allreduce(&localMaximumRings, &globalMaximumRings, 1,
+                      MPI_INT, MPI_MAX, _mpi.comm);
+        MPI_Allreduce(&localMinimumDirectNeighbors,
+                      &globalMinimumDirectNeighbors, 1,
+                      MPI_INT, MPI_MIN, _mpi.comm);
+        MPI_Allreduce(&localMaximumDirectNeighbors,
+                      &globalMaximumDirectNeighbors, 1,
+                      MPI_INT, MPI_MAX, _mpi.comm);
+        MPI_Allreduce(&localMinimumStencil, &globalMinimumStencil, 1,
+                      MPI_INT, MPI_MIN, _mpi.comm);
+        MPI_Allreduce(&localMaximumStencil, &globalMaximumStencil, 1,
+                      MPI_INT, MPI_MAX, _mpi.comm);
+        MPI_Allreduce(&localStencilSum, &globalStencilSum, 1,
+                      DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
+        if (_mpi.rank == 0)
+            log() << "NCFV quadratic reconstruction: stored rows="
+                  << (_mode == IntegrationMode::EfficientDifferential &&
+                              _settings.method != ReconstructionMethod::Variational
+                          ? _mesh->getDim()
+                          : BasisSize())
+                  << ", method="
+                  << (_settings.method == ReconstructionMethod::LeastSquares
+                          ? "LeastSquares"
+                          : _settings.method == ReconstructionMethod::SVDLeastSquares
+                                ? "SVDLeastSquares"
+                                : "Variational")
+                  << (_settings.method == ReconstructionMethod::Variational
+                          ? fmt::format(", w={}", _settings.variationalWeight)
+                          : "")
+                  << ", stencil selection="
+                  << (_settings.stencilSelectionStrategy == StencilSelectionStrategy::RankAware
+                          ? "RankAware"
+                          : "Original")
+                  << ", max rings=" << globalMaximumRings
+                  << ", max condition=" << globalMaximumCondition
+                  << ", max cubic-gradient indicator="
+                  << globalMaximumCubicError
+                  << ", retained first-ring[min,max]=["
+                  << globalMinimumDirectNeighbors << ","
+                  << globalMaximumDirectNeighbors << "]"
+                  << ", stencil[min,mean,max]=["
+                  << globalMinimumStencil << ","
+                  << static_cast<real>(globalStencilSum) /
+                         _mesh->NumNodeGlobal()
+                  << "," << globalMaximumStencil << "]"
+                  << ", normalization=dual-bounds-half-span (thesis 3-34)" << std::endl;
+    }
+
+    std::vector<index> Reconstruction::CollectNodeDependencies() const
+    {
+        std::vector<index> globals;
+        for (const auto &op : _operators)
+            globals.insert(
+                globals.end(), op.stencilGlobals.begin(),
+                op.stencilGlobals.end());
+        if (_settings.enableLimiter)
+            for (const auto &neighbors : _nodeGraphGlobals)
+                globals.insert(globals.end(), neighbors.begin(), neighbors.end());
+        std::sort(globals.begin(), globals.end());
+        globals.erase(std::unique(globals.begin(), globals.end()), globals.end());
+        return globals;
+    }
+
+    void Reconstruction::RemapNodeIndices()
+    {
+        DNDS_check_throw_info(
+            _nodeHalo.IsFinalized(),
+            "NCFV reconstruction requires a finalized exact node halo before remapping");
+        for (auto &op : _operators)
+        {
+            DNDS_check_throw_info(
+                op.stencilGlobals.size() == op.stencil.size(),
+                "NCFV reconstruction lost stable stencil IDs before halo remapping");
+            for (std::size_t i = 0; i < op.stencil.size(); i++)
+                op.stencil[i] =
+                    _nodeHalo.GlobalToLocal(op.stencilGlobals[i]);
+            op.stencilGlobals.clear();
+            op.stencilGlobals.shrink_to_fit();
+        }
+        if (_settings.enableLimiter)
+        {
+            _nodeGraph.assign(
+                static_cast<std::size_t>(_nodeHalo.NumNodeProc()), {});
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            {
+                auto &neighbors = _nodeGraph[static_cast<std::size_t>(iNode)];
+                const auto &globals =
+                    _nodeGraphGlobals[static_cast<std::size_t>(iNode)];
+                neighbors.reserve(globals.size());
+                for (index global : globals)
+                    neighbors.push_back(_nodeHalo.GlobalToLocal(global));
+            }
+        }
+        else
+        {
+            _nodeGraph.clear();
+            _nodeGraph.shrink_to_fit();
+        }
+        if (_settings.method == ReconstructionMethod::Variational)
+            BuildVariationalOperators();
+        _nodeGraphGlobals.clear();
+        _nodeGraphGlobals.shrink_to_fit();
+    }
+
+    void Reconstruction::BuildVariationalOperators()
+    {
+        const int dimension = _mesh->getDim();
+        const int nBasis = BasisSize();
+        const real sqrtWeight = std::sqrt(_settings.variationalWeight);
+        _variationalOperators.clear();
+        _variationalOperators.resize(
+            static_cast<std::size_t>(_mesh->NumNode()));
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            const auto &referenceLengths =
+                _operators[static_cast<std::size_t>(iNode)].referenceLengths;
+            const auto &meanBasis =
+                _operators[static_cast<std::size_t>(iNode)].targetBasisMean;
+            Eigen::MatrixXd matrixA =
+                Eigen::MatrixXd::Zero(nBasis, nBasis);
+            struct UnsolvedNeighbor
+            {
+                index node;
+                Eigen::MatrixXd cross;
+                Eigen::VectorXd jump;
+            };
+            std::vector<UnsolvedNeighbor> unsolved;
+            const auto &neighbors =
+                _nodeGraphGlobals[static_cast<std::size_t>(iNode)];
+            unsolved.reserve(neighbors.size());
+            for (index global : neighbors)
+            {
+                const index neighbor = _nodeHalo.GlobalToLocal(global);
+                const Vector3 edge = _nodeHalo.Displacement(
+                    iNode, neighbor);
+                const real edgeLength = edge.head(dimension).norm();
+                DNDS_check_throw_info(
+                    edgeLength > verySmallReal,
+                    "NCFV variational reconstruction has a zero-length edge");
+                const Vector3 neighborLengths =
+                    _nodeHalo.ReferenceLengths(neighbor);
+                const Eigen::VectorXd neighborMeanBasis = MeanBasis(
+                    _nodeHalo.MomentsRelative(neighbor, neighbor),
+                    Vector3::Zero(), neighborLengths, dimension);
+                const Eigen::MatrixXd left =
+                    VariationalDifferentialRows(
+                        0.5 * edge, referenceLengths, meanBasis,
+                        edgeLength, sqrtWeight, dimension);
+                const Eigen::MatrixXd right =
+                    VariationalDifferentialRows(
+                        -0.5 * edge, neighborLengths,
+                        neighborMeanBasis, edgeLength, sqrtWeight, dimension);
+                matrixA.noalias() += left.transpose() * left;
+                // The value row already contains sqrt(w); the known mean jump
+                // must carry the same factor, giving w times the value basis.
+                unsolved.push_back({
+                    neighbor, left.transpose() * right,
+                    sqrtWeight * left.row(0).transpose()});
+            }
+            Eigen::LDLT<Eigen::MatrixXd> factorization(matrixA);
+            DNDS_check_throw_info(
+                factorization.info() == Eigen::Success &&
+                    factorization.isPositive() &&
+                    factorization.vectorD().minCoeff() > verySmallReal,
+                "NCFV variational reconstruction has a singular local functional");
+            auto &solved =
+                _variationalOperators[static_cast<std::size_t>(iNode)];
+            solved.reserve(unsolved.size());
+            for (const auto &entry : unsolved)
+            {
+                VariationalNeighborOperator result;
+                result.node = entry.node;
+                result.coupling = factorization.solve(entry.cross);
+                result.meanJump = factorization.solve(entry.jump);
+                DNDS_check_throw_info(
+                    result.coupling.allFinite() &&
+                        result.meanJump.allFinite(),
+                    "NCFV variational reconstruction generated nonfinite coefficients");
+                solved.push_back(std::move(result));
+            }
+        }
+    }
+
+    void Reconstruction::ComputeCoefficients(
+        const NodeStatePair &means,
+        NodeMatrixPair &gradients,
+        NodeMatrixPair &coefficients) const
+    {
+        const int nVars = means.father->MatRowSize();
+        const int dimension = _mesh->getDim();
+        // The least-squares polynomial is a warm start for the coupled
+        // variational sweeps.  Starting from zero leaves a sizable iteration
+        // error even after 100 sweeps on stretched quadratic test fields.
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            const ReconstructionOperator &op = _operators[static_cast<std::size_t>(iNode)];
+            Eigen::MatrixXd differences(op.stencil.size(), nVars);
+            for (std::size_t row = 0; row < op.stencil.size(); row++)
+            {
+                differences.row(static_cast<Eigen::Index>(row)) =
+                    (means[op.stencil[row]] - means[iNode]).transpose();
+            }
+            const Eigen::MatrixXd reconstructed = op.inverseRows * differences;
+            if (_mode == IntegrationMode::EfficientDifferential &&
+                _settings.method != ReconstructionMethod::Variational)
+                gradients[iNode] = op.referenceLengths.head(dimension).cwiseInverse().asDiagonal() *
+                                   reconstructed.topRows(dimension);
+            else
+                coefficients[iNode] = reconstructed;
+        }
+        if (_settings.method != ReconstructionMethod::Variational)
+            return;
+
+        const int nBasis = BasisSize();
+        const index nOwned = _mesh->NumNode();
+        Eigen::MatrixXd updated(nBasis, nVars);
+        for (int iteration = 0;
+             iteration < _settings.variationalIterations; iteration++)
+        {
+            coefficients.trans.startPersistentPull();
+            coefficients.trans.waitPersistentPull();
+            for (index iNode = 0; iNode < nOwned; iNode++)
+            {
+                updated.setZero();
+                for (const auto &entry :
+                     _variationalOperators[static_cast<std::size_t>(iNode)])
+                {
+                    updated.noalias() +=
+                        entry.coupling * coefficients[entry.node];
+                    updated.noalias() +=
+                        entry.meanJump *
+                        (means[entry.node] - means[iNode]).transpose();
+                }
+                updated = (1.0 - _settings.variationalRelaxation) *
+                              coefficients[iNode] +
+                          _settings.variationalRelaxation * updated;
+                DNDS_check_throw_info(
+                    updated.allFinite(),
+                    "NCFV variational reconstruction diverged");
+                coefficients[iNode] = updated;
+            }
+        }
+        if (_mode == IntegrationMode::EfficientDifferential)
+            for (index iNode = 0; iNode < nOwned; iNode++)
+            {
+                const auto &referenceLengths =
+                    _operators[static_cast<std::size_t>(iNode)].referenceLengths;
+                gradients[iNode] =
+                    referenceLengths.head(dimension).cwiseInverse().asDiagonal() *
+                    coefficients[iNode].topRows(dimension);
+            }
+    }
+
+    void Reconstruction::RecoverPointValues(
+        const NodeStatePair &means,
+        const NodeMatrixPair &gradients,
+        const NodeMatrixPair &coefficients,
+        NodeStatePair &pointValues) const
+    {
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            pointValues[iNode] = means[iNode];
+            if (_mode == IntegrationMode::EfficientDifferential)
+            {
+                for (const auto &entry : _geometry.NodeVolume(iNode).pointRecoveryStencil)
+                    pointValues[iNode] -= gradients[entry.node].transpose() *
+                                          entry.gradientWeight.head(_mesh->getDim());
+            }
+            else
+            {
+                const ReconstructionOperator &op = _operators[static_cast<std::size_t>(iNode)];
+                pointValues[iNode] -= coefficients[iNode].transpose() * op.targetBasisMean;
+            }
+        }
+    }
+
+    std::vector<real> Reconstruction::ComputeLimiterFactors(
+        const NodeStatePair &means,
+        const NodeStatePair &pointValues,
+        const NodeMatrixPair &gradients,
+        const NodeMatrixPair &coefficients) const
+    {
+        const int nVars = means.father->MatRowSize();
+        std::vector<real> factors(static_cast<std::size_t>(_mesh->NumNode()), 1.0);
+
+        if (_mode == IntegrationMode::EfficientDifferential)
+        {
+            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            {
+                real factor = 1.0;
+                const Eigen::VectorXd anchor = _settings.limitPointRecovery ?
+                                                   Eigen::VectorXd(means[iNode]) : Eigen::VectorXd(pointValues[iNode]);
+                Eigen::VectorXd meanMinimum = means[iNode], meanMaximum = means[iNode];
+                if (_settings.limitPointRecovery)
+                    for (const auto &incidence : _topology.Node2Edge(iNode))
+                    {
+                        const auto &surface = _geometry.EdgeSurface(incidence.edge);
+                        const index neighbor = surface.nodes[surface.nodes[0] == iNode ? 1 : 0];
+                        meanMinimum = meanMinimum.cwiseMin(Eigen::VectorXd(means[neighbor]));
+                        meanMaximum = meanMaximum.cwiseMax(Eigen::VectorXd(means[neighbor]));
+                    }
+                const auto limit = [&](const Eigen::VectorXd &candidate,
+                                       const Eigen::VectorXd &minimum,
+                                       const Eigen::VectorXd &maximum)
+                {
+                    if (_settings.barthZeroOrderFallback)
+                    {
+                        constexpr real boundTolerance = 1e-10;
+                        if (!candidate.allFinite() ||
+                            (candidate.array() < minimum.array() - boundTolerance).any() ||
+                            (candidate.array() > maximum.array() + boundTolerance).any())
+                            factor = 0;
+                        return;
+                    }
+                    for (int iVar = 0; iVar < nVars; iVar++)
+                    {
+                        const real increment = candidate(iVar) - anchor(iVar);
+                        constexpr real tolerance = 1e-10;
+                        if (increment > tolerance)
+                            factor = std::min(factor, (maximum(iVar) - anchor(iVar)) / increment);
+                        else if (increment < -tolerance)
+                            factor = std::min(factor, (minimum(iVar) - anchor(iVar)) / increment);
+                    }
+                };
+                if (_settings.limitPointRecovery)
+                    limit(Eigen::VectorXd(pointValues[iNode]), meanMinimum, meanMaximum);
+                for (const NodeEdgeIncidence &incidence : _topology.Node2Edge(iNode))
+                {
+                    const EdgeControlSurface &surface =
+                        _geometry.EdgeSurface(incidence.edge);
+                    const bool isLeft = surface.nodes[0] == iNode;
+                    DNDS_check_throw_info(
+                        isLeft || surface.nodes[1] == iNode,
+                        "NCFV limiter encountered an edge not incident to its node");
+                    const index neighbor = surface.nodes[isLeft ? 1 : 0];
+                    const std::size_t side = isLeft ? 0 : 1;
+
+                    Eigen::VectorXd candidate =
+                        surface.measure * pointValues[iNode];
+                    for (const EfficientSurfaceNode &entry : surface.efficientStencil)
+                        candidate += gradients[entry.node].transpose() *
+                                     entry.stateGradientWeights[side].head(_mesh->getDim());
+                    candidate /= surface.measure;
+
+                    const Eigen::VectorXd minimum = _settings.limitPointRecovery ? meanMinimum :
+                                                       Eigen::VectorXd(pointValues[iNode].cwiseMin(pointValues[neighbor]));
+                    const Eigen::VectorXd maximum = _settings.limitPointRecovery ? meanMaximum :
+                                                       Eigen::VectorXd(pointValues[iNode].cwiseMax(pointValues[neighbor]));
+                    if (_settings.limitPointRecovery && _settings.directionalPairBounds)
+                        limit(candidate, means[iNode].cwiseMin(means[neighbor]),
+                              means[iNode].cwiseMax(means[neighbor]));
+                    else
+                        limit(candidate, minimum, maximum);
+                }
+                if (_settings.barthZeroOrderFallback)
+                    for (const auto &piece : _geometry.NodeVolume(iNode).boundaryPieces)
+                    {
+                        if (Geom::FaceIDIsPeriodic(piece.zone))
+                            continue;
+                        Eigen::VectorXd candidate = Eigen::VectorXd::Zero(nVars);
+                        for (const auto &entry : piece.efficientStencil)
+                            candidate += entry.integrationWeight * pointValues[entry.node];
+                        candidate /= piece.measure;
+                        limit(candidate, meanMinimum, meanMaximum);
+                    }
+                factors[static_cast<std::size_t>(iNode)] =
+                    std::clamp(factor, 0.0, 1.0);
+            }
+            return factors;
+        }
+
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+        {
+            Eigen::VectorXd minimum = means[iNode];
+            Eigen::VectorXd maximum = means[iNode];
+            for (index neighbor : _nodeGraph[static_cast<std::size_t>(iNode)])
+            {
+                minimum = minimum.cwiseMin(means[neighbor]);
+                maximum = maximum.cwiseMax(means[neighbor]);
+            }
+
+            real factor = 1.0;
+            for (index neighbor : _nodeGraph[static_cast<std::size_t>(iNode)])
+            {
+                const Vector3 displacement =
+                    0.5 * _nodeHalo.Displacement(iNode, neighbor);
+                Eigen::VectorXd candidate = pointValues[iNode];
+                const auto &op = _operators[static_cast<std::size_t>(iNode)];
+                candidate += coefficients[iNode].transpose() *
+                             EvaluateBasis(displacement,
+                                           op.referenceLengths, _mesh->getDim());
+
+                for (int iVar = 0; iVar < nVars; iVar++)
+                {
+                    const real increment = candidate(iVar) - means[iNode](iVar);
+                    if (increment > verySmallReal)
+                        factor = std::min(factor,
+                                          (maximum(iVar) - means[iNode](iVar)) / increment);
+                    else if (increment < -verySmallReal)
+                        factor = std::min(factor,
+                                          (minimum(iVar) - means[iNode](iVar)) / increment);
+                }
+            }
+            factors[static_cast<std::size_t>(iNode)] = std::clamp(factor, 0.0, 1.0);
+        }
+        return factors;
+    }
+
+    void Reconstruction::ApplyLimiter(
+        const std::vector<real> &factors,
+        NodeMatrixPair &gradients,
+        NodeMatrixPair &coefficients) const
+    {
+        DNDS_check_throw_info(factors.size() == static_cast<std::size_t>(_mesh->NumNode()),
+                              "NCFV limiter-factor array has the wrong size");
+        DNDS_check_throw_info(
+            _mode == IntegrationMode::TraditionalQuadrature,
+            "Efficient NCFV limiter factors are side-anchored and cannot be applied to the shared gradient field");
+        static_cast<void>(gradients);
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            coefficients[iNode] *= factors[static_cast<std::size_t>(iNode)];
+    }
+}

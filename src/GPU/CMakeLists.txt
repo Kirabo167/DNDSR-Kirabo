@@ -1,0 +1,17 @@
+add_library(dnds_gpu_flux STATIC FluxBatch.cu)
+target_include_directories(dnds_gpu_flux PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(dnds_gpu_flux PUBLIC CUDA::cudart)
+set_target_properties(dnds_gpu_flux PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+target_compile_options(dnds_gpu_flux PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>)
+
+add_library(dnds_gpu_resident STATIC ResidentNCFV.cu ResidentACM.cu)
+target_include_directories(dnds_gpu_resident PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(dnds_gpu_resident PUBLIC CUDA::cudart MPI::MPI_CXX ${CMAKE_DL_LIBS})
+set_target_properties(dnds_gpu_resident PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+target_compile_options(dnds_gpu_resident PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>)
+
+if(DNDS_BUILD_TESTS)
+    add_executable(gpu_resident_halo_verify ${CMAKE_SOURCE_DIR}/test/cpp/GPU/verify_resident_halo.cu)
+    target_link_libraries(gpu_resident_halo_verify PRIVATE dnds_gpu_resident)
+    set_target_properties(gpu_resident_halo_verify PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
+endif()

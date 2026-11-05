@@ -837,6 +837,105 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
     }
 }
 
+TEST_CASE("NCFV traditional edge midpoint flux preserves periodic uniform flow with one solve per edge")
+{
+    const auto configuration = MakeExactPeriodicConfiguration(IntegrationMode::TraditionalQuadrature);
+    Solver<3> solver(gMPI, configuration);
+    solver.Initialize();
+    solver.SetTraditionalEdgeMidpointFluxForDiagnostics(true);
+    CHECK(solver.EvaluateResidual() < 5e-12);
+    solver.Run();
+    const DNDS::index localCalls = solver.LastStepRiemannSolverCalls();
+    DNDS::index globalCalls = 0;
+    MPI_Allreduce(&localCalls, &globalCalls, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    CHECK(globalCalls == 3 * solver.EdgeTopology().NumEdgeGlobal());
+    CHECK(solver.EvaluateResidual() < 5e-12);
+}
+
+TEST_CASE("NCFV reference Roe matches unfixed Roe and applies the supplied contact fix")
+{
+    const auto cfg = MakeExactPeriodicConfiguration(IntegrationMode::TraditionalQuadrature);
+    Solver<3> solver(gMPI, cfg);
+    solver.Initialize();
+    SpatialOperator<3> spatial(gMPI, solver.Mesh(), solver.EdgeTopology(), solver.Geometry(),
+                               solver.ReconstructionData(), solver.Boundaries(), cfg.algorithm.mode,
+                               cfg.reconstruction, cfg.physics, cfg.time, solver.NodeCommunication());
+    spatial.SetReferenceRoeHartenForDiagnostics(true);
+    const auto state = [&](DNDS::real rho, const Eigen::Vector3d &v, DNDS::real p)
+    {
+        Eigen::Vector<DNDS::real, 5> u;
+        u << rho, rho * v, p / (cfg.physics.gamma - 1) + 0.5 * rho * v.squaredNorm();
+        return u;
+    };
+    const auto left = state(1.0, Eigen::Vector3d(20, 10, 7), 1.0);
+    const auto right = state(1.2, Eigen::Vector3d(21, 9, 6.5), 1.1);
+    for (Eigen::Vector3d n : {Eigen::Vector3d(1, 0, 0), Eigen::Vector3d(1, 2, 3).normalized().eval()})
+    {
+        Eigen::Vector<DNDS::real, 5> expected;
+        DNDS::real lm = 0, lc = 0, lp = 0;
+        DNDS::Euler::Gas::RoeFlux_IdealGas_HartenYee<3, 0>(
+            left, right, left, right, Eigen::Vector3d::Zero().eval(), n,
+            cfg.physics.gamma, cfg.physics.gamma, expected, 0, 0, 1,
+            []() {}, lm, lc, lp);
+        const auto reference = spatial.EvaluateNumericalFluxForDiagnostics(left, right, n);
+        CHECK((reference - expected).norm() / expected.norm() < 2e-12);
+    }
+    const auto stationaryL = state(1, Eigen::Vector3d::Zero(), 1);
+    const auto stationaryR = state(2, Eigen::Vector3d::Zero(), 1);
+    const auto flux = spatial.EvaluateNumericalFluxForDiagnostics(
+        stationaryL, stationaryR, Eigen::Vector3d(1, 0, 0));
+    const DNDS::real ratio = std::sqrt(2.0);
+    const DNDS::real h = (cfg.physics.gamma / (cfg.physics.gamma - 1) +
+                          ratio * cfg.physics.gamma / (2 * (cfg.physics.gamma - 1))) / (1 + ratio);
+    const DNDS::real sound = std::sqrt((cfg.physics.gamma - 1) * h);
+    CHECK(flux(0) == doctest::Approx(-0.0375 * sound).epsilon(1e-12));
+    CHECK(flux(1) == doctest::Approx(1).epsilon(1e-12));
+    CHECK(std::abs(flux(4)) < 1e-12);
+}
+
+TEST_CASE("NCFV reference document flux agrees on closed periodic volumes")
+{
+    const auto cfg = MakeExactPeriodicConfiguration(IntegrationMode::TraditionalQuadrature);
+    Solver<3> solver(gMPI, cfg);
+    solver.Initialize();
+    SpatialOperator<3> spatial(gMPI, solver.Mesh(), solver.EdgeTopology(), solver.Geometry(),
+                               solver.ReconstructionData(), solver.Boundaries(), cfg.algorithm.mode,
+                               cfg.reconstruction, cfg.physics, cfg.time, solver.NodeCommunication());
+    spatial.Initialize();
+    spatial.SetTraditionalEdgeMidpointFluxForDiagnostics(true);
+    spatial.SetReferenceRoeHartenForDiagnostics(true);
+    NodeStatePair means, previous, literal;
+    const auto allocate = [&](NodeStatePair &field, const std::string &name)
+    {
+        field.InitPair(name, gMPI);
+        field.father->Resize(solver.Mesh()->NumNode(), 5, 1);
+        field.son->Resize(solver.NodeCommunication().NumNodeGhost(), 5, 1);
+        field.BorrowSetup(solver.NodeCommunication().Layout());
+        field.trans.initPersistentPull();
+    };
+    allocate(means, "NCFV.document.means");
+    allocate(previous, "NCFV.document.previous");
+    allocate(literal, "NCFV.document.literal");
+    for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); node++)
+    {
+        const auto x = solver.Mesh()->coords[node];
+        const DNDS::real rho = 1 + 0.1 * std::sin(2 * pi * x.x() / 10);
+        means[node] << rho, 0.2 * rho, -0.1 * rho, 0.05 * rho,
+            1 / (cfg.physics.gamma - 1) + 0.5 * rho * (0.04 + 0.01 + 0.0025);
+    }
+    spatial.EvaluateRHS(means, previous, false, false);
+    spatial.SetReferenceDocumentFluxForDiagnostics(true);
+    spatial.ResetRiemannSolverCallCount();
+    spatial.EvaluateRHS(means, literal, false, false);
+    DNDS::real localDifference = 0, globalDifference = 0;
+    for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); node++)
+        localDifference = std::max(localDifference, (literal[node] - previous[node]).norm());
+    MPI_Allreduce(&localDifference, &globalDifference, 1, DNDS_MPI_REAL, MPI_MAX, gMPI.comm);
+    CHECK(globalDifference < 5e-12);
+    CHECK(spatial.ReferenceMeanFallbackCount() == 0);
+    CHECK(spatial.RiemannSolverCallCount() == solver.EdgeTopology().NumEdge());
+}
+
 TEST_CASE("NCFV fixed-size compact stencils preserve coordinate-plane fields")
 {
     for (const auto strategy : {StencilSelectionStrategy::Original, StencilSelectionStrategy::RankAware})

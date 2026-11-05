@@ -28,7 +28,14 @@ def main():
     parser.add_argument("--stencil", type=int, default=16)
     parser.add_argument("--ranks", type=int, default=8)
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--edge-midpoint", action="store_true")
+    parser.add_argument("--method", choices=["LeastSquares", "Variational"], default="LeastSquares")
+    parser.add_argument("--reference-roe", action="store_true")
+    parser.add_argument("--reference-document", action="store_true")
     args = parser.parse_args()
+    if args.reference_document:
+        args.edge_midpoint = True
+        args.reference_roe = True
     if min(args.levels) <= 0 or min(args.weight, args.mach, args.end_time,
                                      args.dt_numerator) <= 0:
         parser.error("Levels, weight, Mach, end time, and time step must be positive")
@@ -44,6 +51,15 @@ def main():
     env = dict(os.environ, OMP_NUM_THREADS="1", DNDS_DIST_OMP_NUM_THREADS="1",
                OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1",
                HWLOC_COMPONENTS="-gl,-cuda,-nvml")
+    env.pop("NCFV_TRADITIONAL_EDGE_MIDPOINT", None)
+    if args.edge_midpoint:
+        env["NCFV_TRADITIONAL_EDGE_MIDPOINT"] = "1"
+    env.pop("NCFV_REFERENCE_ROE_HARTEN", None)
+    if args.reference_roe:
+        env["NCFV_REFERENCE_ROE_HARTEN"] = "1"
+    env.pop("NCFV_REFERENCE_DOCUMENT_FLUX", None)
+    if args.reference_document:
+        env["NCFV_REFERENCE_DOCUMENT_FLUX"] = "1"
 
     def run(case):
         level, mode = case
@@ -60,7 +76,12 @@ def main():
                    str(CONFIG), str(result), str(args.mach), str(dt),
                    str(args.end_time), str(args.stencil), mode, str(args.weight),
                    str(mesh)]
+        if args.method != "LeastSquares":
+            command.append(args.method)
         manifest = {"command": command, "binary_sha256": binary_hash,
+                    "edge_midpoint": args.edge_midpoint,
+                    "reference_roe": args.reference_roe,
+                    "reference_document": args.reference_document,
                     "config_sha256": config_hash,
                     "mesh_sha256": hashlib.sha256(mesh.read_bytes()).hexdigest()}
         if result.exists():
@@ -75,6 +96,14 @@ def main():
                 subprocess.run(command, cwd=ROOT / "build", env=env,
                                stdout=log, stderr=subprocess.STDOUT, check=True)
         data = json.loads(result.read_text())
+        if data.get("reference_document_flux", False) != args.reference_document:
+            raise RuntimeError(f"Unexpected reference document implementation: {result}")
+        if data.get("reference_roe_harten", False) != args.reference_roe:
+            raise RuntimeError(f"Unexpected Roe implementation: {result}")
+        if data.get("method", "LeastSquares") != args.method:
+            raise RuntimeError(f"Unexpected reconstruction method: {result}")
+        if data.get("traditional_edge_midpoint_flux") != args.edge_midpoint:
+            raise RuntimeError(f"Unexpected interface flux selection: {result}")
         if data["problem"] != "compressible_taylor_green" or data["mode"] != mode:
             raise RuntimeError(f"Unexpected output metadata: {result}")
         for rank in range(args.ranks):

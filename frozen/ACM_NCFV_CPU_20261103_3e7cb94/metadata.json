@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-03T17:59:11.370251",
+  "git_head": "3e7cb9413dc26b7836f85213fcde2954ec6cc1b1",
+  "description": "Updated to kirabo/main before GPU development; preserved local CPU changes; CPU rebuilt. No new commit.",
+  "source_files": 1792,
+  "cpu_module_files": 403
+}

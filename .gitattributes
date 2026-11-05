@@ -1,0 +1,3 @@
+# Keep frozen build metadata and archived patch context byte-for-byte.
+frozen/**/CMakeCache.txt -whitespace
+frozen/**/working_tree.patch -whitespace

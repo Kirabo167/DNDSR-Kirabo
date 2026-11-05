@@ -1,0 +1,62 @@
+{
+  "cpu_baseline": "3e7cb9413dc26b7836f85213fcde2954ec6cc1b1 plus preserved frozen local changes",
+  "sst_bdf2": {
+    "comparisons": 78,
+    "all_passed": true,
+    "maximum_scaled_error": 4.490480868570054e-09,
+    "tolerance": 5e-08,
+    "scope": "Thirteen configurations; np1/np2; frozen-source CPU, explicit host reference, and CUDA. Includes stiff history BE fallback and repeated true-linear-residual SGS corrections.",
+    "gpu_executable_sha256": [
+      "23fd60a7364539e81757f633ab6d40eeb87ed3516bd2ac9dc9b5fac2ce3e1935"
+    ]
+  },
+  "explicit_acm_regression": {
+    "comparisons": 120,
+    "all_passed": true,
+    "maximum_scaled_error": 6.38378239159465e-16
+  },
+  "resident_profiles": [
+    {
+      "steps": 4,
+      "kernels": 332,
+      "control_scalar_bytes": 2560,
+      "MPI_halo_staging_bytes": 0,
+      "step_host_field_transfer_bytes": 0,
+      "step_device_allocations": 0
+    },
+    {
+      "steps": 4,
+      "kernels": 684,
+      "control_scalar_bytes": 2560,
+      "MPI_halo_staging_bytes": 576512,
+      "step_host_field_transfer_bytes": 0,
+      "step_device_allocations": 0
+    },
+    {
+      "steps": 4,
+      "kernels": 684,
+      "control_scalar_bytes": 2560,
+      "MPI_halo_staging_bytes": 576512,
+      "step_host_field_transfer_bytes": 0,
+      "step_device_allocations": 0
+    }
+  ],
+  "memory_check": "Compute Sanitizer memcheck: 0 errors in profile_final/acm_sst_memcheck.log",
+  "field_transfer_scope": "Excludes explicitly marked pinned-host MPI halo transport; numerical arrays and updates remain on GPU.",
+  "raw_validation_records": "Local data/out/GPU/SUBOFF_SST_BDF2_20261104; large traces and binaries are excluded from Git.",
+  "suboff_run_at_snapshot": {
+    "updated_utc": "2026-11-05T04:05:21.996110+00:00",
+    "state": "running",
+    "completed_physical_steps": 3341,
+    "requested_physical_steps": 20000,
+    "physical_time": 3.341,
+    "last_inner_converged": false
+  },
+  "suboff_scope": "The 20000-step run is ongoing; no claim of physical-step convergence or validated flow accuracy.",
+  "mesh": {
+    "file": "SUBOFF_external3914184_20261104.cgns",
+    "sha256": "76251a5c33b2ed41436a857b9b46b34ff3129df6f46cf72d972475b0feb1e085",
+    "cells": 3914184,
+    "included_in_git": false
+  }
+}
