@@ -214,6 +214,12 @@ namespace DNDS::NCFV
          * @pre Initialize() has completed; all ranks participate.
          */
         real EvaluateResidual() { return _spatial->EvaluateRHS(_state, _rhs); }
+        void SetTraditionalEdgeMidpointFluxForDiagnostics(bool enabled)
+        {
+            DNDS_check_throw_info(_spatial != nullptr,
+                                  "Initialize solver before selecting midpoint flux");
+            _spatial->SetTraditionalEdgeMidpointFluxForDiagnostics(enabled);
+        }
         /**
          * @brief Enable intrusive internal-edge flux timing after Initialize().
          * @param enabled True to collect intrusive internal-edge kernel timings; false to retain ordinary phase

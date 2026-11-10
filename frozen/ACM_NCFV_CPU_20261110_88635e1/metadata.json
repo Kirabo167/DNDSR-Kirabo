@@ -1,0 +1,13 @@
+{
+  "date": "2026-11-10",
+  "upstream_main": "88635e1c4675fe6cbbb56bb8d5063d7d751fabe8",
+  "previous_snapshot": "ACM_NCFV_CPU_20261103_3e7cb94",
+  "authorization": "User explicitly requested main synchronization and CPU/GPU updates and commits.",
+  "preserved_cpu_changes": "Three NCFV diagnostic-hook files from GPUACM e113c2f; 130 added lines.",
+  "source_files": 63,
+  "validation": {
+    "cpu_ctest": "27/27 passed; ACM, ACMVariable, Euler RANS and NCFV, MPI np=1/2/4/8",
+    "build": "Release, GCC 13.3, OpenMPI; Cantera disabled"
+  },
+  "local_artifacts": "source.tar.gz and bin/*.exe remain local; source hashes and metadata are versioned."
+}

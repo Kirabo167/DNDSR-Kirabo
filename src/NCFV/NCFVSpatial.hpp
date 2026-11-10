@@ -167,6 +167,12 @@ namespace DNDS::NCFV
         const NodeHalo &_nodeHalo;
         real _maximumStep = veryLargeReal;
         bool _detailedFluxTiming = false;
+        bool _traditionalEdgeMidpointFlux = false;
+        bool _referenceRoeHarten = false;
+        bool _referenceDocumentFlux = false;
+        const NodeStatePair *_referenceMeans = nullptr;
+        std::vector<Eigen::VectorXd> _referenceBasisMeans;
+        mutable index _referenceMeanFallbackCount = 0;
         State _interiorInviscidCorrectionScales = State::Ones();
         bool _scaleInteriorInviscidCorrection = false;
         int _singleZeroInviscidCorrectionComponent = -1;
@@ -584,6 +590,46 @@ namespace DNDS::NCFV
          *     instrumentation.
          */
         void EnableDetailedFluxTiming(bool enabled) { _detailedFluxTiming = enabled; }
+        /** Evaluate each internal macro-interface once at its primal-edge midpoint. */
+        void SetTraditionalEdgeMidpointFluxForDiagnostics(bool enabled)
+        {
+            DNDS_check_throw_info(!enabled || _mode == IntegrationMode::TraditionalQuadrature,
+                                  "Edge midpoint flux requires traditional reconstruction");
+            _traditionalEdgeMidpointFlux = enabled;
+        }
+        /** Static-grid Roe--Pike flux with the supplied reference's delta=0.15*a fix. */
+        void SetReferenceRoeHartenForDiagnostics(bool enabled)
+        {
+            DNDS_check_throw_info(!enabled || _physics.riemannSolver == Euler::Gas::Roe,
+                                  "Reference Harten flux requires Roe");
+            _referenceRoeHarten = enabled;
+        }
+        State EvaluateNumericalFluxForDiagnostics(
+            const State &left, const State &right, const SpatialVector &normal) const
+        {
+            return NumericalFlux(left, right, normal);
+        }
+        /** Literal stationary, periodic InvisFluxRoeHO assembly for accuracy diagnostics. */
+        void SetReferenceDocumentFluxForDiagnostics(bool enabled)
+        {
+            if (enabled)
+            {
+                DNDS_check_throw_info(!_physics.viscous.enabled,
+                                      "Reference document diagnostic requires inviscid flow");
+                for (const auto &volume : _geometry.NodeVolumes())
+                    DNDS_check_throw_info(volume.boundaryPieces.empty(),
+                                          "Reference document diagnostic requires stitched periodic geometry");
+                SetTraditionalEdgeMidpointFluxForDiagnostics(true);
+                SetReferenceRoeHartenForDiagnostics(true);
+                _referenceBasisMeans.resize(static_cast<std::size_t>(_nodeHalo.NumNodeProc()));
+                for (index node = 0; node < _nodeHalo.NumNodeProc(); node++)
+                    _referenceBasisMeans[static_cast<std::size_t>(node)] = Reconstruction::MeanBasis(
+                        _nodeHalo.MomentsRelative(node, node), Vector3::Zero(),
+                        _reconstruction.ReferenceLengths(node), dimension);
+            }
+            _referenceDocumentFlux = enabled;
+        }
+        [[nodiscard]] index ReferenceMeanFallbackCount() const { return _referenceMeanFallbackCount; }
         /**
          * @brief Scale the interior numerical-minus-central flux by conserved component.
          * @param scales dimension+2 finite factors in [0,1] multiplying the interior numerical-minus-central flux

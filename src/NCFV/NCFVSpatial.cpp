@@ -248,6 +248,44 @@ namespace DNDS::NCFV
         const SpatialVector &unitNormal) const
     {
         ++_riemannSolverCallCount;
+        if (_referenceRoeHarten)
+        {
+            const real rhoL = left(0), rhoR = right(0);
+            const SpatialVector vL = left.template segment<dimension>(1) / rhoL;
+            const SpatialVector vR = right.template segment<dimension>(1) / rhoR;
+            const real pL = Pressure(left), pR = Pressure(right);
+            const real ratio = std::sqrt(rhoR / rhoL);
+            const real rho = std::sqrt(rhoL * rhoR);
+            const SpatialVector velocity = (vL + ratio * vR) / (1 + ratio);
+            const real enthalpy = ((left(dimension + 1) + pL) / rhoL +
+                                   ratio * (right(dimension + 1) + pR) / rhoR) / (1 + ratio);
+            const real aSquared = (_physics.gamma - 1) *
+                (enthalpy - 0.5 * velocity.squaredNorm());
+            DNDS_check_throw_info(aSquared > 0, "Reference Roe sound speed is nonpositive");
+            const real sound = std::sqrt(aSquared);
+            const real un = velocity.dot(unitNormal);
+            const real threshold = 0.15 * sound;
+            const auto fixed = [threshold](real value)
+            {
+                value = std::abs(value);
+                return value < threshold ? 0.5 * (value * value / threshold + threshold) : value;
+            };
+            const real contact = fixed(un);
+            const SpatialVector dv = vR - vL;
+            const real dun = dv.dot(unitNormal);
+            const real b0 = contact * (rhoR - rhoL - (pR - pL) / aSquared);
+            const real bp = 0.5 * fixed(un + sound) * (pR - pL + rho * sound * dun) / aSquared;
+            const real bm = 0.5 * fixed(un - sound) * (pR - pL - rho * sound * dun) / aSquared;
+            const real mass = b0 + bp + bm;
+            const real normal = sound * (bp - bm);
+            const SpatialVector shear = contact * rho * (dv - unitNormal * dun);
+            State dissipation;
+            dissipation(0) = mass;
+            dissipation.template segment<dimension>(1) = velocity * mass + unitNormal * normal + shear;
+            dissipation(dimension + 1) = enthalpy * mass + un * normal +
+                velocity.dot(shear) - aSquared * b0 / (_physics.gamma - 1);
+            return 0.5 * (PhysicalFlux(left, unitNormal) + PhysicalFlux(right, unitNormal) - dissipation);
+        }
         State flux = State::Zero();
         SpatialVector gridVelocity = SpatialVector::Zero();
         real acousticMinus = 0;
@@ -330,6 +368,20 @@ namespace DNDS::NCFV
         DNDS_check_throw_info(volume > verySmallReal,
                               "NCFV traditional reconstruction has a zero-volume anchor");
         const Vector3 referenceLengths = _reconstruction.ReferenceLengths(anchorNode);
+        if (_referenceDocumentFlux)
+        {
+            DNDS_assert(_referenceMeans != nullptr);
+            const State mean = (*_referenceMeans)[anchorNode];
+            const State candidate = mean + _coefficients[anchorNode].transpose() *
+                (Reconstruction::EvaluateBasis(
+                     _nodeHalo.DisplacementToPoint(anchorNode, point), referenceLengths, dimension) -
+                 _referenceBasisMeans[static_cast<std::size_t>(anchorNode)]);
+            if (candidate.allFinite() && candidate(0) > 0 &&
+                candidate(dimension + 1) > 0 && Pressure(candidate) > 0)
+                return candidate;
+            ++_referenceMeanFallbackCount;
+            return mean;
+        }
         State state = _pointValues[anchorNode];
         state += _coefficients[anchorNode].transpose() *
                  Reconstruction::EvaluateBasis(
@@ -764,6 +816,22 @@ namespace DNDS::NCFV
 
         if (_mode == IntegrationMode::TraditionalQuadrature)
         {
+            if (_traditionalEdgeMidpointFlux)
+            {
+                // Use the edge's minimum-image frame, including periodic edges.
+                const Vector3 midpoint = 0.5 *
+                    (surface.nodeCoordinates[0] + surface.nodeCoordinates[1]);
+                const real effectiveArea = surface.vectorMeasure.template head<dimension>().norm();
+                const State left = EvaluateTraditionalState(node0, midpoint);
+                const State right = EvaluateTraditionalState(node1, midpoint);
+                State flux = NumericalFlux(left, right, unitNormal);
+                if (_physics.viscous.enabled)
+                    flux -= InternalViscousFlux(
+                        left, right, EvaluateTraditionalGradient(node0, midpoint),
+                        EvaluateTraditionalGradient(node1, midpoint),
+                        unitNormal, characteristicDistance);
+                return effectiveArea * flux;
+            }
             State integral = State::Zero();
             for (const auto &point : surface.quadrature)
             {
@@ -1187,6 +1255,7 @@ namespace DNDS::NCFV
     template <int dimension>
     void SpatialOperator<dimension>::Reconstruct(NodeStatePair &means)
     {
+        _referenceMeans = &means;
         double phaseStart = MPI_Wtime();
         means.trans.startPersistentPull();
         means.trans.waitPersistentPull();
@@ -1544,7 +1613,16 @@ namespace DNDS::NCFV
         {
             State residual = EvaluateOwnedBoundaryFlux(iNode, means);
             for (const auto &incidence : _topology.Node2Edge(iNode))
+            {
                 residual += incidence.outwardSign * State(_edgeFlux[incidence.edge]);
+                if (_referenceDocumentFlux)
+                {
+                    SpatialVector areaVector;
+                    for (int d = 0; d < dimension; d++)
+                        areaVector(d) = _geometry.EdgeMetrics()(incidence.edge, d);
+                    residual -= incidence.outwardSign * PhysicalFlux(State(means[iNode]), areaVector);
+                }
+            }
             const real volume = _geometry.NodeVolume(iNode).moments.measure;
             rhs[iNode] = -residual / volume;
         }
