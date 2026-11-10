@@ -8,6 +8,7 @@
 #include "doctest.h"
 #include "ACMVariable/ACMConfig.hpp"
 #include "ACMVariable/ACMBDF2.hpp"
+#include "ACMVariable/ACMTurbulence.hpp"
 #include <random>
 
 using namespace DNDS::ACMVariable;
@@ -233,5 +234,32 @@ TEST_CASE("Every variable-density turbulence mode has finite closure and wall da
                                       0.04,1.7,0.01,eddy,settings).allFinite());
         CHECK(GenerateTurbulenceBoundaryState(BoundaryType::BCWall,state,0.04,
                                               1.7,0.01,settings).allFinite());
+    }
+}
+
+/// @test The original SST CD floor must not switch weak, slowly decaying turbulence to the outer coefficients.
+/// Reference: Menter (1994), DOI 10.2514/3.12149; TMR sst.html#sst-std.
+TEST_CASE("Variable ACM SST 1994 weak turbulence retains the inner blending limit")
+{
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::KOmegaSST;
+    TurbulenceState state;
+    state << 1e-8, 1e-6;
+    const TurbulenceGradient gradient = TurbulenceGradient::Zero();
+    for (const real rho : {1.0, 3.0})
+    {
+        const real mu = rho * 1e-6;
+        // sqrt(k)/(betaStar*omega*d)=11.11; CD=1e-20 gives F1=1.
+        // A 2003-style CD=1e-10 instead gives F1 about 1.37e-6 at rho=1.
+        const auto source = TurbulenceSource(state, VelocityGradient::Zero(), gradient,
+                                             100, rho, mu, settings);
+        CHECK(-source(1) / (state(1) * state(1)) == doctest::Approx(0.075));
+        TurbulenceGradient diffusionGradient = TurbulenceGradient::Zero();
+        diffusionGradient(0, 0) = 1;
+        diffusionGradient(1, 1) = 1; // orthogonal gradients keep CD=0
+        const TurbulenceState diffusion = TurbulenceDiffusiveFlux(state, diffusionGradient,
+            Vector3(1, 1, 0).normalized(), 100, rho, mu, rho * 1e-5, settings) * std::sqrt(2.0);
+        CHECK(diffusion(0) == doctest::Approx(1e-6 + 0.85e-5).epsilon(1e-12));
+        CHECK(diffusion(1) == doctest::Approx(1e-6 + 0.5e-5).epsilon(1e-12));
     }
 }

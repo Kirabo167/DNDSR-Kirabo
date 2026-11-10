@@ -154,7 +154,7 @@ namespace DNDS::ACM
             const real cross = turbulenceGradient.col(0).dot(turbulenceGradient.col(1));
             const real cdKw = std::max(
                 2.0 * rho0 * sigmaOmega2 * cross / omega,
-                1e-10);
+                1e-20); // Original SST (1994), not the SST-2003 CD floor.
 
             const real nearWall = std::sqrt(k) / (betaStar * omega * d);
             const real viscousWall = 500.0 * nu / (d * d * omega);
@@ -666,10 +666,8 @@ namespace DNDS::ACM
                     std::max(1.0, 1.0 / PositiveDenominator(std::sqrt(turbulentReynolds / 2.0)));
 
                 // Euler transports rho*k and rho*epsilon.  Dividing its realizable-model
-                // source by the constant rho0 gives the primitive source used here.  Keep
-                // the intended epsilon entry (Euler's current source helper contains an
-                // obvious k/epsilon index typo at this point) while retaining its Shih
-                // production cap and E correction.  Modifier: Runzhi Ma.
+                // source by the constant rho0 gives the primitive source used here.
+                // Retain its Shih production cap and E correction. Modifier: Runzhi Ma.
                 real limitedProduction = rawProductionK;
                 if (turbulentViscosity > minimumClosureValue)
                     limitedProduction = std::min(

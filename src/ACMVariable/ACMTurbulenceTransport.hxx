@@ -523,6 +523,14 @@ namespace DNDS::ACMVariable
             auto quadrature = _vfv->GetFaceQuad(iFace);
             auto &faceValues = _faceEddyViscosity[static_cast<std::size_t>(iFace)];
             faceValues.assign(static_cast<std::size_t>(quadrature.GetNumPoints()), 0.0);
+            if (faceToCell[1] == UnInitIndex)
+            {
+                const auto type = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(iFace));
+                // Cell positivity floors must not replace the exact no-slip value k=0
+                // (or nuTilde=0) by a positive face eddy viscosity. Menter (1994).
+                if (type == BoundaryType::BCWall || type == BoundaryType::BCWallIsothermal)
+                    continue;
+            }
             for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
             {
                 const Vector3 normal = ToVector3(_vfv->GetFaceNorm(iFace, iG));

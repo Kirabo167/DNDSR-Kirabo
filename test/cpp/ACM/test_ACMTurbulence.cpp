@@ -359,3 +359,26 @@ TEST_CASE("ACM turbulence boundary states follow selected closure")
     CHECK(0.5 * (interior(0) + far(0)) == doctest::Approx(0.2));
     CHECK(0.5 * (interior(1) + far(1)) == doctest::Approx(4.0));
 }
+
+/// @test The original SST CD floor must not switch weak, slowly decaying turbulence to the outer coefficients.
+/// Reference: Menter (1994), DOI 10.2514/3.12149; TMR sst.html#sst-std.
+TEST_CASE("ACM SST 1994 weak turbulence retains the inner blending limit")
+{
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::KOmegaSST;
+    TurbulenceState state;
+    state << 1e-8, 1e-6;
+    const TurbulenceGradient gradient = TurbulenceGradient::Zero();
+    for (const real rho : {1.0, 3.0})
+    {
+        const real mu = rho * 1e-6;
+        // sqrt(k)/(betaStar*omega*d)=11.11; CD=1e-20 gives F1=1.
+        // A 2003-style CD=1e-10 instead gives F1 about 1.37e-6 at rho=1.
+        const auto source = TurbulenceSource(state, VelocityGradient::Zero(), gradient,
+                                             100, rho, mu, settings);
+        CHECK(-source(1) / (state(1) * state(1)) == doctest::Approx(0.075));
+        const auto diffusion = TurbulenceDiffusivity(state, gradient, 100, rho, mu, rho * 1e-5, settings);
+        CHECK(diffusion(0) == doctest::Approx(1e-6 + 0.85e-5).epsilon(1e-12));
+        CHECK(diffusion(1) == doctest::Approx(1e-6 + 0.5e-5).epsilon(1e-12));
+    }
+}

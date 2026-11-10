@@ -1413,3 +1413,59 @@ int main(int argc, char **argv)
     MPI_Finalize();
     return result;
 }
+
+/// @test Positive cell floors must not reintroduce turbulent viscosity on no-slip faces.
+TEST_CASE("ACM and variable ACM no-slip faces have exactly zero eddy viscosity")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    const auto checkFaces = [](auto &transport, auto &solver)
+    {
+        transport.Initialize();
+        transport.Prepare(solver.GetState());
+        const auto mesh = solver.GetMesh();
+        REQUIRE(mesh->NumFaceProc() == 4);
+        for (DNDS::index face = 0; face < mesh->NumFaceProc(); ++face)
+        {
+            const auto quad = solver.GetReconstruction()->GetFaceQuad(face);
+            for (int point = 0; point < quad.GetNumPoints(); ++point)
+                CHECK(transport.FaceEddyViscosity(face, point) == 0);
+        }
+    };
+    for (const auto wall : {ACM::BoundaryType::BCWall, ACM::BoundaryType::BCWallIsothermal})
+    {
+        auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+                                        ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 0);
+        cfg.defaultBoundaryType = wall;
+        cfg.turbulenceSettings.minimumValue[0] = 0.01;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACM::BoundaryHandler>(cfg.defaultBoundaryType,
+            cfg.InitialState(), cfg.boundaryConditions);
+        ACM::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+            cfg.acmSettings, cfg.turbulenceSettings, boundary);
+        checkFaces(transport, solver);
+    }
+    for (const auto wall : {ACMVariable::BoundaryType::BCWall, ACMVariable::BoundaryType::BCWallIsothermal})
+    {
+        ACMVariable::KernelConfiguration cfg;
+        cfg.meshSettings.meshFile = meshFile.path.string();
+        cfg.initialState = {1, 0, 0, 0, 0};
+        cfg.defaultBoundaryType = wall;
+        cfg.acmSettings.enableViscousFlux = true;
+        cfg.acmSettings.dynamicViscosity = 0.001;
+        cfg.turbulenceSettings.model = ACMVariable::TurbulenceModel::KOmegaSST;
+        cfg.turbulenceSettings.initialValue = {0.2, 4};
+        cfg.turbulenceSettings.minimumValue[0] = 0.01;
+        ACMVariable::ACMSolver<ACMVariable::ACMModel::VariableDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACMVariable::BoundaryHandler>(cfg.defaultBoundaryType,
+            cfg.InitialState(), cfg.boundaryConditions);
+        ACMVariable::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+            cfg.acmSettings, cfg.turbulenceSettings, boundary);
+        checkFaces(transport, solver);
+    }
+}
