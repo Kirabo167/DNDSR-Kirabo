@@ -112,6 +112,16 @@ namespace DNDS::ACMVariable
         const TTurbulenceDof &GetState() const { return _state; }
 
         /** @brief Return the selected runtime turbulence model. */
+        /** @brief Left, right and boundary-target isotropic pressures for the flow Riemann solver.
+         * Increments are conservative rho*k cell-mean perturbations; reconstructed slopes stay frozen.
+         */
+        std::array<real, 3> FaceTurbulentPressure(index face, int point, const State &left,
+            const State &right, real leftIncrement = 0, real rightIncrement = 0) const;
+
+        using FlowBoundaryFunction = std::function<State(index, const State &, const Vector3 &, const Vector3 &, real)>;
+        /** @brief Share the pressure-consistent flow boundary with closure gradients. */
+        void SetFlowBoundaryProvider(FlowBoundaryFunction boundary) { _flowBoundary = std::move(boundary); }
+
         TurbulenceModel GetModel() const { return _turbulenceSettings.model; }
 
         /** @brief Return the number of active transport equations. */
@@ -150,6 +160,10 @@ namespace DNDS::ACMVariable
                             real dt, const ScalarField *pseudoSteps, real time);
 
     private:
+        FlowBoundaryFunction _flowBoundary;
+        State FlowBoundaryState(index face, const State &left, const Vector3 &normal,
+            const Settings &settings, const Vector3 &point, real time) const;
+
         const TFlowDof *_flow = nullptr; ///< Current density/velocity data, refreshed by Prepare.
         std::function<real(index, int)> _massFlux; ///< Shared oriented mass flux from flow.
         std::vector<TurbulenceState> _previous, _previousPrevious; ///< Accepted rho*phi histories.

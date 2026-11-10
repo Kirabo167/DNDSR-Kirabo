@@ -80,3 +80,21 @@ mpirun -np 4 ./app/acm2EQ3D.exe \
 cases/acm/{2D,3D}/{SA,2EQ}中提供四份完整示例及配套schema。已有三维SST圆柱和SUBOFF配置已切换为ConstantDensity2EQ3D、fieldNVariables=6，保留原有文件路径。all_acm/all_solvers及cases/update_schemas.sh包含新入口。
 
 实现来源：[模型布局与换算](../../src/ACM/ACMModelState.hpp)、[统一求解器](../../src/ACM/ACMRANSSolver.hpp)、[时间推进](../../src/ACM/ACMRANSSolver.hxx)、[输运及源项线性化](../../src/ACM/ACMTurbulenceTransport.hxx)、[入口校验](../../src/ACM/SingleBlockApp.hpp)。
+
+## 显式各向同性湍流应力与压力（2026-11-10）
+
+常密度和变密度 ACM 的两方程模型默认启用 `turbulenceSettings.includeIsotropicStress=true`，
+将 `(2/3) rho*k I` 加入动量的总法向应力。主状态和输入/输出的 `Pressure` 此时为平均静压 p。
+CFV 面 Riemann 求解与压力耗散使用临时有效压力 `p+(2/3)rho*k`；不会再额外叠加同一通量。
+壁面在总法向应力上外推，远场和压力出口给定的静压先与对应湍流压力合并，再生成特征边界。
+常密度统一 RANS 隐式算子加入 rho*k 到动量及共享连续性通量的面交叉导数；预条件器保留近似块三角结构。
+变密度 ACM 仍使用已有分离式湍流更新，流场隐式步骤冻结 k，外迭代重新求值。
+SA 和层流不添加 k 应力。
+
+`includeIsotropicStress=false` 保留旧修正压力约定 `p*=p+(2/3)rho*k`。
+旧的常密度 VTK-HDF 重启若存储 p*，可启用 `restartSettings.pressureIsModified=true`，
+加载真实 k 后自动将压力转换为静压；缺少湍流字段时拒绝猜测转换。
+此转换要求显式应力已启用；继续旧约定时不用转换。新计算生成的静压重启应保持该选项为 false。
+均匀初值和压力边界不做隐式猜测，启用显式应力后应直接填写静压。
+统一 RANS 输出另含 `TurbulentPressure=(2/3)rho*k`，方便核对静压与修正压力。
+旧版实现对照文档中的“各向同性项吸收入压力”只适用于兼容模式。

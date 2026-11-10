@@ -186,6 +186,19 @@ namespace DNDS::ACM
                 [turbulence = _turbulence](index iFace, int iG)
                 {
                     return turbulence->FaceEddyViscosity(iFace, iG);
+                },
+                [turbulence = _turbulence](index face, int point, const State &left, const State &right,
+                                          real leftIncrement, real rightIncrement)
+                {
+                    return turbulence->FaceTurbulentPressure(face, point, left, right, leftIncrement, rightIncrement);
+                });
+            _turbulence->SetFlowBoundaryProvider(
+                [evaluator = std::weak_ptr<TEvaluator>(_evaluator)](index face, const State &left,
+                    const Vector3 &normal, const Vector3 &point, real time)
+                {
+                    const auto locked = evaluator.lock();
+                    DNDS_check_throw_info(locked != nullptr, "Turbulence flow-boundary evaluator expired");
+                    return locked->BoundaryStateForTurbulence(face, left, normal, point, time);
                 });
         }
 
@@ -339,6 +352,17 @@ namespace DNDS::ACM
             }
         }
         H5Fclose(file);
+        if (restart.pressureIsModified && _turbulence && _turbulence->ActiveVariableCount() == 2 &&
+            _configuration.turbulenceSettings.includeIsotropicStress)
+        {
+            DNDS_check_throw_info(turbulenceLoaded,
+                "Modified-pressure restart conversion requires loaded turbulence k");
+            const auto &q = _turbulence->GetState();
+            for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+                _u[cell](3) -= (2.0 / 3.0) * _configuration.acmSettings.rho0 * q[cell](0);
+            _u.trans.startPersistentPull();
+            _u.trans.waitPersistentPull();
+        }
         if (_mpi.rank == 0)
         {
             log() << "ACM restart loaded flow field from " << restart.flowFile

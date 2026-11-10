@@ -382,3 +382,11 @@ TEST_CASE("ACM SST 1994 weak turbulence retains the inner blending limit")
         CHECK(diffusion(1) == doctest::Approx(1e-6 + 0.5e-5).epsilon(1e-12));
     }
 }
+
+TEST_CASE("Isotropic turbulence stress is two thirds rho k times the identity")
+{
+    const auto stress = IsotropicTurbulenceStress(3, 0.2);
+    CHECK(stress.trace() == doctest::Approx(1.2));
+    CHECK((stress - 0.4 * Eigen::Matrix<DNDS::real, 3, 3>::Identity()).norm() < 1e-15);
+    CHECK(IsotropicTurbulenceStress(3, 0).norm() == 0);
+}

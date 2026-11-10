@@ -61,6 +61,9 @@ namespace DNDS::ACMVariable
     using TurbulenceGradient = Eigen::Matrix<real, 3, 2>;      ///< Spatial rows and turbulence-variable columns.
     using VelocityGradient = Eigen::Matrix<real, 3, 3>;        ///< `du_i/dx_j` in global coordinates.
 
+    /** @brief Isotropic Reynolds stress (2/3) rho*k I, including reflected ghost k. */
+    Eigen::Matrix<real, 3, 3> IsotropicTurbulenceStress(real density, real kineticEnergy);
+
     /**
      * @brief Configuration shared by all ACM turbulence closures and their segregated transport.
      * @note Modifier: Runzhi Ma.
@@ -74,6 +77,7 @@ namespace DNDS::ACMVariable
         std::array<real, 2> maximumValue{1e6, 1e12};            ///< Finite safety ceilings for explicit transport stages.
         real maximumEddyViscosityRatio = 1e5;                  ///< Upper bound `mu_t/mu`.
         real wallOmegaCoefficient = 800.0;                     ///< Wall value `omega=C*nu/d^2`, matching Euler's coefficient.
+        bool includeIsotropicStress = true;                    ///< Store static p and add (2/3) rho*k I; false retains legacy modified pressure.
         bool enableSourceTerms = true;                         ///< Enable production/destruction source terms.
         bool secondOrderReconstruction = true;                 ///< Use limited Green--Gauss face reconstruction.
         int transportSubsteps = 4;                             ///< SSPRK3 turbulence substeps per flow step.
@@ -96,6 +100,7 @@ namespace DNDS::ACMVariable
                        DNDS::Config::range(0.0));
             DNDS_FIELD(wallOmegaCoefficient, "Wall omega coefficient in omega=C*nu/d^2",
                        DNDS::Config::range(0.0));
+            DNDS_FIELD(includeIsotropicStress, "Add isotropic k stress and interpret pressure as static; false uses legacy modified pressure");
             DNDS_FIELD(enableSourceTerms, "Enable turbulence production and destruction sources");
             DNDS_FIELD(secondOrderReconstruction, "Use limited second-order turbulence reconstruction");
             DNDS_FIELD(transportSubsteps, "Turbulence SSPRK3 substeps per ACM flow step",

@@ -18,6 +18,75 @@
 
 namespace DNDS::ACMVariable
 {
+
+    template <int gDim>
+    FluxResult ACMEvaluator<gDim>::InviscidFaceFlux(
+        const State &left, const State &right, const Vector3 &normal,
+        index face, int point, real time, real leftKIncrement, real rightKIncrement) const
+    {
+        if (!_turbulentPressure)
+            return InviscidFlux(_settings.riemannSolverType, left, right, normal, _settings);
+        const auto pressure = _turbulentPressure(face, point, left, right, leftKIncrement, rightKIncrement);
+        State totalLeft = left, totalRight = right;
+        totalLeft(4) += pressure[0];
+        totalRight(4) += pressure[1];
+        if (_mesh->face2cell(face, 1) == UnInitIndex)
+        {
+            auto condition = _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(face));
+            condition.value[4] += pressure[2];
+            // Apply pressure data as static p; impose extrapolation on total normal stress.
+            // In particular, an impermeable wall cannot acquire a mass flux from a k jump.
+            totalRight = GenerateBoundaryState(condition, totalLeft, normal, _settings,
+                ToVector3(_vfv->GetFaceQuadraturePPhys(face, point)), time);
+        }
+        return InviscidFlux(_settings.riemannSolverType, totalLeft, totalRight, normal, _settings);
+    }
+
+    template <int gDim>
+    void ACMEvaluator<gDim>::AssembleKineticPressureLinearization(
+        TDof &u, KineticPressureJacobianField &faces, real time)
+    {
+        faces.assign(static_cast<std::size_t>(_mesh->NumFaceProc()), {State::Zero(), State::Zero()});
+        if (!_turbulentPressure)
+            return;
+        for (index face = 0; face < _mesh->NumFaceProc(); ++face)
+        {
+            const auto cells = _mesh->face2cell[face];
+            if (cells[0] == cells[1])
+                continue;
+            const auto quad = _vfv->GetFaceQuad(face);
+            for (int point = 0; point < quad.GetNumPoints(); ++point)
+            {
+                const State left = u[cells[0]];
+                const Vector3 normal = ToVector3(_vfv->GetFaceNorm(face, point));
+                State right = left;
+                if (cells[1] != UnInitIndex)
+                {
+                    right = u[cells[1]];
+                    Eigen::RowVector<real, nVarsFixed> row = right.transpose();
+                    _vfv->ApplyPeriodicTransform(1, _mesh->GetFaceZone(face), row);
+                    right = row.transpose();
+                }
+                else
+                    right = GenerateBoundaryForFace(face, left, normal,
+                        ToVector3(_vfv->GetFaceQuadraturePPhys(face, point)), time);
+                const auto pressure = _turbulentPressure(face, point, left, right, 0, 0);
+                if (pressure[0] == 0 && pressure[1] == 0)
+                    continue; // SA, legacy pressure mode, or no kinetic stress.
+                const real epsilon = 1e-6 * std::max({real(1e-8), std::abs(pressure[0]), std::abs(pressure[1])});
+                const real factor = quad.GetWeight(point) * _vfv->GetFaceJacobiDet(face, point) / (2 * epsilon);
+                for (int side = 0; side < (cells[1] == UnInitIndex ? 1 : 2); ++side)
+                {
+                    const State plus = InviscidFaceFlux(left, right, normal, face, point, time,
+                        side == 0 ? epsilon : 0, side == 1 ? epsilon : 0).flux;
+                    const State minus = InviscidFaceFlux(left, right, normal, face, point, time,
+                        side == 0 ? -epsilon : 0, side == 1 ? -epsilon : 0).flux;
+                    faces[face][side] += factor * (plus - minus);
+                }
+            }
+        }
+    }
+
     template <int gDim>
     ACMEvaluator<gDim>::ACMEvaluator(
         ssp<Geom::UnstructuredMesh> mesh,
@@ -57,13 +126,15 @@ namespace DNDS::ACMVariable
     /** @copydoc ACMEvaluator::SetTurbulenceCoupling */
     void ACMEvaluator<gDim>::SetTurbulenceCoupling(
         TurbulencePrepareFunction prepareFunction,
-        TurbulentViscosityFunction viscosityFunction)
+        TurbulentViscosityFunction viscosityFunction,
+        TurbulentPressureFunction pressureFunction)
     {
         DNDS_check_throw_info(
             static_cast<bool>(prepareFunction) == static_cast<bool>(viscosityFunction),
             "ACM turbulence prepare and viscosity callbacks must be attached together");
         _prepareTurbulence = std::move(prepareFunction);
         _turbulentViscosity = std::move(viscosityFunction);
+        _turbulentPressure = std::move(pressureFunction);
     }
 
     template <int gDim>
@@ -120,33 +191,32 @@ namespace DNDS::ACMVariable
             (void)cellMean;
             (void)iCell;
             (void)iG;
-            const Geom::t_index faceZone = Geom::FaceIDIsExternalBC(faceType)
-                                                   ? faceType
-                                                   : _mesh->GetFaceZone(iFace);
+            (void)faceType;
             return GenerateBoundaryForFace(
-                faceZone,
+                iFace,
                 IsFiniteState(interior) ? interior : cellMean,
                 ToVector3(normal),
                 ToVector3(point),
-                time);
+                time, iG);
         };
     }
 
     template <int gDim>
     State ACMEvaluator<gDim>::GenerateBoundaryForFace(
-        Geom::t_index faceZone,
-        const State &interior,
-        const Vector3 &normal,
-        const Vector3 &point,
-        real time) const
+        index face, const State &interior, const Vector3 &normal,
+        const Vector3 &point, real time, int quadrature) const
     {
-        return GenerateBoundaryState(
-            _boundaryHandler->GetConditionFromID(faceZone),
-            interior,
-            normal,
-            _settings,
-            point,
-            time);
+        auto condition = _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(face));
+        const State raw = GenerateBoundaryState(condition, interior, normal, _settings, point, time);
+        if (!_turbulentPressure)
+            return raw;
+        const auto pressure = _turbulentPressure(face, quadrature, interior, raw, 0, 0);
+        State total = interior;
+        total(4) += pressure[0];
+        condition.value[4] += pressure[2];
+        State ghost = GenerateBoundaryState(condition, total, normal, _settings, point, time);
+        ghost(4) -= pressure[1];
+        return ghost; // Static p; its effective total-pressure state is used by InviscidFaceFlux.
     }
 
     template <int gDim>
@@ -163,6 +233,8 @@ namespace DNDS::ACMVariable
         u.trans.startPersistentPull();
         u.trans.waitPersistentPull();
 
+        if (_turbulentPressure && _prepareTurbulence)
+            _prepareTurbulence(u, time);
         const auto boundary = GetBoundaryFunction(time);
         if (_reconstructionSettings.type == ReconstructionType::FirstOrder)
         {
@@ -308,7 +380,7 @@ namespace DNDS::ACMVariable
                     const Vector3 outward = ToVector3(
                         _vfv->GetFaceNormFromCell(iFace, iCell, if2c, -1));
                     neighbour = GenerateBoundaryForFace(
-                        _mesh->GetFaceZone(iFace),
+                        iFace,
                         mean,
                         outward,
                         ToVector3(_vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1)),
@@ -499,19 +571,14 @@ namespace DNDS::ACMVariable
                     else
                     {
                         right = GenerateBoundaryForFace(
-                            _mesh->GetFaceZone(iFace),
+                            iFace,
                             left,
                             unitNormal,
                             ToVector3(_vfv->GetFaceQuadraturePPhys(iFace, iG)),
-                            time);
+                            time, iG);
                     }
 
-                    State totalFlux = InviscidFlux(
-                                          _settings.riemannSolverType,
-                                          left,
-                                          right,
-                                          unitNormal,
-                                          _settings)
+                    State totalFlux = InviscidFaceFlux(left, right, unitNormal, iFace, iG, time)
                                           .flux;
                     _faceMassFlux[iFace][iG] = totalFlux(0);
                     if (_settings.enableViscousFlux)
@@ -544,7 +611,7 @@ namespace DNDS::ACMVariable
                             const Vector3 facePoint = ToVector3(
                                 _vfv->GetFaceQuadraturePPhys(iFace, iG));
                             rightCellState = GenerateBoundaryForFace(
-                                _mesh->GetFaceZone(iFace),
+                                iFace,
                                 leftCellState,
                                 unitNormal,
                                 facePoint,
@@ -627,7 +694,7 @@ namespace DNDS::ACMVariable
             }
             else
                 right = GenerateBoundaryForFace(
-                    _mesh->GetFaceZone(iFace), left, unitNormal, point, time);
+                    iFace, left, unitNormal, point, time);
 
             const real normalVelocityLeft = Velocity(left).dot(unitNormal);
             const real normalVelocityRight = Velocity(right).dot(unitNormal);
@@ -750,12 +817,7 @@ namespace DNDS::ACMVariable
                 };
                 const auto evaluateFlux = [&](const State &left, const State &right)
                 {
-                    State flux = InviscidFlux(
-                                     _settings.riemannSolverType,
-                                     left,
-                                     right,
-                                     unitNormal,
-                                     _settings)
+                    State flux = InviscidFaceFlux(left, right, unitNormal, iFace, iG, time)
                                      .flux;
                     if (_settings.enableViscousFlux)
                     {
@@ -792,9 +854,9 @@ namespace DNDS::ACMVariable
                     if (faceToCell[1] == UnInitIndex)
                     {
                         const State ghostPlus = GenerateBoundaryForFace(
-                            _mesh->GetFaceZone(iFace), leftPlus, unitNormal, point, time);
+                            iFace, leftPlus, unitNormal, point, time);
                         const State ghostMinus = GenerateBoundaryForFace(
-                            _mesh->GetFaceZone(iFace), leftMinus, unitNormal, point, time);
+                            iFace, leftMinus, unitNormal, point, time);
                         leftJacobian.col(variable) =
                             (evaluateFlux(leftPlus, ghostPlus) -
                              evaluateFlux(leftMinus, ghostMinus)) /

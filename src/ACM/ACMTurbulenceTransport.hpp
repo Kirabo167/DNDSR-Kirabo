@@ -185,6 +185,16 @@ namespace DNDS::ACM
         TurbulenceState FrozenFaceAdvectionValue(const TFlowDof &flow, index face, real time = 0) const;
 
         /** @brief Return the selected runtime turbulence model. */
+        /** @brief Left, right and boundary-target isotropic pressures for the flow Riemann solver.
+         * Increments are conservative rho*k cell-mean perturbations; reconstructed slopes stay frozen.
+         */
+        std::array<real, 3> FaceTurbulentPressure(index face, int point, const State &left,
+            const State &right, real leftIncrement = 0, real rightIncrement = 0) const;
+
+        using FlowBoundaryFunction = std::function<State(index, const State &, const Vector3 &, const Vector3 &, real)>;
+        /** @brief Share the pressure-consistent flow boundary with closure gradients. */
+        void SetFlowBoundaryProvider(FlowBoundaryFunction boundary) { _flowBoundary = std::move(boundary); }
+
         TurbulenceModel GetModel() const { return _turbulenceSettings.model; }
 
         /** @brief Raw MPI-global RMS defects for each active equation at the last physical defect evaluation. */
@@ -216,6 +226,10 @@ namespace DNDS::ACM
                                       real time = 0, FaceJacobianField *faceJacobians = nullptr);
 
     private:
+        FlowBoundaryFunction _flowBoundary;
+        State FlowBoundaryState(index face, const State &left, const Vector3 &normal,
+            const Settings &settings, const Vector3 &point, real time) const;
+
         ssp<Geom::UnstructuredMesh> _mesh;          ///< Prepared distributed mesh.
         TpVFV _vfv;                                 ///< Existing CFV metrics and periodic maps.
         Settings _flowSettings;                     ///< Constant density and molecular viscosity.

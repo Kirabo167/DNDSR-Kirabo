@@ -18,6 +18,62 @@
 
 namespace DNDS::ACMVariable
 {
+
+    template <int gDim>
+    State ACMTurbulenceTransport<gDim>::FlowBoundaryState(index face, const State &left,
+        const Vector3 &normal, const Settings &settings, const Vector3 &point, real time) const
+    {
+        if (_flowBoundary)
+            return _flowBoundary(face, left, normal, point, time);
+        return GenerateBoundaryState(_boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(face)),
+            left, normal, settings, point, time);
+    }
+
+    template <int gDim>
+    std::array<real, 3> ACMTurbulenceTransport<gDim>::FaceTurbulentPressure(
+        index face, int point, const State &left, const State &right,
+        real leftIncrement, real rightIncrement) const
+    {
+        if (!_turbulenceSettings.includeIsotropicStress ||
+            TurbulenceVariableCount(_turbulenceSettings.model) != 2)
+            return {0, 0, 0};
+        const auto cells = _mesh->face2cell[face];
+        const real rhoLeft = left(0), rhoRight = right(0);
+        TurbulenceState qLeft = point < 0 ? TurbulenceState(_state[cells[0]])
+            : ReconstructTurbulenceState(cells[0], face, 0, point);
+        qLeft(0) += leftIncrement / rhoLeft;
+        TurbulenceState qRight;
+        if (cells[1] != UnInitIndex)
+        {
+            qRight = point < 0 ? TurbulenceState(_state[cells[1]])
+                : ReconstructTurbulenceState(cells[1], face, 1, point);
+            qRight(0) += rightIncrement / rhoRight;
+        }
+        else
+        {
+            qRight = GenerateTurbulenceBoundaryState(
+                _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(face)), qLeft,
+                _cellWallDistance[static_cast<std::size_t>(cells[0])], rhoLeft,
+                _flowSettings.dynamicViscosity, _turbulenceSettings);
+            const auto type = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(face));
+            if (type == BoundaryType::BCFar &&
+                Velocity(left).dot(ToVector3(_vfv->GetFaceNorm(face, point))) >= 0)
+                qRight = qLeft;
+        }
+        const real pl = IsotropicTurbulenceStress(rhoLeft, qLeft(0))(0, 0);
+        const real pr = IsotropicTurbulenceStress(rhoRight, qRight(0))(0, 0);
+        real target = 0.5 * (pl + pr);
+        if (cells[1] == UnInitIndex)
+        {
+            const auto type = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(face));
+            if (type == BoundaryType::BCFar)
+                target = IsotropicTurbulenceStress(_boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(face)).ValueState()(0), _turbulenceSettings.FarFieldState()(0))(0, 0);
+            else if (type == BoundaryType::BCIn)
+                target = pr; // Flow BCIn prescribes a ghost state rather than a reflected face value.
+        }
+        return {pl, pr, target};
+    }
+
     template <int gDim>
     ACMTurbulenceTransport<gDim>::ACMTurbulenceTransport(
         ssp<Geom::UnstructuredMesh> mesh,
@@ -219,8 +275,7 @@ namespace DNDS::ACMVariable
                 else
                 {
                     const Vector3 point = ToVector3(faceCenter);
-                    otherFlow = GenerateBoundaryState(
-                        _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(iFace)),
+                    otherFlow = FlowBoundaryState(iFace,
                         State(flow[iCell]),
                         outward,
                         _flowSettings,
@@ -375,8 +430,7 @@ namespace DNDS::ACMVariable
                     Vector3 outward = ToVector3(
                         _vfv->GetFaceNormFromCell(iFace, iCell, if2c, -1));
                     outward *= if2c == 0 ? 1.0 : -1.0;
-                    neighbourFlow = GenerateBoundaryState(
-                        _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(iFace)),
+                    neighbourFlow = FlowBoundaryState(iFace,
                         flowMean,
                         outward,
                         _flowSettings,
@@ -605,8 +659,7 @@ namespace DNDS::ACMVariable
                 {
                     rightTurbulence = GenerateBoundary(
                         iFace, leftTurbulence, faceToCell[0]);
-                    rightFlow = GenerateBoundaryState(
-                        _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(iFace)),
+                    rightFlow = FlowBoundaryState(iFace,
                         leftFlow,
                         normal,
                         _flowSettings,
@@ -616,8 +669,7 @@ namespace DNDS::ACMVariable
                         iFace,
                         TurbulenceState(_state[faceToCell[0]]),
                         faceToCell[0]);
-                    rightCellFlow = GenerateBoundaryState(
-                        _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(iFace)),
+                    rightCellFlow = FlowBoundaryState(iFace,
                         State(flow[faceToCell[0]]),
                         normal,
                         _flowSettings,
@@ -765,8 +817,7 @@ namespace DNDS::ACMVariable
                     {
                         rightTurbulence = GenerateBoundary(
                             iFace, leftTurbulence, faceToCell[0]);
-                        rightFlow = GenerateBoundaryState(
-                            _boundaryHandler->GetConditionFromID(_mesh->GetFaceZone(iFace)),
+                        rightFlow = FlowBoundaryState(iFace,
                             leftFlow,
                             normal,
                             _flowSettings,

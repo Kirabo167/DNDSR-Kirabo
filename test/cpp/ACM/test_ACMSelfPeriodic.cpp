@@ -1273,7 +1273,9 @@ TEST_CASE("ACM RANS Anderson acceleration preserves converged BDF2 transport sta
         auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
         cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeGMRES;
         cfg.timeMarchSettings.dualTimeRANSAndersonDepth = depth;
-        cfg.timeMarchSettings.maxImplicitIterations = 30;
+        // Explicit k stress introduces a pressure adjustment absent from passive transport.
+        // Keep the strict tolerance and allow that additional mode to converge.
+        cfg.timeMarchSettings.maxImplicitIterations = 500;
         cfg.timeMarchSettings.implicitTolerance = 1e-10;
         cfg.initialState[0] = 0.3;
         cfg.turbulenceSettings.secondOrderReconstruction = false;
@@ -1467,5 +1469,192 @@ TEST_CASE("ACM and variable ACM no-slip faces have exactly zero eddy viscosity")
         ACMVariable::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
             cfg.acmSettings, cfg.turbulenceSettings, boundary);
         checkFaces(transport, solver);
+    }
+}
+
+/// @test A nonuniform k and compensating static pressure must not create velocity or continuity defects.
+TEST_CASE("ACM explicit k stress preserves total pressure equilibrium and its cross Jacobian")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WritePeriodicQuadGrid(meshFile.path);
+    for (const DNDS::real rho : {1.0, 3.0})
+    {
+        auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+            ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.01, 0);
+        cfg.meshSettings.periodicTranslation1 = {1, 0, 0};
+        cfg.meshSettings.periodicTranslation2 = {0, 1, 0};
+        cfg.acmSettings.rho0 = rho;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.enableSourceTerms = false;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto transport = solver.GetTurbulenceTransport();
+        auto &q = transport->GetState();
+        auto &u = solver.GetState();
+        auto evaluator = solver.GetEvaluator();
+        auto metrics = solver.GetReconstruction();
+        auto mesh = solver.GetMesh();
+        decltype(solver)::TDof rhs, plus, minus;
+        for (auto field : {&rhs, &plus, &minus}) metrics->BuildUDof(*field, 4);
+        std::vector<DNDS::real> k(mesh->NumCell()), direction(mesh->NumCell());
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        {
+            k[cell] = 0.2 + 0.1 * cell;
+            direction[cell] = std::sin(0.4 + cell);
+            q[cell] << k[cell], 4;
+            u[cell] << 0, 0, 0, 1 - (2.0 / 3.0) * rho * k[cell];
+        }
+        evaluator->EvaluateRHS(rhs, u);
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+            CHECK(rhs[cell].norm() < 1e-11);
+        for (DNDS::index face = 0; face < mesh->NumFaceProc(); ++face)
+            CHECK(std::abs(evaluator->FaceVolumeFlux(u, face, 0)) < 1e-12);
+        ACM::ACMEvaluator<2>::KineticPressureJacobianField blocks;
+        evaluator->AssembleKineticPressureLinearization(u, blocks);
+        std::vector<ACM::State> product(mesh->NumCell(), ACM::State::Zero());
+        for (DNDS::index face = 0; face < mesh->NumFaceProc(); ++face)
+        {
+            const auto cells = mesh->face2cell[face];
+            const ACM::State flux = blocks[face][0] * direction[cells[0]] + blocks[face][1] * direction[cells[1]];
+            product[cells[0]] += flux / metrics->GetCellVol(cells[0]);
+            product[cells[1]] -= flux / metrics->GetCellVol(cells[1]);
+        }
+        constexpr DNDS::real epsilon = 1e-6;
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+            q[cell](0) = k[cell] + epsilon * direction[cell] / rho;
+        evaluator->EvaluateRHS(plus, u);
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+            q[cell](0) = k[cell] - epsilon * direction[cell] / rho;
+        evaluator->EvaluateRHS(minus, u);
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+            CHECK((product[cell] + (plus[cell] - minus[cell]) / (2 * epsilon)).norm() < 1e-7);
+    }
+}
+
+TEST_CASE("Variable ACM explicit k stress preserves total pressure equilibrium")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WritePeriodicQuadGrid(meshFile.path);
+    ACMVariable::KernelConfiguration cfg;
+    cfg.meshSettings.meshFile = meshFile.path.string();
+    cfg.meshSettings.periodicTranslation1 = {1, 0, 0};
+    cfg.meshSettings.periodicTranslation2 = {0, 1, 0};
+    cfg.initialState = {1, 0, 0, 0, 0.3};
+    cfg.acmSettings.enableViscousFlux = true;
+    cfg.acmSettings.dynamicViscosity = 0.001;
+    cfg.acmSettings.entropyFixRatio = 0; // Retain an exact stationary density contact.
+    cfg.reconstructionSettings.type = ACMVariable::ReconstructionType::FirstOrder;
+    cfg.turbulenceSettings.model = ACMVariable::TurbulenceModel::KOmegaSST;
+    cfg.turbulenceSettings.secondOrderReconstruction = false;
+    cfg.turbulenceSettings.enableSourceTerms = false;
+    ACMVariable::ACMSolver<ACMVariable::ACMModel::VariableDensity2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    auto boundary = std::make_shared<ACMVariable::BoundaryHandler>(cfg.defaultBoundaryType,
+        cfg.InitialState(), cfg.boundaryConditions);
+    auto transport = std::make_shared<ACMVariable::ACMTurbulenceTransport<2>>(
+        solver.GetMesh(), solver.GetReconstruction(), cfg.acmSettings, cfg.turbulenceSettings, boundary);
+    transport->Initialize();
+    solver.GetEvaluator()->SetTurbulenceCoupling(
+        [transport](auto &flow, DNDS::real time) { transport->Prepare(flow, time); },
+        [transport](DNDS::index f, int p) { return transport->FaceEddyViscosity(f, p); },
+        [transport](DNDS::index f, int p, const ACMVariable::State &l, const ACMVariable::State &rr,
+                    DNDS::real dl, DNDS::real dr) { return transport->FaceTurbulentPressure(f, p, l, rr, dl, dr); });
+    auto &q = transport->GetState();
+    auto &u = solver.GetState();
+    const auto mesh = solver.GetMesh();
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+    {
+        const DNDS::real rho = 1 + 0.2 * cell, k = 0.2 + 0.1 * cell;
+        q[cell] << k, 4;
+        u[cell] << rho, 0, 0, 0, 1 - (2.0 / 3.0) * rho * k;
+    }
+    decltype(solver)::TDof rhs;
+    solver.GetReconstruction()->BuildUDof(rhs, 5);
+    solver.GetEvaluator()->EvaluateRHS(rhs, u);
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        CHECK(rhs[cell].norm() < 1e-10);
+}
+
+TEST_CASE("ACM far field and no-slip walls use consistent static and turbulent pressure")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    for (const auto type : {ACM::BoundaryType::BCFar, ACM::BoundaryType::BCWall})
+    {
+        auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+            ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.01, 0);
+        cfg.defaultBoundaryType = type;
+        cfg.acmSettings.rho0 = 3;
+        cfg.turbulenceSettings.initialValue = {0.2, 4};
+        cfg.turbulenceSettings.farFieldValue = {0.05, 4};
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        cfg.initialState = {0, 0, 0, 0.6}; // p + (2/3)*rho*k = 1
+        cfg.boundaryValue = {0, 0, 0, 0.9}; // p_far + (2/3)*rho*k_far = 1
+        cfg.acmSettings.farFieldValue = cfg.boundaryValue;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        decltype(solver)::TDof rhs;
+        solver.GetReconstruction()->BuildUDof(rhs, 4);
+        solver.GetEvaluator()->EvaluateRHS(rhs, solver.GetState());
+        CHECK(rhs[0].norm() < 1e-10);
+        if (type == ACM::BoundaryType::BCFar)
+        {
+            const auto source = solver.GetTurbulenceTransport()->CellSource(0);
+            CHECK(source(0) == doctest::Approx(-0.09 * 0.2 * 4));
+            CHECK(source(1) == doctest::Approx(-0.0828 * 16));
+        }
+        for (DNDS::index face = 0; face < solver.GetMesh()->NumFaceProc(); ++face)
+            CHECK(std::abs(solver.GetEvaluator()->FaceVolumeFlux(solver.GetState(), face, 0)) < 1e-12);
+    }
+}
+
+TEST_CASE("ACM modified-pressure restart converts to static pressure without double counting k")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    struct Output
+    {
+        std::filesystem::path path;
+        ~Output() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } output{mesh.path.string() + ".pressure_restart"};
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.turbulenceSettings.includeIsotropicStress = false;
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::ImplicitEulerGMRES;
+    cfg.timeMarchSettings.nSteps = 0;
+    cfg.outputSettings.interval = 1;
+    cfg.outputSettings.writeInitial = true;
+    cfg.outputSettings.directory = output.path.string();
+    cfg.outputSettings.prefix = "legacy";
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    Solver source(mpi, cfg);
+    source.ReadMeshAndInitialize();
+    source.Run();
+    cfg.restartSettings.flowFile = (output.path / "legacy_00000000.vtkhdf").string();
+    cfg.restartSettings.writerRanks = 1;
+    cfg.restartSettings.requireTurbulence = true;
+    cfg.restartSettings.pressureIsModified = true;
+    cfg.turbulenceSettings.includeIsotropicStress = true;
+    Solver resumed(mpi, cfg);
+    resumed.ReadMeshAndInitialize();
+    for (DNDS::index cell = 0; cell < resumed.GetMesh()->NumCell(); ++cell)
+    {
+        CHECK(resumed.GetState()[cell](3) == doctest::Approx(
+            source.GetState()[cell](3) - (2.0 / 3.0) * source.GetState()[cell](4)));
+        CHECK(resumed.GetState()[cell](4) == source.GetState()[cell](4));
     }
 }
