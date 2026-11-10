@@ -14,6 +14,7 @@
  */
 #pragma once
 
+#include <array>
 #include "ACMBC.hpp"
 #include "ACMConfig.hpp"
 #include "ACMFlux.hpp"
@@ -77,6 +78,21 @@ namespace DNDS::ACMGPU
             std::function<void(TDof &, real)>; ///< Refresh segregated turbulence data for a flow state.
         using TurbulentViscosityFunction =
             std::function<real(index, int)>; ///< Return frozen `mu_t` for `(face,quadrature)`.
+        using TurbulentPressureFunction = std::function<std::array<real, 3>(
+            index, int, const State &, const State &, real, real)>;
+
+        /** @brief Integrated flux derivatives with respect to the two conservative rho*k means. */
+        /** @brief Static-pressure ghost state shared with turbulence gradient reconstruction. */
+        State BoundaryStateForTurbulence(index face, const State &left, const Vector3 &normal,
+            const Vector3 &point, real time) const
+        { return GenerateBoundaryForFace(face, left, normal, point, time); }
+
+        using KineticPressureJacobianField = std::vector<std::array<State, 2>>;
+        void AssembleKineticPressureLinearization(TDof &u, KineticPressureJacobianField &faces, real time = 0);
+
+        /** @brief Inviscid face flux with explicit isotropic stress and total-pressure dissipation. */
+        FluxResult InviscidFaceFlux(const State &left, const State &right, const Vector3 &normal,
+            index face, int point, real time, real leftKIncrement = 0, real rightKIncrement = 0) const;
 
         /**
          * @brief Derivatives of one integrated numerical face flux with respect to both cells.
@@ -124,12 +140,15 @@ namespace DNDS::ACMGPU
          * @brief Attach optional segregated turbulence callbacks without changing the ACM state layout.
          * @param prepareFunction Callback that reconstructs turbulence fields and freezes face `mu_t`.
          * @param viscosityFunction Callback returning frozen turbulent dynamic viscosity.
-         * @details Both callbacks must be supplied together. Empty callbacks restore laminar behavior.
+         * @param pressureFunction Optional left/right/target isotropic pressures; conservative k increments
+         *     support the frozen-reconstruction upper Jacobian block.
+         * @details Prepare and viscosity callbacks must be supplied together. Empty callbacks restore laminar behavior.
          * @note Modifier: Runzhi Ma.
          */
         void SetTurbulenceCoupling(
             TurbulencePrepareFunction prepareFunction,
-            TurbulentViscosityFunction viscosityFunction);
+            TurbulentViscosityFunction viscosityFunction,
+            TurbulentPressureFunction pressureFunction = {});
 
         /**
          * @brief Reconstruct the current distributed cell means.
@@ -279,6 +298,7 @@ namespace DNDS::ACMGPU
         TDof _lusgsCorrection;                          ///< Work array for one LU-SGS residual correction.
         TurbulencePrepareFunction _prepareTurbulence;   ///< Optional segregated preparation hook.
         TurbulentViscosityFunction _turbulentViscosity; ///< Optional frozen face `mu_t` accessor.
+        TurbulentPressureFunction _turbulentPressure; ///< Isotropic stress; empty for laminar/legacy coupling.
 
         /**
          * @brief Return frozen turbulent viscosity or zero in laminar mode.
@@ -312,11 +332,11 @@ namespace DNDS::ACMGPU
          * @return Exterior Riemann state.
          */
         State GenerateBoundaryForFace(
-            Geom::t_index faceZone,
+            index face,
             const State &interior,
             const Vector3 &normal,
             const Vector3 &point,
-            real time) const;
+            real time, int quadrature = -1) const;
 
         /**
          * @brief Compute and communicate local-extrema limiter factors.

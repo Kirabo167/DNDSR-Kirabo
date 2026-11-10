@@ -124,6 +124,7 @@ namespace DNDS::ACM
         typename TTurbulence::TTurbulenceDof _turbulenceRhs;
         MatrixField _flowDiagonal;
         typename TEvaluator::FaceJacobianField _faceJacobians;
+        typename TEvaluator::KineticPressureJacobianField _kineticPressureFaceJacobians;
         typename TTurbulence::FaceJacobianField _turbulenceFaceJacobians;
         std::vector<TurbulenceState> _faceAdvectedConservativeTurbulence;
         std::vector<Eigen::Vector<real, nTurbulence>> _turbulencePressureMass;

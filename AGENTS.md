@@ -509,8 +509,10 @@ a fresh authorization, even for follow-up fixes.
 The user froze the current CPU versions. Preserve `src/ACM`, `src/NCFV`,
 `app/ACM`, and `app/NCFV` during GPU development. The user subsequently requested
 an update before GPU implementation and on 2026-11-10 explicitly authorized
-synchronizing CPU/GPU with GitHub main. The active baseline is now `88635e1`
-plus preserved local NCFV changes, recorded by CPU main commit `03d020f`.
+synchronizing CPU/GPU with GitHub main. The user then authorized syncing
+`c62e501` into the local CPU contents and GPU implementation, publishing only
+to `GPUACM`. The active baseline is now `c62e501` plus preserved NCFV changes;
+the pure-CPU GitHub branch must not be pushed or overwritten by this workflow.
 Its snapshot is selected by
 `frozen/active_cpu_snapshot.txt`; the earlier `ACM_NCFV_CPU_20261103` snapshot
 remains available as history.

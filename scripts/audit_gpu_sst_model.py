@@ -43,7 +43,7 @@ struct Settings
 {
     struct { double rho0=1, alpha=.5, beta2=4; } flow;
     int dimension=3;
-    bool turbulenceSecondOrder=false, turbulenceSource=true;
+    bool turbulenceSecondOrder=false, turbulenceSource=true, sst=false, includeIsotropicStress=true;
     double turbulenceMinimum[2]{1e-14,1e-10}, turbulenceMaximum[2]{1e6,1e12};
     double turbulenceFar[2]{1e-6,1}, viscosity=.001, wallOmegaCoefficient=800;
     double minimumWallDistance=1e-10, eddyRatioMaximum=1e5;
@@ -71,7 +71,8 @@ struct View
 };
 __device__ I Thread() { return I(blockIdx.x)*blockDim.x+threadIdx.x; }
 '''
-    harness += '\n'.join(extract_function(flow, name) for name in ['Rotate', 'Boundary'])
+    harness += '\n'.join(extract_function(flow, name) for name in [
+        'Rotate', 'Boundary', 'KineticValue', 'KineticPressures', 'StaticBoundary'])
     harness += '\n'.join(extract_function(sst, name) for name in [
         'QClamp', 'Positive', 'TurbulenceBoundary', 'Blend', 'Eddy', 'Diffusivity',
         'SSTSource', 'CorrectGradient', 'SSTPointData'])

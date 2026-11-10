@@ -79,6 +79,63 @@ namespace DNDS::GPU
                 for (int k = 0; k < 4; ++k)
                     ghost[k] = prescribed[k];
         }
+        __device__ double KineticValue(const View &v, I cell, const double *delta)
+        {
+            double k = v.q[cell * 2];
+            if (delta && v.s.turbulenceSecondOrder)
+                for (int d = 0; d < v.s.dimension; ++d)
+                    k += v.qLimiter[cell * 3] * v.qGradient[cell * 6 + d] * delta[d];
+            return fmax(v.s.turbulenceMinimum[0], fmin(v.s.turbulenceMaximum[0], k));
+        }
+        __device__ void KineticPressures(const View &v, I leftCell, I rightCell, int type,
+                                         const double *normal, const double *leftFlow,
+                                         const double *leftDelta, const double *rightDelta,
+                                         double leftIncrement, double rightIncrement, double *pressure)
+        {
+            for (int j = 0; j < 3; ++j) pressure[j] = 0;
+            if (!v.s.sst || !v.s.includeIsotropicStress) return;
+            const double kl = KineticValue(v, leftCell, leftDelta) + leftIncrement / v.s.flow.rho0;
+            double kr = kl;
+            if (rightCell >= 0) kr = KineticValue(v, rightCell, rightDelta) + rightIncrement / v.s.flow.rho0;
+            else if (type == 2 || type == 4) kr = -kl;
+            else if (type == 1 || type == 7 || type == 8 || type == 10) kr = 2 * v.s.turbulenceFar[0] - kl;
+            if (rightCell < 0 && type == 1)
+            {
+                double un = 0;
+                for (int d = 0; d < 3; ++d) un += leftFlow[d] * normal[d];
+                if (un >= 0) kr = kl;
+            }
+            pressure[0] = (2. / 3) * v.s.flow.rho0 * kl;
+            pressure[1] = (2. / 3) * v.s.flow.rho0 * kr;
+            pressure[2] = .5 * (pressure[0] + pressure[1]);
+            if (rightCell < 0 && type == 1) pressure[2] = (2. / 3) * v.s.flow.rho0 * v.s.turbulenceFar[0];
+            else if (rightCell < 0 && type == 7) pressure[2] = pressure[1];
+        }
+        __device__ void StaticBoundary(const View &v, I owner, int type, const double *prescribed,
+                                       const double *normal, const double *interior, double *ghost,
+                                       const double *delta = nullptr)
+        {
+            double pressure[3], total[4], target[4];
+            KineticPressures(v, owner, -1, type, normal, interior, delta, nullptr, 0, 0, pressure);
+            for (int k = 0; k < 4; ++k) { total[k] = interior[k]; target[k] = prescribed[k]; }
+            total[3] += pressure[0]; target[3] += pressure[2];
+            Boundary(v, type, target, normal, total, ghost);
+            ghost[3] -= pressure[1];
+        }
+        __device__ void EffectiveFaceStates(const View &v, const ResidentACMFace &face, const ResidentACMPoint &point,
+                                            FluxInput &input, double leftIncrement = 0, double rightIncrement = 0)
+        {
+            double pressure[3], target[4];
+            KineticPressures(v, face.left, face.right, face.type, point.normal, input.left,
+                            point.delta[0], point.delta[1], leftIncrement, rightIncrement, pressure);
+            input.left[3] += pressure[0]; input.right[3] += pressure[1];
+            if (face.right < 0 && v.s.sst && v.s.includeIsotropicStress)
+            {
+                for (int k = 0; k < 4; ++k) target[k] = face.prescribed[k];
+                target[3] += pressure[2];
+                Boundary(v, face.type, target, point.normal, input.left, input.right);
+            }
+        }
         __device__ void Neighbor(const View &v, I cell, const ResidentACMLink &link, double *value)
         {
             if (link.neighbor >= 0)
@@ -86,7 +143,7 @@ namespace DNDS::GPU
             else
             {
                 const auto &face = v.faces[link.face];
-                Boundary(v, face.type, face.prescribed, face.normal, v.u + cell * 4, value);
+                StaticBoundary(v, cell, face.type, face.prescribed, face.normal, v.u + cell * 4, value);
             }
         }
         __global__ void GreenGauss(View v)
@@ -154,7 +211,7 @@ namespace DNDS::GPU
                             for (int m = 0; m < modes; ++m)
                                 state[k] += sample.basis[m] * (jacobi ? v.oldRec[cell * C + k * M + m] : work[k * M + m]);
                         }
-                        Boundary(v, sample.type, sample.prescribed, sample.normal, state, ghost);
+                        StaticBoundary(v, cell, sample.type, sample.prescribed, sample.normal, state, ghost, sample.delta);
                         for (int k = 0; k < 4; ++k)
                             for (int m = 0; m < modes; ++m)
                                 addition[k * M + m] += sample.response[m] * (ghost[k] - v.u[cell * 4 + k]);
@@ -282,13 +339,14 @@ namespace DNDS::GPU
                 }
                 else
                 {
-                    Boundary(v, face.type, face.prescribed, point.normal, input.left, input.right);
+                    StaticBoundary(v, face.left, face.type, face.prescribed, point.normal, input.left, input.right, point.delta[0]);
                     for (int k = 0; k < 12; ++k)
                         gr[k] = gl[k];
                 }
                 for (int d = 0; d < 3; ++d)
                     input.normal[d] = point.normal[d];
                 FluxOutput output;
+                EffectiveFaceStates(v, face, point, input);
                 Detail::ACMFlux(input, output);
                 if (v.s.sst)
                     v.volumeFlux[p] = output.value[3];
@@ -298,7 +356,7 @@ namespace DNDS::GPU
                     if (face.right >= 0)
                         Rotate(face.rotation, v.u + face.right * 4, meanRight);
                     else
-                        Boundary(v, face.type, face.prescribed, point.normal, v.u + face.left * 4, meanRight);
+                        StaticBoundary(v, face.left, face.type, face.prescribed, point.normal, v.u + face.left * 4, meanRight);
                     AddViscous(v, point.normal, point.displacement, v.u + face.left * 4, meanRight, gl, gr, output.value,
                                v.s.viscosity + (v.s.sst ? v.eddy[p] : 0));
                 }
@@ -368,7 +426,7 @@ namespace DNDS::GPU
                 if (face.right >= 0)
                     Rotate(face.rotation, v.u + face.right * 4, right);
                 else
-                    Boundary(v, face.type, face.prescribed, face.normal, v.u + face.left * 4, right);
+                    StaticBoundary(v, face.left, face.type, face.prescribed, face.normal, v.u + face.left * 4, right);
                 double radius = fmax(Radius(v, v.u + face.left * 4, face.normal), Radius(v, right, face.normal));
                 if (v.s.viscous && v.s.viscosity > 0)
                 {

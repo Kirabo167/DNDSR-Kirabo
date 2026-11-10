@@ -156,6 +156,7 @@ namespace DNDS::ACMGPU
                             basis = dbv.rightCols(out.modes);
                         }
                         for (int d = 0; d < 3; ++d) sample.normal[d] = normal(d);
+                        for (int d = 0; d < gDim; ++d) sample.delta[d] = (point - _vfv->GetCellQuadraturePPhys(cell, -1))(d);
                         for (int k = 0; k < 4; ++k) sample.prescribed[k] = bc.value[k];
                         const Eigen::VectorXd response = inverse * _vfv->FFaceFunctional(basis, Eigen::MatrixXd::Ones(1, 1), face, cell, cell) *
                             (quadrature.GetWeight(q) * jacobian);
@@ -307,6 +308,7 @@ namespace DNDS::ACMGPU
                               "Resident RANS currently requires KOmegaSST");
         auto &s = data.settings;
         s.sst = true;
+        s.includeIsotropicStress = _turbulenceSettings.includeIsotropicStress;
         s.turbulenceSecondOrder = _turbulenceSettings.secondOrderReconstruction;
         s.turbulenceSource = _turbulenceSettings.enableSourceTerms;
         s.eddyRatioMaximum = _turbulenceSettings.maximumEddyViscosityRatio;

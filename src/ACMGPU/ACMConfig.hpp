@@ -159,6 +159,7 @@ namespace DNDS::ACMGPU
         int completedSteps = 0;        ///< Absolute step index represented by flowFile.
         int writerRanks = 0;           ///< Required original MPI size; zero is valid only without a file.
         bool requireTurbulence = false; ///< Reject a RANS restart without turbulence datasets.
+        bool pressureIsModified = false; ///< Source restart stores p+2*rho*k/3; convert with loaded k.
         real physicalTime = 0;          ///< Physical time represented by flowFile, independent of the new step size.
         bool resetBDFHistory = false;   ///< Explicitly permit BE startup from a field without two-level history.
         bool initializeBDF2History = false; ///< CPU-compatible spelling of the explicit BE startup request.
@@ -171,6 +172,7 @@ namespace DNDS::ACMGPU
             DNDS_FIELD(writerRanks, "MPI ranks that wrote the VTK-HDF field",
                        DNDS::Config::range(0));
             DNDS_FIELD(requireTurbulence, "Require turbulence variables in a RANS restart file");
+            DNDS_FIELD(pressureIsModified, "Restart Pressure stores modified pressure; convert to static using loaded k");
             DNDS_FIELD(physicalTime, "Physical time represented by the initial field", DNDS::Config::range(0));
             DNDS_FIELD(resetBDFHistory, "Permit field-only BDF2 restart with one backward-Euler startup step");
             DNDS_FIELD(initializeBDF2History, "Start new BDF2 history from a field using one backward-Euler step");

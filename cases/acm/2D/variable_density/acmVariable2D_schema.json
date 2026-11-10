@@ -317,6 +317,11 @@
                     "description": "Wall omega coefficient in omega=C*nu/d^2",
                     "minimum": 0.0
                 },
+                "includeIsotropicStress": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Add isotropic k stress and interpret pressure as static; false uses legacy modified pressure"
+                },
                 "enableSourceTerms": {
                     "type": "boolean",
                     "default": true,

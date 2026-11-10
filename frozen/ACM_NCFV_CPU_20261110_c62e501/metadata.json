@@ -1,0 +1,11 @@
+{
+  "date": "2026-11-10",
+  "upstream_main": "c62e50159a179d278b704e2cee719ada5ac9b109",
+  "gpu_parent": "e60b6d47749670383baf0ad5439918ad53d414ca",
+  "previous_snapshot": "ACM_NCFV_CPU_20261110_88635e1",
+  "authorization": "User requested updating local CPU sources, porting GPU changes and committing only to GPUACM.",
+  "source_files": 63,
+  "preserved_changes": "NCFV local diagnostic hooks from previous CPU baseline; pure-CPU GitHub main is read-only for this task.",
+  "validation": "15/15 ACM/ACMVariable CTests pass; four updated CPU ACM executables rebuilt, unchanged NCFV executables preserved.",
+  "local_artifacts": "source.tar.gz and bin/*.exe remain local and are excluded from Git."
+}

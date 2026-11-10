@@ -1176,6 +1176,9 @@ namespace DNDS::ACM
         // Keep pre-BDF2 case files valid without editing them in place.  The
         // normalized configuration and emitted schema still expose this key,
         // and a command-line JSON-pointer override may set it explicitly.
+        auto &turbulence = resolved.at("turbulenceSettings");
+        if (!turbulence.contains("includeIsotropicStress"))
+            turbulence["includeIsotropicStress"] = TurbulenceSettings{}.includeIsotropicStress;
         auto &timeMarch = resolved.at("timeMarchSettings");
         if (!timeMarch.contains("physicalTimeStep"))
             timeMarch["physicalTimeStep"] = TimeMarchSettings{}.physicalTimeStep;
@@ -1201,7 +1204,7 @@ namespace DNDS::ACM
         if (!resolved.contains("restartSettings"))
             resolved["restartSettings"] = RestartSettings{};
         const nlohmann::ordered_json restartDefaults = RestartSettings{};
-        for (const char *key : {"initializeBDF2History", "physicalTime"})
+        for (const char *key : {"initializeBDF2History", "physicalTime", "pressureIsModified"})
             if (!resolved.at("restartSettings").contains(key))
                 resolved.at("restartSettings")[key] = restartDefaults.at(key);
 

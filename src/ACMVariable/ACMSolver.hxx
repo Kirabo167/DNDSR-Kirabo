@@ -134,6 +134,19 @@ namespace DNDS::ACMVariable
                 [turbulence = _turbulence](index iFace, int iG)
                 {
                     return turbulence->FaceEddyViscosity(iFace, iG);
+                },
+                [turbulence = _turbulence](index face, int point, const State &left, const State &right,
+                                          real leftIncrement, real rightIncrement)
+                {
+                    return turbulence->FaceTurbulentPressure(face, point, left, right, leftIncrement, rightIncrement);
+                });
+            _turbulence->SetFlowBoundaryProvider(
+                [evaluator = std::weak_ptr<TEvaluator>(_evaluator)](index face, const State &left,
+                    const Vector3 &normal, const Vector3 &point, real time)
+                {
+                    const auto locked = evaluator.lock();
+                    DNDS_check_throw_info(locked != nullptr, "Turbulence flow-boundary evaluator expired");
+                    return locked->BoundaryStateForTurbulence(face, left, normal, point, time);
                 });
         }
 

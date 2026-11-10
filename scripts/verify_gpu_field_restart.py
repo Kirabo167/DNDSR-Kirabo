@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import subprocess
 
 import h5py
@@ -28,13 +29,14 @@ def main():
                        OMPI_MCA_btl_tcp_if_include="lo", OMPI_MCA_oob_tcp_if_include="lo")
     results = []
 
-    def run(ranks, backend, directory, overrides, reject=False):
+    def run(ranks, backend, directory, overrides, reject=False,
+            rejection_message="resetBDFHistory", runtime_reject=False):
         directory.mkdir(parents=True, exist_ok=True)
         command = ["mpirun", "--bind-to", "none", "-np", str(ranks), str(executable), str(case),
                    "--backend", backend, "--gpu-device", "auto"]
         for key, value in {"/outputSettings/directory": str(directory), **overrides}.items():
             command += ["-k", key, "-v", json.dumps(value)]
-        if reject:
+        if reject and not runtime_reject:
             command.append("--check-config")
         for attempt in range(3):
             with (directory / "run.log").open("w") as log:
@@ -52,7 +54,7 @@ def main():
                 break
             (directory / "run.log").rename(directory / f"startup_{attempt}.log")
         if reject:
-            if code == 0 or "resetBDFHistory" not in text:
+            if code == 0 or rejection_message not in text:
                 raise RuntimeError(f"Missing-history restart was not rejected: {directory}")
         elif code:
             raise RuntimeError(f"Restart verification failed: {directory}")
@@ -104,6 +106,39 @@ def main():
                                 orders=[1, 2, 2], missing_history_rejected=True, passed=True))
             (output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
             print(json.dumps(results[-1]), flush=True)
+
+        legacy_seed = output / f"np{ranks}" / "legacy_seed"
+        run(ranks, "cuda", legacy_seed, {"/turbulenceSettings/includeIsotropicStress": False})
+        legacy_source = sorted(legacy_seed.glob("*.vtkhdf"))[-1]
+        expected = arrays(legacy_source)
+        expected["Pressure"] = expected["Pressure"] - (2. / 3) * expected["rho_TurbulenceK"]
+        conversion = {**overrides, "/restartSettings/flowFile": str(legacy_source),
+                      "/restartSettings/pressureIsModified": True,
+                      "/turbulenceSettings/includeIsotropicStress": True,
+                      "/timeMarchSettings/nSteps": 0}
+        for backend in ("host", "cuda"):
+            directory = output / f"np{ranks}" / f"legacy_to_static_{backend}"
+            run(ranks, backend, directory, conversion)
+            fields = arrays(next(directory.glob("*.vtkhdf")))
+            for key, value in expected.items():
+                if key == "Pressure":
+                    np.testing.assert_allclose(fields[key], value, rtol=1e-12, atol=1e-14)
+                else:
+                    np.testing.assert_array_equal(fields[key], value,
+                                                  err_msg=f"Legacy conversion changed {key}")
+            results.append(dict(ranks=ranks, backend=backend, case="legacy_modified_to_static",
+                                passed=True, all_nonpressure_fields_identical=True))
+        missing = output / f"np{ranks}" / "legacy_without_turbulence.vtkhdf"
+        shutil.copy2(legacy_source, missing)
+        with h5py.File(missing, "r+") as handle:
+            for name in ("TurbulenceK", "TurbulenceOmega", "rho_TurbulenceK", "rho_TurbulenceOmega"):
+                del handle["VTKHDF/CellData/" + name]
+        run(ranks, "cuda", output / f"np{ranks}" / "reject_missing_k",
+            {**conversion, "/restartSettings/flowFile": str(missing),
+             "/restartSettings/requireTurbulence": False}, reject=True, runtime_reject=True,
+            rejection_message="Modified-pressure restart conversion requires loaded turbulence k")
+        results.append(dict(ranks=ranks, case="conversion_rejects_missing_k", passed=True))
+        (output / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
 
 
 if __name__ == "__main__":

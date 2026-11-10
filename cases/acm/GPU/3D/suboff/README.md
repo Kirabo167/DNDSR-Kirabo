@@ -31,7 +31,10 @@ BOTTOM、ICE_WALL、SIDE_NEG、SIDE_POS：对称/无穿透。边界映射遵循�
 参考配置明确设置 `dualTimeRequireConvergence=false`，所以耗尽 30 次内迭代会继续推进。
 每个物理步的六方程缺陷与 `converged` 标志写入日志。达到总步数不自动表示内层或稳态收敛。
 实现与 CPU 六变量算法对照；2026-11-10 已同步 main `88635e1` 的 SST 修正和隐式输运耦合，
-CPU 新基线为 `03d020f`。Anderson/continuation/matrix-free GMRES 尚不在 CUDA 范围，
+最新又同步 main `c62e501` 的显式各向同性 k 应力，当前 CPU 快照由
+`frozen/active_cpu_snapshot.txt` 选择。SST 默认存储静压，旧续算文件通过
+`pressureIsModified=true` 转换；新静压文件应设为 false。验证记录见
+`docs/dev/gpu_main_sync_c62e501_20261110.md`。Anderson/continuation/matrix-free GMRES 尚不在 CUDA 范围，
 选择时明确拒绝执行。单卡定常续算与检查点工具继续保留，完整 SUBOFF 计算保持暂停于
 最后保存的 15850 步。同步验证及未解决问题见 `docs/dev/gpu_main_sync_20261110.md`。
 

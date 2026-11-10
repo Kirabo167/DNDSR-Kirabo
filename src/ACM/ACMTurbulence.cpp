@@ -4,9 +4,9 @@
  *
  * @details The formulas mirror the model families available in the Euler solver while
  * operating on primitive constant-density variables.  They are implemented locally so
- * the ACM library neither includes nor links against Euler.  The isotropic `2 rho k/3`
- * stress is absorbed into the ACM pressure; `mu_t` therefore augments only the deviatoric
- * velocity-gradient stress in the four-variable flow equations.
+ * the ACM library neither includes nor links against Euler. The isotropic `2 rho k/3`
+ * stress enters the numerical pressure flux when includeIsotropicStress is enabled;
+ * stored pressure is then static. Eddy viscosity augments the deviatoric stress in the four-variable flow equations.
  *
  * @author Runzhi Ma
  * @date 2026-09-02
@@ -21,6 +21,13 @@
 
 namespace DNDS::ACM
 {
+    Eigen::Matrix<real, 3, 3> IsotropicTurbulenceStress(real density, real kineticEnergy)
+    {
+        DNDS_check_throw_info(std::isfinite(density) && density > 0 && std::isfinite(kineticEnergy),
+                              "Invalid isotropic turbulence stress state");
+        return ((2.0 / 3.0) * density * kineticEnergy) * Eigen::Matrix<real, 3, 3>::Identity();
+    }
+
     namespace
     {
         constexpr real betaStar = 0.09;

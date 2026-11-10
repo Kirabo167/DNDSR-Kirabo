@@ -109,6 +109,7 @@
         "completedSteps": 4100,
         "writerRanks": 2,
         "requireTurbulence": true,
+        "pressureIsModified": true,
         "physicalTime": 4.1,
         "resetBDFHistory": true
     },

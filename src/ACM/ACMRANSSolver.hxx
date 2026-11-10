@@ -350,6 +350,8 @@ namespace DNDS::ACM
         }
         GetEvaluator()->AssembleImplicitLinearization(
             _flowSolver.GetState(), steps, _flowDiagonal, _faceJacobians, time);
+        GetEvaluator()->AssembleKineticPressureLinearization(
+            _flowSolver.GetState(), _kineticPressureFaceJacobians, time);
         std::vector<Eigen::Matrix<real, 2, 2>> turbulenceDiagonal;
         _flowSolver.GetTurbulenceTransport()->EvaluateImplicitDiagonal(
             _flowSolver.GetState(), turbulenceDiagonal, time, &_turbulenceFaceJacobians);
@@ -500,6 +502,24 @@ namespace DNDS::ACM
             const auto cells = mesh->face2cell[face];
             if (cells[0] == cells[1])
                 continue;
+            // Upper flow<-rho*k coupling, including the total-pressure continuity dissipation.
+            State kineticFlux = _kineticPressureFaceJacobians[face][0] * input[cells[0]](4);
+            if (cells[1] != UnInitIndex)
+                kineticFlux += _kineticPressureFaceJacobians[face][1] * input[cells[1]](4);
+            if (cells[0] < mesh->NumCell())
+            {
+                output[cells[0]].template head<4>() += kineticFlux / GetReconstruction()->GetCellVol(cells[0]);
+                output[cells[0]].template tail<nTurbulence>() += kineticFlux(3) *
+                    _faceAdvectedConservativeTurbulence[face].template head<nTurbulence>() /
+                    GetReconstruction()->GetCellVol(cells[0]);
+            }
+            if (cells[1] != UnInitIndex && cells[1] < mesh->NumCell())
+            {
+                output[cells[1]].template head<4>() -= kineticFlux / GetReconstruction()->GetCellVol(cells[1]);
+                output[cells[1]].template tail<nTurbulence>() -= kineticFlux(3) *
+                    _faceAdvectedConservativeTurbulence[face].template head<nTurbulence>() /
+                    GetReconstruction()->GetCellVol(cells[1]);
+            }
             const auto &flowBlocks = _faceJacobians[face];
             real volumeFluxIncrement = (flowBlocks.left.row(3) * input[cells[0]].template head<4>())(0);
             if (cells[1] != UnInitIndex)
@@ -1043,11 +1063,12 @@ namespace DNDS::ACM
         MPI_Comm_dup(_mpi.comm, &comm);
         GetMesh()->PrintParallelVTKHDFDataArray(
             (directory / (output.prefix + "_" + stamp.str())).string(), (directory / output.prefix).string(),
-            2 + 2 * nTurbulence, 1, 0, 0,
+            3 + 2 * nTurbulence, 1, 0, 0,
             [this](int array) -> std::string
             {
                 if (array == 0) return "Pressure";
                 if (array == 1) return "Density";
+                if (array == 2 + 2 * nTurbulence) return "TurbulentPressure";
                 const int variable = (array - 2) % nTurbulence;
                 const std::string name = TurbulenceVariableName(_configuration.turbulenceSettings.model, variable);
                 return array < 2 + nTurbulence ? name : "rho_" + name;
@@ -1056,6 +1077,7 @@ namespace DNDS::ACM
             {
                 if (array == 0) return _u[cell](3);
                 if (array == 1) return _configuration.acmSettings.rho0;
+                if (array == 2 + 2 * nTurbulence) return nTurbulence == 2 ? (2.0 / 3.0) * _u[cell](4) : 0;
                 const int variable = (array - 2) % nTurbulence;
                 return _u[cell](4 + variable) / (array < 2 + nTurbulence ? _configuration.acmSettings.rho0 : 1);
             },

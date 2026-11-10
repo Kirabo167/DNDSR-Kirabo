@@ -20,7 +20,7 @@ namespace DNDS::GPU
     };
     struct ResidentACMBoundarySample
     {
-        double normal[3]{}, prescribed[4]{}, basis[ACMMaximumModes]{}, response[ACMMaximumModes]{};
+        double normal[3]{}, prescribed[4]{}, basis[ACMMaximumModes]{}, response[ACMMaximumModes]{}, delta[3]{};
         int type = 0;
     };
     struct ResidentACMLink
@@ -54,6 +54,7 @@ namespace DNDS::GPU
         double implicitTolerance = 1e-8, implicitRelaxation = 1, linearRelativeTolerance = 1e-6, linearAbsoluteTolerance = 1e-10;
         double physicalStep = .01;
         bool sst = false, turbulenceSecondOrder = true, turbulenceSource = true, requireConvergence = true;
+        bool includeIsotropicStress = true;
         double turbulenceMinimum[2]{1e-12, 1e-10}, turbulenceMaximum[2]{1e6, 1e12}, turbulenceFar[2]{1e-6, 1};
         double eddyRatioMaximum = 1e5, wallOmegaCoefficient = 800, minimumWallDistance = 1e-10, turbulenceTimeScale = 1;
         int convergenceCriterion = 0;

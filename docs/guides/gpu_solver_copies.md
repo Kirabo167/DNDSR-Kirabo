@@ -1,13 +1,19 @@
 # ACM / NCFV 显存常驻 GPU 显式求解器
 
-2026-11-10 按用户授权同步 GitHub main `88635e1`，保留既有 NCFV 本地修改。
-当前 CPU 快照为 frozen/ACM_NCFV_CPU_20261110_88635e1/，由 frozen/active_cpu_snapshot.txt 选择，
-CPU main 提交为 `03d020f`；旧快照继续保留。CPU 模块独立编译，未为 CUDA 改写。
+2026-11-10 按用户授权同步 GitHub main `c62e501`，保留既有 NCFV 本地修改。
+当前 CPU 快照为 frozen/ACM_NCFV_CPU_20261110_c62e501/，由 frozen/active_cpu_snapshot.txt 选择。
+本次只发布 GPUACM，不更新纯 CPU 远端分支；旧快照继续保留。CPU 模块独立编译，未为 CUDA 改写。
 `GPUACM` 分支保存当前源码与配置。重新克隆后使用
 `python3 scripts/verify_cpu_freeze.py --sources-only` 核对冻结源码；
 默认完整校验还要求原开发机器上的二进制与压缩快照，详见 `frozen/README.md`。
 
 ## 实际运行范围
+
+本次同步新增显式各向同性应力 `(2/3)rho*k I`。SST 默认存储静压，设备上使用
+`p+(2/3)rho*k` 求解 Riemann 通量，并同步处理边界、重构、流动/湍流交叉 Jacobian。
+`includeIsotropicStress=false` 保留旧修正压力约定。旧 SUBOFF 续算配置已标明
+`restartSettings.pressureIsModified=true`，读入 k 后转换静压；新静压文件续算应设为 false。
+输出增加 `TurbulentPressure`。详见 `docs/dev/gpu_main_sync_c62e501_20261110.md`。
 
 2026-11-10 同步的 SST 使用原始 1994 定义：Omega/F2 应力限制、20 倍 k 生产限制，
 以及 `1e-20` 交叉扩散下限。无滑移面涡黏性严格为零。GPU 隐式算子加入冻结的

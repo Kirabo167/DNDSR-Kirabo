@@ -228,7 +228,7 @@ namespace ACMResidentDetail
         {
             TurbulenceBoundary(v, face.left, face.type, ql, qr);
             TurbulenceBoundary(v, face.left, face.type, v.q + face.left * 2, qmr);
-            Boundary(v, face.type, face.prescribed, point.normal, v.u + face.left * 4, fmr);
+            StaticBoundary(v, face.left, face.type, face.prescribed, point.normal, v.u + face.left * 4, fmr);
             double un = 0;
             for (int d = 0; d < 3; ++d) un += fl[d] * point.normal[d];
             if (face.type == 1 && un >= 0)
@@ -314,14 +314,17 @@ namespace ACMResidentDetail
         FluxInput input = v.s.flow;
         for (int k = 0; k < 4; ++k) input.left[k] = left[k];
         if (face.right >= 0) Rotate(face.rotation, rightNative, input.right);
-        else Boundary(v, face.type, face.prescribed, point.normal, left, input.right);
+        else StaticBoundary(v, face.left, face.type, face.prescribed, point.normal, left, input.right);
         for (int d = 0; d < 3; ++d) input.normal[d] = point.normal[d];
+        double staticRight[4];
+        for (int k = 0; k < 4; ++k) staticRight[k] = input.right[k];
         FluxOutput output;
+        EffectiveFaceStates(v, face, point, input);
         Detail::ACMFlux(input, output);
         if (v.s.viscous)
         {
             const double zero[12]{};
-            AddViscous(v, point.normal, point.displacement, left, input.right, zero, zero, output.value, v.s.viscosity + eddy);
+            AddViscous(v, point.normal, point.displacement, left, staticRight, zero, zero, output.value, v.s.viscosity + eddy);
         }
         for (int k = 0; k < 4; ++k) result[k] = output.value[k];
     }
@@ -355,6 +358,39 @@ namespace ACMResidentDetail
                 }
             }
         for (int k = 0; k < 32; ++k) blocks[id * 32 + k] = total[k];
+    }
+    __global__ void KineticPressureJacobian(View v, double *blocks)
+    {
+        const I id = Thread();
+        if (id >= v.faceCount) return;
+        const auto &face = v.faces[id];
+        double total[8]{};
+        if (v.s.sst && v.s.includeIsotropicStress && face.left != face.right)
+            for (I p = face.begin; p < face.end; ++p)
+            {
+                const auto &point = v.points[p];
+                FluxInput base = v.s.flow;
+                for (int k = 0; k < 4; ++k) base.left[k] = v.u[face.left * 4 + k];
+                if (face.right >= 0) Rotate(face.rotation, v.u + face.right * 4, base.right);
+                else StaticBoundary(v, face.left, face.type, face.prescribed, point.normal, base.left, base.right);
+                for (int d = 0; d < 3; ++d) base.normal[d] = point.normal[d];
+                double pressure[3];
+                KineticPressures(v, face.left, face.right, face.type, point.normal, base.left,
+                                point.delta[0], point.delta[1], 0, 0, pressure);
+                if (pressure[0] == 0 && pressure[1] == 0) continue;
+                const double epsilon = 1e-6 * fmax(1e-8, fmax(fabs(pressure[0]), fabs(pressure[1])));
+                for (int side = 0; side < (face.right < 0 ? 1 : 2); ++side)
+                {
+                    FluxInput plus = base, minus = base;
+                    EffectiveFaceStates(v, face, point, plus, side == 0 ? epsilon : 0, side == 1 ? epsilon : 0);
+                    EffectiveFaceStates(v, face, point, minus, side == 0 ? -epsilon : 0, side == 1 ? -epsilon : 0);
+                    FluxOutput fp, fm;
+                    Detail::ACMFlux(plus, fp); Detail::ACMFlux(minus, fm);
+                    for (int row = 0; row < 4; ++row)
+                        total[side * 4 + row] += point.measure * (fp.value[row] - fm.value[row]) / (2 * epsilon);
+                }
+            }
+        for (int k = 0; k < 8; ++k) blocks[id * 8 + k] = total[k];
     }
     __device__ double BDFCurrent(const View &v, const double *previous, const double *previousPrevious, I cell, int k, bool startup)
     {
@@ -610,7 +646,15 @@ namespace ACMResidentDetail
         SolveBlock(block, value, 2);
         for (int k = 0; k < 2; ++k) work[cell * 2 + k] = value[k];
     }
-    __global__ void LinearProduct(View v, const double *jac, const double *qJac, const double *advected,
+    __device__ double KineticFluxIncrement(const View &v, I faceId, int row, const double *kineticJac, const double *qIncrement)
+    {
+        if (!v.s.sst || !v.s.includeIsotropicStress) return 0;
+        const auto &face = v.faces[faceId];
+        double value = kineticJac[faceId * 8 + row] * qIncrement[face.left * 2];
+        if (face.right >= 0) value += kineticJac[faceId * 8 + 4 + row] * qIncrement[face.right * 2];
+        return v.s.flow.rho0 * value; // Jacobian columns act on conservative rho*k.
+    }
+    __global__ void LinearProduct(View v, const double *jac, const double *qJac, const double *kineticJac, const double *advected,
                                   const double *diagonal, const double *qDiagonal,
                                   const double *increment, const double *qIncrement, double *residual, double *qResidual)
     {
@@ -620,6 +664,13 @@ namespace ACMResidentDetail
         {
             double value = 0;
             for (int col = 0; col < 4; ++col) value += diagonal[cell * 16 + row * 4 + col] * increment[cell * 4 + col];
+            if (v.s.sst)
+                for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
+                {
+                    const auto &link = v.links[j];
+                    if (link.neighbor == cell) continue;
+                    value += (link.side ? -1 : 1) * KineticFluxIncrement(v, link.face, row, kineticJac, qIncrement) / v.cells[cell].volume;
+                }
             for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
             {
                 const auto &link = v.links[j];
@@ -636,6 +687,13 @@ namespace ACMResidentDetail
                 double value = 0;
                 for (int col = 0; col < 2; ++col) value += qDiagonal[cell * 4 + row * 2 + col] * qIncrement[cell * 2 + col];
                 value += TurbulenceFlowProduct(v, cell, row, jac, advected, increment);
+                for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
+                {
+                    const auto &link = v.links[j];
+                    if (link.neighbor == cell) continue;
+                    value += (link.side ? -1 : 1) * advected[link.face * 2 + row] *
+                             KineticFluxIncrement(v, link.face, 3, kineticJac, qIncrement) / v.cells[cell].volume;
+                }
                 for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
                 {
                     const auto &link = v.links[j];
@@ -699,7 +757,7 @@ struct ACMSSTWorkspace
     I globalOwned;
     ResidentDetail::Buffer<double> q, qGradient, flowGradient, qLimiter, eddy, volumeFlux, qFlux, qRate, qRhs;
     ResidentDetail::Buffer<double> jac, diagonal, qDiagonal, increment, qIncrement, linearResidual, qLinearResidual, work;
-    ResidentDetail::Buffer<double> qJac, advected, qWork, qWorkRhs;
+    ResidentDetail::Buffer<double> qJac, kineticJac, advected, qWork, qWorkRhs;
     ResidentDetail::Buffer<double> previous, previousPrevious, qPrevious, qPreviousPrevious, norms;
     const I *nodes;
     const std::vector<I> &levels;
@@ -727,6 +785,7 @@ struct ACMSSTWorkspace
             qFlux.Resize(v.faceCount * 2); qRate.Resize(v.faceCount * 2); qRhs.Resize(v.count * 2);
             qDiagonal.Resize(v.owned * 4); qIncrement.Resize(v.count * 2); qLinearResidual.Resize(v.count * 2);
             qJac.Resize(v.faceCount * 4); advected.Resize(v.faceCount * 2);
+            kineticJac.Resize(v.faceCount * 8);
             qWork.Resize(v.count * 2); qWorkRhs.Resize(v.count * 2);
             v.q = q.data; v.qGradient = qGradient.data; v.flowGradient = flowGradient.data; v.qLimiter = qLimiter.data;
             v.eddy = eddy.data; v.volumeFlux = volumeFlux.data; v.qFlux = qFlux.data; v.qRate = qRate.data; v.qRhs = qRhs.data;
@@ -847,6 +906,7 @@ struct ACMSSTWorkspace
         for (int iteration = 0; iteration < (physical ? iterationLimit : 1) && (!physical || !Converged(report)); ++iteration)
         {
             if (v.faceCount) FaceJacobian<<<Blocks(v.faceCount), 128>>>(v, jac.data);
+            if (v.s.sst && v.faceCount) KineticPressureJacobian<<<Blocks(v.faceCount), 128>>>(v, kineticJac.data);
             if (v.s.sst && v.faceCount) SSTImplicitFaces<<<Blocks(v.faceCount), 128>>>(v, qJac.data, advected.data);
             if (v.owned) ImplicitDiagonal<<<Blocks(v.owned), 128>>>(v, jac.data, qJac.data, diagonal.data, qDiagonal.data, qPrevious.data, qPreviousPrevious.data, completed == 0);
             Check(cudaMemset(increment.data, 0, increment.count * sizeof(double)), "reset BDF correction");
@@ -889,7 +949,7 @@ struct ACMSSTWorkspace
                 if (v.owned) AddLinearCorrection<<<Blocks(v.owned), 128>>>(v, work.data, qWork.data, increment.data, qIncrement.data);
                 halo.Pull(increment.data, 4);
                 if (v.s.sst) halo.Pull(qIncrement.data, 2);
-                if (v.owned) LinearProduct<<<Blocks(v.owned), 128>>>(v, jac.data, qJac.data, advected.data, diagonal.data, qDiagonal.data, increment.data, qIncrement.data, linearResidual.data, qLinearResidual.data);
+                if (v.owned) LinearProduct<<<Blocks(v.owned), 128>>>(v, jac.data, qJac.data, kineticJac.data, advected.data, diagonal.data, qDiagonal.data, increment.data, qIncrement.data, linearResidual.data, qLinearResidual.data);
                 currentLinear = Norm(linearResidual.data, qLinearResidual.data);
                 linearNorm = linearMetric(currentLinear);
             }

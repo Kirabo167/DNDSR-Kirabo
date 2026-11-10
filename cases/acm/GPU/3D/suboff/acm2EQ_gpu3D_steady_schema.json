@@ -473,6 +473,11 @@
                     "description": "Wall omega coefficient in omega=C*nu/d^2",
                     "minimum": 0.0
                 },
+                "includeIsotropicStress": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Add isotropic k stress and interpret pressure as static; false uses legacy modified pressure"
+                },
                 "enableSourceTerms": {
                     "type": "boolean",
                     "default": true,
@@ -777,6 +782,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Require turbulence variables in a RANS restart file"
+                },
+                "pressureIsModified": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Restart Pressure stores modified pressure; convert to static using loaded k"
                 },
                 "physicalTime": {
                     "type": "number",

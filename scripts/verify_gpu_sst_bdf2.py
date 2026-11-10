@@ -57,6 +57,13 @@ def main():
             if mode == "startup":
                 overrides.update({"/timeMarchSettings/dualTimeRANSStartupSteps": 1,
                                   "/timeMarchSettings/dualTimeRANSStartupIterations": 6})
+            if mode == "legacy_pressure":
+                overrides["/turbulenceSettings/includeIsotropicStress"] = False
+            if mode == "kinetic_coupling":
+                overrides.update({"/initialState": [.25, .1, .025, .1, .4, 4.],
+                                  "/timeMarchSettings/lusgsSweeps": 3,
+                                  "/timeMarchSettings/linearRelativeTolerance": 1e-13,
+                                  "/timeMarchSettings/linearAbsoluteTolerance": 1e-15})
             if mode == "history_BE":
                 overrides.update({"/boundaryConditions/0/type": "BCOut",
                                   "/initialState": [0., 0., 0., 0., .001, 1000.],
