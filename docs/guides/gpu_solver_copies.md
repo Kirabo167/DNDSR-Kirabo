@@ -1,7 +1,7 @@
 # ACM / NCFV 显存常驻 GPU 显式求解器
 
-2026-11-10 按用户授权同步 GitHub main `c62e501`，保留既有 NCFV 本地修改。
-当前 CPU 快照为 frozen/ACM_NCFV_CPU_20261110_c62e501/，由 frozen/active_cpu_snapshot.txt 选择。
+2026-11-10 按用户授权同步 GitHub main `c62e501` 的数值修改和 `dcf4662` 的文档修改，保留既有 NCFV 本地修改。
+当前 CPU 快照为 frozen/ACM_NCFV_CPU_20261110_dcf4662/，由 frozen/active_cpu_snapshot.txt 选择，复用已验证的 c62e501 二进制。
 本次只发布 GPUACM，不更新纯 CPU 远端分支；旧快照继续保留。CPU 模块独立编译，未为 CUDA 改写。
 `GPUACM` 分支保存当前源码与配置。重新克隆后使用
 `python3 scripts/verify_cpu_freeze.py --sources-only` 核对冻结源码；

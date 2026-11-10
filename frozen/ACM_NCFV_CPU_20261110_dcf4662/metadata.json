@@ -1,0 +1,11 @@
+{
+  "date": "2026-11-10",
+  "upstream_main": "dcf466279482a59a663dfe35a8d07baeb39f4a9d",
+  "numerical_base": "c62e50159a179d278b704e2cee719ada5ac9b109",
+  "previous_snapshot": "ACM_NCFV_CPU_20261110_c62e501",
+  "source_files": 63,
+  "scope": "Documentation refresh; numerical CPU sources and validated binaries unchanged from c62e501.",
+  "local_documentation_fix": "Describe existing frozen neighbour turbulence transport face blocks correctly in ACM README.",
+  "validation": "15 CPU CTests, 144 CPU/host/CUDA records, analytic and restart tests recorded in project_sync_20261110_c62e501; no numerical changes after validation.",
+  "publication": "GPUACM only; pure CPU main remains read-only."
+}

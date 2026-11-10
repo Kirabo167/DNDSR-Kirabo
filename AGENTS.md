@@ -513,6 +513,8 @@ synchronizing CPU/GPU with GitHub main. The user then authorized syncing
 `c62e501` into the local CPU contents and GPU implementation, publishing only
 to `GPUACM`. The active baseline is now `c62e501` plus preserved NCFV changes;
 the pure-CPU GitHub branch must not be pushed or overwritten by this workflow.
+The subsequent documentation-only `dcf4662` update is also synchronized locally;
+the active snapshot records it while reusing the validated `c62e501` binaries.
 Its snapshot is selected by
 `frozen/active_cpu_snapshot.txt`; the earlier `ACM_NCFV_CPU_20261103` snapshot
 remains available as history.

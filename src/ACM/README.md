@@ -1,10 +1,10 @@
 <!--
-File description: implementation status and integration boundary of the initial ACM module.
+File description: implementation status and integration boundary of the ACM module.
 Modifier: Runzhi Ma
-Last modified: 2026-10-09
+Last modified: 2026-11-10
 -->
 
-# ACM high-order initial solver
+# ACM high-order solver
 
 This directory contains an independent constant-density ACM solver for two- and
 three-dimensional unstructured meshes. It reuses `Geom`, `CFV`, and the existing
@@ -12,7 +12,8 @@ MPI/OpenMP array infrastructure, but it does not modify or inherit the Euler equ
 
 Implemented now:
 
-- state layout `[u,v,w,p]`;
+- model-specific state layouts `[u,v,w,p]`, `[u,v,w,p,rho*nuTilde]`, and
+  `[u,v,w,p,rho*k,rho*omega]` (or `rho*epsilon`);
 - physical flux and its conservative Jacobian;
 - Scheme-A preconditioning matrices and eigenvalues;
 - general-Turkel-`alpha` Rusanov and Roe fluxes;
@@ -38,9 +39,10 @@ Implemented now:
 - direct reuse of generic left-preconditioned GMRES with block-Jacobi or ACM LU-SGS preconditioning;
 - Euler-style local/global CFL pseudo-time steps with convective and viscous spectral radii;
 - runtime-selectable laminar, SA, Wilcox k-omega, SST k-omega, and Realizable k-epsilon modes;
-- configurable parallel VTK-HDF cell-field output for velocity and pressure;
-- segregated limited second-order turbulence transport with wall distance, MPI ghost exchange,
-  positivity-bounded SSPRK3 substeps, and frozen eddy-viscosity coupling to the flow equations;
+- configurable parallel VTK-HDF output for flow and active turbulence fields;
+- unified conservative RANS transport with wall distance, MPI ghost exchange,
+  limited second-order turbulence reconstruction, positivity bounds, local implicit source
+  blocks, and explicit isotropic turbulent kinetic energy stress;
 - DNDS configuration registration, self-contained single-case JSON loading, CLI overrides, and schema output.
 
 Applications use independent dimension-specific entry points:
@@ -49,6 +51,7 @@ Applications use independent dimension-specific entry points:
 - `app/ACM/ACM.cpp`: compatibility entry for the 3D model;
 - `SingleBlockApp.hpp`: ACM CLI, configuration checks and solve workflow;
 - `ACMSolver.*`: mesh/reconstruction/time-loop assembly;
+- `ACMRANSSolver.*`: unified SA/two-equation state, time integration, output and restart;
 - `ACMEvaluator.*`: high-order spatial residual and frozen-reconstruction Jacobian;
 - `ACMTurbulence.*`: model-local viscosity, diffusion, source, and boundary kernels;
 - `ACMTurbulenceTransport.*`: dimension-generic finite-volume transport and flow coupling;
@@ -72,21 +75,35 @@ cmake --build build --target acm2D acm3D --parallel 4
 instantiations. The `acm` module target aggregates both for tests; `all_acm`
 builds constant-/variable-density variants and the compatibility executable.
 
-Turbulence is modular and does not enlarge the ACM flow state. The flow solver always stores
-`[u,v,w,p]`; a separate distributed two-entry field stores only the active turbulence variables:
+The executable selects the compiled state layout; the runtime closure must match it:
 
-- `Laminar`: no turbulence equation and `mu_t=0`;
-- `SpalartAllmaras`: `[nuTilde, unused]`;
-- `KOmegaWilcox` and `KOmegaSST`: `[k, omega]`;
-- `RealizableKEpsilon`: `[k, epsilon]`.
+- `acm2D/3D`: `[u,v,w,p]`, `Laminar`, and `mu_t=0`;
+- `acmSA2D/3D`: `[u,v,w,p,rho*nuTilde]`, `SpalartAllmaras`;
+- `acm2EQ2D/3D`: `[u,v,w,p,rho*k,rho*omega]` for `KOmegaWilcox`/`KOmegaSST`,
+  or `[u,v,w,p,rho*k,rho*epsilon]` for `RealizableKEpsilon`.
 
 The same implementation is instantiated for both two and three dimensions. It reuses Geom wall
 distance/mesh metrics, CFV face quadrature, and the existing MPI arrays, but it neither includes,
-links, nor modifies the Euler module. At each flow residual evaluation, the transport module freezes
-face `mu_t`; the flow viscous stress, viscous CFL radius, and frozen 4x4 implicit operator then use
-`mu+mu_t`. After each completed flow pseudo-time step, the turbulence field advances segregatedly
-with positivity-bounded SSPRK3 substeps. Therefore LU-SGS/GMRES remains the four-variable ACM flow
-solve; turbulence source Jacobians are not inserted into that implicit system.
+links, nor modifies the Euler module. Flow and conservative turbulence fields advance in the
+same RK stage or nonlinear iteration. The implicit system includes local turbulence source
+blocks, frozen turbulence transport face blocks, and derivatives from `rho*k` into the flow
+operator and shared volume flux. Eddy viscosity, reconstructed slopes and other closure
+cross derivatives remain frozen. This is an approximate coupled system, not a full Newton
+linearization. See the [state and integration guide](../../docs/solver-guide/acm_model_state_zh.md).
+
+Two-equation models default to `turbulenceSettings.includeIsotropicStress=true`.
+The tensor `T_k=(2/3)rho*k I` enters momentum flux through temporary effective
+pressure `p+(2/3)rho*k`, also used for Riemann dissipation and characteristic
+boundaries. Stored/input/output `Pressure` is static pressure; unified RANS output
+also includes `TurbulentPressure=(2/3)rho*k`. SA and laminar models add no k stress.
+Setting `includeIsotropicStress=false` retains the old modified-pressure convention.
+
+For old constant-density VTK-HDF restarts containing modified pressure, enable
+`restartSettings.pressureIsModified=true` with explicit stress to convert using
+loaded k. Missing turbulence fields are rejected. New static-pressure restarts
+use `false`; initial states and pressure boundary values must already follow the
+selected convention. Steady same-partition restart is supported; complete BDF2
+history restart is not available.
 
 The governing-equation derivation, SST blending formulas, and implementation map are in
 [`docs/solver-guide/acm_rans_zh.md`](../../docs/solver-guide/acm_rans_zh.md).
@@ -97,6 +114,7 @@ A non-laminar model requires `acmSettings.enableViscousFlux=true` and positive
 ```json
 "turbulenceSettings": {
   "model": "KOmegaSST",
+  "includeIsotropicStress": true,
   "initialValue": [0.001, 10.0],
   "farFieldValue": [0.001, 10.0],
   "minimumValue": [1e-12, 1e-10],
@@ -105,7 +123,7 @@ A non-laminar model requires `acmSettings.enableViscousFlux=true` and positive
   "wallOmegaCoefficient": 800.0,
   "enableSourceTerms": true,
   "secondOrderReconstruction": true,
-  "transportSubsteps": 4,
+  "transportSubsteps": 1,
   "transportTimeScale": 0.25,
   "wallDistanceMethod": 1,
   "wallDistanceExecution": 0,
@@ -115,10 +133,14 @@ A non-laminar model requires `acmSettings.enableViscousFlux=true` and positive
 }
 ```
 
-`initialValue` and `farFieldValue` use the model-specific layouts above. `maximumValue` bounds the
-explicit stages independently of `maximumEddyViscosityRatio`, which caps only `mu_t/mu`. Increasing
-`transportSubsteps` or decreasing `transportTimeScale` is the first stability adjustment for stiff
-wall-omega cases. For high-order RANS calculations, enabling the main ACM reconstruction limiter is
+This is a `turbulenceSettings` fragment for `acm2EQ3D`, whose metadata must select
+`ConstantDensity2EQ3D` with `fieldNVariables=6`. Set the complete `initialState`
+tail to `[rho0*k,rho0*omega]`; `initialValue` does not initialize the unified state.
+`farFieldValue`, `minimumValue`, and `maximumValue` use primitive `[k,omega]` values
+(or `[k,epsilon]` / `[nuTilde,unused]` for their models). `maximumEddyViscosityRatio`
+caps only `mu_t/mu`. Unified RANS requires `transportSubsteps=1`;
+`transportTimeScale` controls turbulence pseudo-time scaling, not physical BDF derivatives.
+For high-order RANS calculations, enabling the main ACM reconstruction limiter is
 recommended as well. Far-field turbulence values are imposed only where `BCFar` is locally inflow;
 outflow uses zero normal gradient. Wall states impose zero `nuTilde`/`k`, with
 `omega=wallOmegaCoefficient*nu/d^2` for the two k-omega models and
@@ -228,7 +250,7 @@ are selected at runtime through that ACM variant's JSON. See
 [the migration guide](../../docs/guides/solver_split_zh.md) for the upstream
 comparison and verification scope.
 
-Current initial-version limits:
+Current limits:
 
 - periodic translations are configurable, while rotational periodic setup is not exposed yet;
 - WBAP/CWBAP requires `Variational` reconstruction;
@@ -237,15 +259,14 @@ Current initial-version limits:
   supported flow reconstruction and time integrator;
 - LU-SGS/GMRES uses a first-order frozen face linearization as the implicit operator while the
   nonlinear residual retains the selected high-order reconstruction;
-- turbulence transport is segregated and explicit even when the four-variable flow integrator is
-  implicit; no coupled turbulence Jacobian or implicit turbulence source linearization is present;
-- BDF2 physical dual-time marching accepts laminar flow and all four RANS models; turbulence remains segregated
-  and pseudo-time explicit, so physical-time accuracy requires converging both the flow and
+- unified RANS uses approximate implicit coupling rather than a full turbulence spatial Jacobian;
+- BDF2 physical dual-time marching accepts laminar flow and all four RANS models;
+  physical-time accuracy requires converging both the flow and
   turbulence defects within each physical step;
 - the supplied SA model is baseline RANS; DES, transition, and rotation/curvature corrections are
   not enabled;
-- restart output and BDF2-history serialization are not connected yet; flow-field output currently
-  contains cell-centered velocity and pressure in parallel VTK-HDF format.
+- unified RANS supports same-partition steady field restart and parallel VTK-HDF flow/turbulence
+  output; complete BDF2-history serialization is not connected yet.
 
 Relevant selections are:
 
@@ -348,7 +369,7 @@ For steady implicit Euler only, optional `timeMarchSettings` entries are:
 The inner target is `max(implicitTolerance, steadyRelativeTolerance * initialSpatialRMS)`.
 Thus early pseudo-time steps can be solved inexactly while the target tightens as
 the outer residual falls. The absolute tolerance remains the final accuracy floor.
-The raw spatial RMS is reevaluated after the step and any segregated turbulence update;
+The raw spatial RMS is reevaluated after the complete flow/turbulence step;
 it is distinct from the implicit history defect. CFL increases only after inner
 success and spatial residual reduction, by at most `steadyCFLGrowth` and the square
 root of the before/after residual ratio. Inner failure or spatial residual growth
