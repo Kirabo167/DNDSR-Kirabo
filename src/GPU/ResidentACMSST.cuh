@@ -107,7 +107,7 @@ namespace ACMResidentDetail
         const double d = Positive(distance), nu = v.s.viscosity / Positive(v.s.flow.rho0);
         double cross = 0;
         for (int j = 0; j < 3; ++j) cross += g[j] * g[j + 3];
-        const double cd = fmax(2 * v.s.flow.rho0 * .856 * cross / w, 1e-10);
+        const double cd = fmax(2 * v.s.flow.rho0 * .856 * cross / w, 1e-20); // SST (1994).
         const double near = sqrt(k) / (.09 * w * d), viscous = 500 * nu / (d * d * w);
         const double arg1 = fmax(0., fmin(10., fmin(fmax(near, viscous), 4 * v.s.flow.rho0 * .856 * k / (cd * d * d))));
         const double arg2 = fmax(0., fmin(10., fmax(2 * near, viscous)));
@@ -246,6 +246,11 @@ namespace ACMResidentDetail
         const auto &face = v.faces[faceId];
         for (I p = face.begin; p < face.end; ++p)
         {
+            if (face.right < 0 && (face.type == 2 || face.type == 4))
+            {
+                v.eddy[p] = 0;
+                continue;
+            }
             double ql[2], qr[2], qg[6], fg[12], mean[2];
             SSTPointData(v, face, v.points[p], ql, qr, qg, fg);
             for (int k = 0; k < 2; ++k) mean[k] = QClamp(v, .5 * (ql[k] + qr[k]), k);
@@ -353,6 +358,7 @@ namespace ACMResidentDetail
     }
     __device__ double BDFCurrent(const View &v, const double *previous, const double *previousPrevious, I cell, int k, bool startup)
     {
+        if (v.s.integrator != 4) return 0;
         if (startup) return 1;
         if (k >= 4)
         {
@@ -403,7 +409,56 @@ namespace ACMResidentDetail
             rhs[row] /= matrix[row * n + row];
         }
     }
-    __global__ void ImplicitDiagonal(View v, const double *jac, double *diagonal, double *qDiagonal,
+    // Frozen primitive-scalar face blocks, matching the CPU transport operator.
+    // Entries are [left k, left omega, right k, right omega]; scalar transport
+    // has no cross-variable face terms. Source coupling remains a local 2x2 block.
+    __global__ void SSTImplicitFaces(View v, double *blocks, double *advected)
+    {
+        const I id = Thread();
+        if (id >= v.faceCount) return;
+        const auto &face = v.faces[id];
+        double total[4]{}, upwind[2]{}, area = 0;
+        if (face.left != face.right)
+            for (I p = face.begin; p < face.end; ++p)
+            {
+                const auto &point = v.points[p];
+                double ql[2], qr[2], qg[6], fg[12], mean[2], diffusion[2];
+                SSTPointData(v, face, point, ql, qr, qg, fg);
+                for (int k = 0; k < 2; ++k) mean[k] = QClamp(v, .5 * (ql[k] + qr[k]), k);
+                Diffusivity(v, mean, qg, face.wallDistance, v.eddy[p], diffusion);
+                double projection = 0, ghostDerivative = 1;
+                for (int d = 0; d < 3; ++d) projection += point.displacement[d] * point.normal[d];
+                const bool impermeable = face.right < 0 && (face.type == 2 || face.type == 4 || face.type == 3 || face.type == 9);
+                if (face.right < 0 && (face.type == 2 || face.type == 4 || face.type == 7 || face.type == 8 || face.type == 10 || face.type == 1))
+                    ghostDerivative = -1;
+                if (face.right < 0 && face.type == 1)
+                {
+                    double flow[4], un = 0;
+                    for (int k = 0; k < 4; ++k)
+                    {
+                        flow[k] = v.u[face.left * 4 + k];
+                        if (v.s.turbulenceSecondOrder)
+                            for (int d = 0; d < v.s.dimension; ++d)
+                                flow[k] += v.qLimiter[face.left * 3 + 2] * v.flowGradient[face.left * 12 + k * 3 + d] * point.delta[0][d];
+                    }
+                    for (int d = 0; d < 3; ++d) un += flow[d] * point.normal[d];
+                    if (un >= 0) ghostDerivative = 1;
+                }
+                const double flux = impermeable ? 0 : v.volumeFlux[p];
+                for (int k = 0; k < 2; ++k)
+                {
+                    const double diff = fabs(projection) > 1e-14 ? diffusion[k] / projection : 0;
+                    const double left = fmax(flux, 0.) + diff, right = fmin(flux, 0.) - diff;
+                    total[k] += point.measure * (left + (face.right < 0 ? right * ghostDerivative : 0));
+                    if (face.right >= 0) total[2 + k] += point.measure * right;
+                    if (!impermeable) upwind[k] += point.measure * (flux >= 0 ? ql[k] : qr[k]);
+                }
+                area += point.measure;
+            }
+        for (int k = 0; k < 4; ++k) blocks[id * 4 + k] = total[k];
+        for (int k = 0; k < 2; ++k) advected[id * 2 + k] = area > 0 ? upwind[k] / area : 0;
+    }
+    __global__ void ImplicitDiagonal(View v, const double *jac, const double *qJac, double *diagonal, double *qDiagonal,
                                      const double *qPrevious, const double *qPreviousPrevious, bool startup)
     {
         const I cell = Thread();
@@ -411,7 +466,7 @@ namespace ACMResidentDetail
         double block[16]{}, qb[4]{};
         for (int k = 0; k < 3; ++k)
         {
-            block[k * 4 + k] = 1 / v.dt[cell] + (startup ? 1 : 1.5) / v.s.physicalStep;
+            block[k * 4 + k] = 1 / v.dt[cell] + (v.s.integrator == 4 ? (startup ? 1 : 1.5) / v.s.physicalStep : 0);
             block[k * 4 + 3] = (1 + v.s.flow.alpha) * v.u[cell * 4 + k] / (v.s.flow.beta2 * v.dt[cell]);
         }
         block[15] = 1 / (v.s.flow.beta2 * v.dt[cell]);
@@ -425,22 +480,65 @@ namespace ACMResidentDetail
         }
         for (int k = 0; k < 16; ++k) diagonal[cell * 16 + k] = block[k];
         if (!v.s.sst) return;
+        if (v.s.turbulenceSource)
+        {
+            double f1, f2;
+            Blend(v, v.q + cell * 2, v.qGradient + cell * 6, v.cells[cell].wallDistance, f1, f2);
+            const double k = QClamp(v, v.q[cell * 2], 0), omega = QClamp(v, v.q[cell * 2 + 1], 1);
+            qb[0] = .09 * omega;
+            qb[1] = .09 * k;
+            qb[3] = 2 * (.075 * f1 + .0828 * (1 - f1)) * omega;
+        }
         for (int variable = 0; variable < 2; ++variable)
         {
-            const double original = v.q[cell * 2 + variable];
-            const double epsilon = 1.4901161193847656e-8 * fmax(fabs(original), v.s.turbulenceMinimum[variable]);
-            double plus[2]{v.q[cell * 2], v.q[cell * 2 + 1]}, minus[2]{plus[0], plus[1]}, sp[2], sm[2];
-            plus[variable] += epsilon;
-            minus[variable] = fmax(original - epsilon, v.s.turbulenceMinimum[variable]);
-            SSTSource(v, plus, v.flowGradient + cell * 12, v.qGradient + cell * 6, v.cells[cell].wallDistance, sp);
-            SSTSource(v, minus, v.flowGradient + cell * 12, v.qGradient + cell * 6, v.cells[cell].wallDistance, sm);
-            for (int row = 0; row < 2; ++row) qb[row * 2 + variable] = -(sp[row] - sm[row]) / (plus[variable] - minus[variable]);
             qb[variable * 2 + variable] += 1 / (v.dt[cell] * v.s.turbulenceTimeScale) +
                 BDFCurrent(v, qPrevious, qPreviousPrevious, cell, variable + 4, startup) / v.s.physicalStep;
         }
         for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
-            for (int k = 0; k < 2; ++k) qb[k * 2 + k] += v.qRate[v.links[j].face * 2 + k] / v.cells[cell].volume;
+        {
+            const auto &link = v.links[j];
+            if (link.neighbor == cell) continue;
+            for (int k = 0; k < 2; ++k)
+                qb[k * 2 + k] += (link.side ? -1 : 1) * qJac[link.face * 4 + link.side * 2 + k] / v.cells[cell].volume;
+        }
         for (int k = 0; k < 4; ++k) qDiagonal[cell * 4 + k] = qb[k];
+    }
+    __global__ void SSTAuditCells(View v, const double *diagonal, I begin, I count, double *values)
+    {
+        const I local = Thread(), cell = begin + local;
+        if (local >= count) return;
+        double *out = values + local * 49;
+        for (int k = 0; k < 49; ++k) out[k] = 0;
+        for (int k = 0; k < 4; ++k) { out[k] = v.rhs[cell * 4 + k]; out[8 + k] = diagonal[cell * 4 + k]; }
+        for (int k = 0; k < 2; ++k) { out[4 + k] = v.qRhs[cell * 2 + k]; out[12 + k] = v.q[cell * 2 + k]; }
+        SSTSource(v, v.q + cell * 2, v.flowGradient + cell * 12, v.qGradient + cell * 6, v.cells[cell].wallDistance, out + 6);
+        for (int k = 0; k < 9; ++k) out[14 + k] = v.flowGradient[cell * 12 + k];
+        for (int k = 0; k < 6; ++k) out[23 + k] = v.qGradient[cell * 6 + k];
+        out[29] = v.dt[cell]; out[30] = v.cells[cell].wallDistance; out[31] = v.cells[cell].volume;
+        out[32] = Eddy(v, v.q + cell * 2, v.flowGradient + cell * 12, v.qGradient + cell * 6, v.cells[cell].wallDistance);
+        double matrix[4], correction[2]{out[4], out[5]};
+        for (int k = 0; k < 4; ++k) matrix[k] = out[8 + k];
+        SolveBlock(matrix, correction, 2);
+        for (int k = 0; k < 2; ++k)
+        {
+            out[35 + k] = correction[k];
+            out[37 + k] = v.s.implicitRelaxation * correction[k];
+        }
+        for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
+        {
+            const auto &link = v.links[j];
+            const auto &face = v.faces[link.face];
+            for (int k = 0; k < 2; ++k) out[33 + k] += v.qRate[link.face * 2 + k] / v.cells[cell].volume;
+            if (link.neighbor < 0 && (face.type == 2 || face.type == 4)) out[39] += 1;
+            double displacement[3]{}, measure = 0;
+            for (I p = face.begin; p < face.end; ++p)
+            {
+                measure += v.points[p].measure;
+                for (int d = 0; d < 3; ++d) displacement[d] += v.points[p].measure * v.points[p].displacement[d] * (link.side ? -1 : 1);
+            }
+            for (int d = 0; d < 3; ++d)
+                for (int e = 0; e < 3; ++e) out[40 + d * 3 + e] += link.turbulenceWeight[d] * displacement[e] / measure;
+        }
     }
     __global__ void SGSSweep(View v, const I *nodes, I begin, I end, const double *jac, const double *diagonal,
                              const double *linearRhs, double *work, bool backward)
@@ -466,7 +564,54 @@ namespace ACMResidentDetail
         for (int k = 0; k < 4; ++k)
             work[cell * 4 + k] = backward ? work[cell * 4 + k] + value[k] : value[k];
     }
-    __global__ void LinearProduct(View v, const double *jac, const double *diagonal, const double *qDiagonal,
+    __device__ double TurbulenceFlowProduct(const View &v, I cell, int variable, const double *jac,
+                                           const double *advected, const double *flow)
+    {
+        double value = v.s.integrator == 4 ? v.q[cell * 2 + variable] * flow[cell * 4 + 3] / (v.s.flow.beta2 * v.dt[cell]) : 0;
+        for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
+        {
+            const auto &link = v.links[j];
+            if (link.neighbor == cell) continue;
+            const auto &face = v.faces[link.face];
+            double flux = 0;
+            for (int col = 0; col < 4; ++col)
+            {
+                flux += jac[link.face * 32 + 12 + col] * flow[face.left * 4 + col];
+                if (face.right >= 0) flux += jac[link.face * 32 + 28 + col] * flow[face.right * 4 + col];
+            }
+            value += (link.side ? -1 : 1) * advected[link.face * 2 + variable] * flux / v.cells[cell].volume;
+        }
+        return value;
+    }
+    __global__ void SSTLinearRHS(View v, const double *jac, const double *advected, const double *flow,
+                                 const double *residual, double *rhs)
+    {
+        const I cell = Thread();
+        if (cell >= v.owned) return;
+        for (int k = 0; k < 2; ++k)
+            rhs[cell * 2 + k] = residual[cell * 2 + k] - TurbulenceFlowProduct(v, cell, k, jac, advected, flow);
+    }
+    __global__ void SSTSGSSweep(View v, const I *nodes, I begin, I end, const double *qJac,
+                                const double *diagonal, const double *rhs, double *work)
+    {
+        const I position = begin + Thread();
+        if (position >= end) return;
+        const I cell = nodes[position];
+        double value[2]{rhs[cell * 2], rhs[cell * 2 + 1]}, block[4];
+        for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
+        {
+            const auto &link = v.links[j];
+            if (link.neighbor < 0 || link.neighbor == cell) continue;
+            for (int k = 0; k < 2; ++k)
+                value[k] -= (link.side ? -1 : 1) * qJac[link.face * 4 + (1 - link.side) * 2 + k] *
+                            work[link.neighbor * 2 + k] / v.cells[cell].volume;
+        }
+        for (int k = 0; k < 4; ++k) block[k] = diagonal[cell * 4 + k];
+        SolveBlock(block, value, 2);
+        for (int k = 0; k < 2; ++k) work[cell * 2 + k] = value[k];
+    }
+    __global__ void LinearProduct(View v, const double *jac, const double *qJac, const double *advected,
+                                  const double *diagonal, const double *qDiagonal,
                                   const double *increment, const double *qIncrement, double *residual, double *qResidual)
     {
         const I cell = Thread();
@@ -490,22 +635,25 @@ namespace ACMResidentDetail
             {
                 double value = 0;
                 for (int col = 0; col < 2; ++col) value += qDiagonal[cell * 4 + row * 2 + col] * qIncrement[cell * 2 + col];
+                value += TurbulenceFlowProduct(v, cell, row, jac, advected, increment);
+                for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
+                {
+                    const auto &link = v.links[j];
+                    if (link.neighbor < 0 || link.neighbor == cell) continue;
+                    value += (link.side ? -1 : 1) * qJac[link.face * 4 + (1 - link.side) * 2 + row] *
+                             qIncrement[link.neighbor * 2 + row] / v.cells[cell].volume;
+                }
                 qResidual[cell * 2 + row] = v.qRhs[cell * 2 + row] - value;
             }
     }
-    __global__ void AddLinearCorrection(View v, const double *work, const double *qDiagonal, const double *qResidual,
+    __global__ void AddLinearCorrection(View v, const double *work, const double *qWork,
                                        double *increment, double *qIncrement)
     {
         const I cell = Thread();
         if (cell >= v.owned) return;
         for (int k = 0; k < 4; ++k) increment[cell * 4 + k] += work[cell * 4 + k];
         if (v.s.sst)
-        {
-            double matrix[4], value[2]{qResidual[cell * 2], qResidual[cell * 2 + 1]};
-            for (int k = 0; k < 4; ++k) matrix[k] = qDiagonal[cell * 4 + k];
-            SolveBlock(matrix, value, 2);
-            for (int k = 0; k < 2; ++k) qIncrement[cell * 2 + k] += value[k];
-        }
+            for (int k = 0; k < 2; ++k) qIncrement[cell * 2 + k] += qWork[cell * 2 + k];
     }
     __global__ void ApplyNonlinearCorrection(View v, const double *increment, const double *qIncrement)
     {
@@ -551,20 +699,24 @@ struct ACMSSTWorkspace
     I globalOwned;
     ResidentDetail::Buffer<double> q, qGradient, flowGradient, qLimiter, eddy, volumeFlux, qFlux, qRate, qRhs;
     ResidentDetail::Buffer<double> jac, diagonal, qDiagonal, increment, qIncrement, linearResidual, qLinearResidual, work;
+    ResidentDetail::Buffer<double> qJac, advected, qWork, qWorkRhs;
     ResidentDetail::Buffer<double> previous, previousPrevious, qPrevious, qPreviousPrevious, norms;
     const I *nodes;
     const std::vector<I> &levels;
     std::uint64_t scalarBytes = 0;
     std::size_t completed = 0;
+    std::array<double, 6> steadyReference{};
+    std::vector<double> steadyMeritHistory;
     cudaGraphExec_t sgsGraph = nullptr;
+    cudaGraphExec_t qSgsGraph = nullptr;
     static unsigned Blocks(I n) { return unsigned((n + 127) / 128); }
     ACMSSTWorkspace(ACMResidentDetail::View &view, const ResidentACMData &data, ResidentDetail::Halo &transport,
                     MPI_Comm communicator, I global, const I *orderedNodes, const std::vector<I> &orderedLevels)
         : v(view), halo(transport), comm(communicator), globalOwned(global), nodes(orderedNodes), levels(orderedLevels)
     {
         using namespace ResidentDetail;
-        if (v.s.integrator != 4)
-            throw std::runtime_error("Resident SST currently requires BDF2DualTimeLUSGS; CPU fallback is disabled");
+        if (v.s.integrator != 4 && v.s.integrator != 2)
+            throw std::runtime_error("Resident SST requires implicit LU-SGS; CPU fallback is disabled");
         previous.Upload(data.initialState); previousPrevious.Upload(data.initialState);
         if (v.s.sst)
         {
@@ -574,6 +726,8 @@ struct ACMSSTWorkspace
             eddy.Resize(data.points.size()); volumeFlux.Resize(data.points.size());
             qFlux.Resize(v.faceCount * 2); qRate.Resize(v.faceCount * 2); qRhs.Resize(v.count * 2);
             qDiagonal.Resize(v.owned * 4); qIncrement.Resize(v.count * 2); qLinearResidual.Resize(v.count * 2);
+            qJac.Resize(v.faceCount * 4); advected.Resize(v.faceCount * 2);
+            qWork.Resize(v.count * 2); qWorkRhs.Resize(v.count * 2);
             v.q = q.data; v.qGradient = qGradient.data; v.flowGradient = flowGradient.data; v.qLimiter = qLimiter.data;
             v.eddy = eddy.data; v.volumeFlux = volumeFlux.data; v.qFlux = qFlux.data; v.qRate = qRate.data; v.qRhs = qRhs.data;
         }
@@ -592,12 +746,25 @@ struct ACMSSTWorkspace
         Check(cudaStreamEndCapture(stream, &graph), "finish SGS capture");
         Check(cudaGraphInstantiate(&sgsGraph, graph, nullptr, nullptr, 0), "instantiate SGS graph");
         Check(cudaGraphDestroy(graph), "release SGS capture graph");
+        if (v.s.sst)
+        {
+            Check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "begin SST SGS capture");
+            for (std::size_t l = 0; l + 1 < levels.size(); ++l)
+                if (levels[l + 1] > levels[l]) ACMResidentDetail::SSTSGSSweep<<<Blocks(levels[l + 1] - levels[l]), 128, 0, stream>>>(v, nodes, levels[l], levels[l + 1], qJac.data, qDiagonal.data, qWorkRhs.data, qWork.data);
+            for (std::size_t l = levels.size() - 1; l > 0; --l)
+                if (levels[l] > levels[l - 1]) ACMResidentDetail::SSTSGSSweep<<<Blocks(levels[l] - levels[l - 1]), 128, 0, stream>>>(v, nodes, levels[l - 1], levels[l], qJac.data, qDiagonal.data, qWorkRhs.data, qWork.data);
+            Check(cudaStreamEndCapture(stream, &graph), "finish SST SGS capture");
+            Check(cudaGraphInstantiate(&qSgsGraph, graph, nullptr, nullptr, 0), "instantiate SST SGS graph");
+            Check(cudaGraphDestroy(graph), "release SST SGS capture graph");
+            Check(cudaGraphUpload(qSgsGraph, nullptr), "upload SST SGS execution graph");
+        }
         Check(cudaStreamDestroy(stream), "release SGS capture stream");
         Check(cudaGraphUpload(sgsGraph, nullptr), "upload SGS execution graph");
     }
     ~ACMSSTWorkspace()
     {
         if (sgsGraph) cudaGraphExecDestroy(sgsGraph);
+        if (qSgsGraph) cudaGraphExecDestroy(qSgsGraph);
     }
     void Prepare()
     {
@@ -661,32 +828,70 @@ struct ACMSSTWorkspace
         const auto defect = [&]()
         {
             evaluate();
-            if (v.owned) BDFDefect<<<Blocks(v.owned), 128>>>(v, previous.data, previousPrevious.data, qPrevious.data, qPreviousPrevious.data, completed == 0);
+            if (v.s.integrator == 4 && v.owned) BDFDefect<<<Blocks(v.owned), 128>>>(v, previous.data, previousPrevious.data, qPrevious.data, qPreviousPrevious.data, completed == 0);
         };
         defect();
         ResidentACMReport report;
         report.equationNorms = report.initialEquationNorms = Norm(v.rhs, v.qRhs);
         report.initialNorm = report.finalNorm = Group(report.equationNorms, 0, 4);
         report.initialTurbulenceNorm = report.turbulenceNorm = v.s.sst ? Group(report.equationNorms, 4, 6) : 0;
-        for (int iteration = 0; iteration < v.s.implicitIterations && !Converged(report); ++iteration)
+        const bool physical = v.s.integrator == 4;
+        if (!physical)
+        {
+            if (completed == 0) steadyReference = report.initialEquationNorms;
+            Check(cudaMemcpy(previous.data, v.u, previous.count * sizeof(double), cudaMemcpyDeviceToDevice), "save steady line-search flow");
+            if (v.s.sst) Check(cudaMemcpy(qPrevious.data, v.q, qPrevious.count * sizeof(double), cudaMemcpyDeviceToDevice), "save steady line-search SST");
+        }
+        const int iterationLimit = physical && completed < static_cast<std::size_t>(v.s.startupSteps)
+            ? v.s.startupIterations : v.s.implicitIterations;
+        for (int iteration = 0; iteration < (physical ? iterationLimit : 1) && (!physical || !Converged(report)); ++iteration)
         {
             if (v.faceCount) FaceJacobian<<<Blocks(v.faceCount), 128>>>(v, jac.data);
-            if (v.owned) ImplicitDiagonal<<<Blocks(v.owned), 128>>>(v, jac.data, diagonal.data, qDiagonal.data, qPrevious.data, qPreviousPrevious.data, completed == 0);
+            if (v.s.sst && v.faceCount) SSTImplicitFaces<<<Blocks(v.faceCount), 128>>>(v, qJac.data, advected.data);
+            if (v.owned) ImplicitDiagonal<<<Blocks(v.owned), 128>>>(v, jac.data, qJac.data, diagonal.data, qDiagonal.data, qPrevious.data, qPreviousPrevious.data, completed == 0);
             Check(cudaMemset(increment.data, 0, increment.count * sizeof(double)), "reset BDF correction");
             if (v.s.sst) Check(cudaMemset(qIncrement.data, 0, qIncrement.count * sizeof(double)), "reset SST correction");
             Check(cudaMemcpy(linearResidual.data, v.rhs, v.count * 4 * sizeof(double), cudaMemcpyDeviceToDevice), "copy BDF linear RHS");
             if (v.s.sst) Check(cudaMemcpy(qLinearResidual.data, v.qRhs, v.count * 2 * sizeof(double), cudaMemcpyDeviceToDevice), "copy SST linear RHS");
             const auto initial = Norm(linearResidual.data, qLinearResidual.data);
-            const double linearInitial = Group(initial, 0, v.s.sst ? 6 : 4);
+            const auto linearMetric = [&](const std::array<double, 6> &norms)
+            {
+                if (physical) return Group(norms, 0, v.s.sst ? 6 : 4);
+                double sum = 0;
+                for (int k = 0; k < 6; ++k)
+                {
+                    const double x = norms[k] / std::max(steadyReference[k], v.s.steadyAbsoluteTolerances[k]);
+                    sum += x * x;
+                }
+                return std::sqrt(sum / 6);
+            };
+            const double linearInitial = linearMetric(initial);
             const double linearTarget = std::max(v.s.linearAbsoluteTolerance, v.s.linearRelativeTolerance * linearInitial);
             double linearNorm = linearInitial;
-            for (int sweep = 0; sweep < v.s.lusgsSweeps && linearNorm > linearTarget; ++sweep)
+            auto currentLinear = initial;
+            const auto linearConverged = [&]()
+            {
+                if (linearNorm > linearTarget) return false;
+                for (int k = 0; k < (v.s.sst ? 6 : 4); ++k)
+                    if (currentLinear[k] > std::max(v.s.linearAbsoluteTolerance, v.s.linearRelativeTolerance * initial[k])) return false;
+                return true;
+            };
+            for (int sweep = 0; sweep < v.s.lusgsSweeps && !linearConverged(); ++sweep)
             {
                 Check(cudaGraphLaunch(sgsGraph, nullptr), "launch resident SGS graph");
-                if (v.owned) AddLinearCorrection<<<Blocks(v.owned), 128>>>(v, work.data, qDiagonal.data, qLinearResidual.data, increment.data, qIncrement.data);
+                if (v.s.sst)
+                {
+                    halo.Pull(work.data, 4);
+                    if (v.owned) SSTLinearRHS<<<Blocks(v.owned), 128>>>(v, jac.data, advected.data, work.data, qLinearResidual.data, qWorkRhs.data);
+                    Check(cudaMemset(qWork.data, 0, qWork.count * sizeof(double)), "reset SST SGS work");
+                    Check(cudaGraphLaunch(qSgsGraph, nullptr), "launch resident SST SGS graph");
+                }
+                if (v.owned) AddLinearCorrection<<<Blocks(v.owned), 128>>>(v, work.data, qWork.data, increment.data, qIncrement.data);
                 halo.Pull(increment.data, 4);
-                if (v.owned) LinearProduct<<<Blocks(v.owned), 128>>>(v, jac.data, diagonal.data, qDiagonal.data, increment.data, qIncrement.data, linearResidual.data, qLinearResidual.data);
-                linearNorm = Group(Norm(linearResidual.data, qLinearResidual.data), 0, v.s.sst ? 6 : 4);
+                if (v.s.sst) halo.Pull(qIncrement.data, 2);
+                if (v.owned) LinearProduct<<<Blocks(v.owned), 128>>>(v, jac.data, qJac.data, advected.data, diagonal.data, qDiagonal.data, increment.data, qIncrement.data, linearResidual.data, qLinearResidual.data);
+                currentLinear = Norm(linearResidual.data, qLinearResidual.data);
+                linearNorm = linearMetric(currentLinear);
             }
             if (v.owned) ApplyNonlinearCorrection<<<Blocks(v.owned), 128>>>(v, increment.data, qIncrement.data);
             defect();
@@ -694,6 +899,60 @@ struct ACMSSTWorkspace
             report.finalNorm = Group(report.equationNorms, 0, 4);
             report.turbulenceNorm = v.s.sst ? Group(report.equationNorms, 4, 6) : 0;
             report.iterations = iteration + 1;
+        }
+        if (!physical)
+        {
+            const auto merit = [&](const std::array<double, 6> &norms)
+            {
+                double sum = 0;
+                for (int k = 0; k < 6; ++k)
+                {
+                    const double x = norms[k] / std::max(steadyReference[k], v.s.steadyAbsoluteTolerances[k]);
+                    sum += x * x;
+                }
+                return std::sqrt(sum / 6);
+            };
+            const auto restore = [&]()
+            {
+                Check(cudaMemcpy(v.u, previous.data, previous.count * sizeof(double), cudaMemcpyDeviceToDevice), "restore steady flow");
+                if (v.s.sst) Check(cudaMemcpy(v.q, qPrevious.data, qPrevious.count * sizeof(double), cudaMemcpyDeviceToDevice), "restore steady SST");
+            };
+            double factor = 1;
+            const double before = merit(report.initialEquationNorms);
+            if (steadyMeritHistory.empty()) steadyMeritHistory.push_back(before);
+            const double meritLimit = std::max(before, *std::max_element(steadyMeritHistory.begin(), steadyMeritHistory.end()));
+            if (v.s.steadyLineSearch)
+            {
+                for (int trial = 0; merit(report.equationNorms) > meritLimit * (1 + 1e-8) && trial < 10; ++trial)
+                {
+                    factor *= .5;
+                    restore();
+                    View damped = v;
+                    damped.s.implicitRelaxation *= factor;
+                    if (v.owned) ApplyNonlinearCorrection<<<Blocks(v.owned), 128>>>(damped, increment.data, qIncrement.data);
+                    defect();
+                    report.equationNorms = Norm(v.rhs, v.qRhs);
+                }
+                if (merit(report.equationNorms) > meritLimit * (1 + 1e-8))
+                {
+                    restore();
+                    defect();
+                    report.equationNorms = Norm(v.rhs, v.qRhs);
+                    factor = 0;
+                    report.updateAccepted = false;
+                }
+            }
+            report.finalNorm = Group(report.equationNorms, 0, 4);
+            report.turbulenceNorm = Group(report.equationNorms, 4, 6);
+            report.acceptedRelaxation = v.s.implicitRelaxation * factor;
+            steadyMeritHistory.push_back(merit(report.equationNorms));
+            if (steadyMeritHistory.size() > static_cast<std::size_t>(v.s.steadyLineSearchWindow))
+                steadyMeritHistory.erase(steadyMeritHistory.begin());
+            // Global steady convergence is checked against the fixed initial
+            // spatial norms by the solver, never against each iteration's start.
+            report.converged = false;
+            ++completed;
+            return report;
         }
         report.converged = Converged(report);
         if (!report.converged && v.s.requireConvergence)

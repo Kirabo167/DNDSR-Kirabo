@@ -43,7 +43,7 @@ namespace DNDS::ACMVariable
         Laminar,
         SpalartAllmaras,
         KOmegaWilcox,
-        KOmegaSST,
+        KOmegaSST, ///< Original SST (1994): Omega limiter, 20x k cap, CD floor 1e-20.
         RealizableKEpsilon,
     };
 

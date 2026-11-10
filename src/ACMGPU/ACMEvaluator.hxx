@@ -609,10 +609,16 @@ namespace DNDS::ACMGPU
     }
 
     template <int gDim>
-    void ACMEvaluator<gDim>::EvaluateRHS(TDof &rhs, TDof &u, real time)
+    void ACMEvaluator<gDim>::EvaluateRHS(TDof &rhs, TDof &u, real time, bool rebuildReconstruction)
     {
         DNDS_check_throw_info(!GPU::Enabled(), "CPU ACM residual cannot execute with the resident CUDA backend");
-        Reconstruct(u, time);
+        if (rebuildReconstruction)
+            Reconstruct(u, time);
+        else
+        {
+            u.trans.startPersistentPull();
+            u.trans.waitPersistentPull();
+        }
         if (_prepareTurbulence)
             _prepareTurbulence(u, time);
         rhs.setConstant(0.0);

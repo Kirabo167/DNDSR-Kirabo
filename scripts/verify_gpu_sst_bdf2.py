@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare actual conservative SST/BDF2 GPU fields against the frozen CPU source."""
+"""Compare actual conservative SST/BDF2 GPU fields against a selected CPU build."""
 import argparse
 import hashlib
 import json
@@ -16,6 +16,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default="data/out/GPU/SUBOFF_SST_BDF2_20261104/verification")
     parser.add_argument("--ranks", nargs="+", type=int, default=[1, 2])
+    parser.add_argument("--cpu-build", type=Path, default=Path("build"))
+    parser.add_argument("--dimension", type=int, choices=[2, 3], default=3)
     parser.add_argument("--modes", nargs="+", default=["wall", "far", "inlet", "outlet", "symmetry", "rusanov", "first", "green_gauss", "cfl_local", "cfl_global", "rho2", "linear_sweeps", "history_BE"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -31,6 +33,9 @@ def main():
     for ranks in args.ranks:
         for mode in args.modes:
             overrides = {}
+            if args.dimension == 2:
+                overrides.update({"/solver/model": "ConstantDensity2EQ2D",
+                                  "/meshSettings/meshFile": "../data/mesh/ACMVariable_verify2D.cgns"})
             bc = {"far": "BCFar", "inlet": "BCInPsTs", "outlet": "BCOutP", "symmetry": "BCSym"}.get(mode)
             if bc:
                 overrides["/boundaryConditions"] = [{"name": "FAR", "type": bc, "value": [.35, .05, 0., .1],
@@ -49,6 +54,9 @@ def main():
                 overrides.update({"/timeMarchSettings/lusgsSweeps": 3,
                                   "/timeMarchSettings/linearRelativeTolerance": 1e-13,
                                   "/timeMarchSettings/linearAbsoluteTolerance": 1e-15})
+            if mode == "startup":
+                overrides.update({"/timeMarchSettings/dualTimeRANSStartupSteps": 1,
+                                  "/timeMarchSettings/dualTimeRANSStartupIterations": 6})
             if mode == "history_BE":
                 overrides.update({"/boundaryConditions/0/type": "BCOut",
                                   "/initialState": [0., 0., 0., 0., .001, 1000.],
@@ -60,7 +68,8 @@ def main():
             for backend in ["cpu", "host", "cuda"]:
                 directory = output / f"{mode}_np{ranks}" / backend
                 directory.mkdir(parents=True, exist_ok=True)
-                exe = root / ("build/app/acm2EQ3D.exe" if backend == "cpu" else "build-gpu-solvers/app/acm2EQ_gpu3D.exe")
+                exe = ((root / args.cpu_build / f"app/acm2EQ{args.dimension}D.exe") if backend == "cpu"
+                       else root / f"build-gpu-solvers/app/acm2EQ_gpu{args.dimension}D.exe")
                 command = ["mpirun", "-np", str(ranks), str(exe), str(config)]
                 if backend != "cpu":
                     command += ["--backend", backend, "--gpu-device", "auto"]
@@ -100,7 +109,7 @@ def main():
                             raise RuntimeError(f"Non-finite {name}/{key}")
                         reference = cpu[name][key]
                         maximum = max(maximum, float(np.max(np.abs(values - reference) / np.maximum(1., np.abs(reference)))))
-                entry = dict(mode=mode, ranks=ranks, backend=backend, maximum_scaled_error=maximum,
+                entry = dict(mode=mode, dimension=args.dimension, ranks=ranks, backend=backend, maximum_scaled_error=maximum,
                              tolerance=5e-8, passed=maximum <= 5e-8, log=str(directory / "run.log"),
                              executable_sha256=hashlib.file_digest(exe.open("rb"), "sha256").hexdigest())
                 summary.append(entry)

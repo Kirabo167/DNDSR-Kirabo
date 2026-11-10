@@ -14,7 +14,7 @@ namespace DNDS::ACMGPU
      * primitive closure fields are scratch projections refreshed at every RHS call.
      * All active equations share RK stages, nonlinear iterates and physical histories.
      * The implicit operator freezes flow/closure cross derivatives, uses existing
-     * flow face blocks, and a local coupled RANS source/spectral-radius block.
+     * flow face blocks, frozen RANS transport face blocks, and local source Jacobians.
      */
     template <ACMModel model>
     class ACMSolver<model, true>
@@ -63,7 +63,7 @@ namespace DNDS::ACMGPU
          *     turbulence RHS.
          * @param time Boundary-evaluation time used by both flow and turbulence transport.
          */
-        void EvaluateRHS(TDof &rhs, real time = 0);
+        void EvaluateRHS(TDof &rhs, real time = 0, bool rebuildReconstruction = true);
         /**
          * @brief Return unified distributed state [u,v,w,p,rho*q...]; mutable access changes the authoritative
          *     solution.
@@ -91,6 +91,8 @@ namespace DNDS::ACMGPU
          * @return Shared CFV reconstruction engine of the initialized flow subsystem.
          */
         const auto &GetReconstruction() const { return _flowSolver.GetReconstruction(); }
+        /** @brief Turbulence transport and closure diagnostics of the unified solver. */
+        const auto &GetTurbulenceTransport() const { return _flowSolver.GetTurbulenceTransport(); }
         /**
          * @brief Return shared four-variable ACM spatial evaluator used by the unified solver.
          * @return Shared four-variable ACM spatial evaluator used by the unified solver.
@@ -108,19 +110,30 @@ namespace DNDS::ACMGPU
         real SimulationTime() const { return _physicalTime; }
 
     private:
+        bool TryHostSnapshotAudit();
         void RunResident();
         MPIInfo _mpi;
         KernelConfiguration _configuration;
         TFlowSolver _flowSolver;
-        TDof _u, _rhs, _defect, _increment;
+        TDof _u, _rhs, _defect, _increment, _scaledLinearInput;
+        TDof _matrixFreeRhs, _matrixFreeMinusRhs;
+        TStateField _matrixFreeBaseState;
+        ScalarField _matrixFreeSteps;
+        TState _matrixFreeStateScales = TState::Ones();
+        real _matrixFreeBaseNorm = 0, _matrixFreeTime = 0;
+        bool _matrixFreePhysical = false;
         TFlowDof _flowRhs, _flowInput, _flowOutput;
         typename TTurbulence::TTurbulenceDof _turbulenceRhs;
         MatrixField _flowDiagonal;
         typename TEvaluator::FaceJacobianField _faceJacobians;
+        typename TTurbulence::FaceJacobianField _turbulenceFaceJacobians;
+        std::vector<TurbulenceState> _faceAdvectedConservativeTurbulence;
+        std::vector<Eigen::Vector<real, nTurbulence>> _turbulencePressureMass;
         std::vector<TMatrix> _diagonal;
         TStateField _previous, _previousPrevious;
         std::size_t _completedPhysicalSteps = 0;
         real _physicalTime = 0;
+        bool _reportedScaledTurbulenceBlock = false; ///< Report the first recovered unscaled rank failure per solver/rank.
 
         /**
          * @brief Build four-variable flow settings while retaining primitive turbulence closure controls.
@@ -135,6 +148,7 @@ namespace DNDS::ACMGPU
          *     nonpositive turbulence values.
          */
         void ProjectState();
+        real _continuationMass = 0; ///< Auxiliary mass anchored at the starting iterate; zero at physical acceptance.
         /**
          * @brief Combine initialized flow and primitive closure fields into the unified conservative state.
          * @details Multiplies the turbulence tail by rho0 and pulls owned values to unified-state ghosts.
@@ -211,6 +225,8 @@ namespace DNDS::ACMGPU
          * @param [out] output Allocated unified operator product on owned cells.
          */
         void ApplyOperator(TDof &input, TDof &output);
+        /** @brief Full closure/source/transport Jacobian action with frozen flow reconstruction. */
+        void ApplyMatrixFreeOperator(TDof &input, TDof &output);
         /**
          * @brief Apply the flow preconditioner and invert each local active-turbulence block.
          * @param [in] input Unified linear residual to precondition.

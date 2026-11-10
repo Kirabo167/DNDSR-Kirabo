@@ -546,20 +546,38 @@ namespace DNDS::ACMGPU
         const real lambdaMinusAbs = EntropyFixedAbs(eigenvalues.lambdaMinus, entropyDelta);
         const real lambdaTangentialAbs = EntropyFixedAbs(eigenvalues.lambdaTangential, entropyDelta);
         const real lambdaPlusAbs = EntropyFixedAbs(eigenvalues.lambdaPlus, entropyDelta);
-        Matrix4 leftEigenvectors;
-        Matrix4 rightEigenvectors;
         State preconditionedDissipation;
-        if (TryCharacteristicMatricesLocal(
-                meanState, settings, leftEigenvectors, rightEigenvectors, 1e-10))
+        const real characteristicScale = std::max({real(1), std::abs(meanState(0)), eigenvalues.SpectralRadius()});
+        bool useCharacteristic = std::min(std::abs(meanState(0) - eigenvalues.lambdaMinus),
+                                         std::abs(meanState(0) - eigenvalues.lambdaPlus)) > 1e-10 * characteristicScale;
+        State minus, plus;
+        Eigen::RowVector<real, 4> minusProjection, plusProjection;
+        if (useCharacteristic)
         {
-            Matrix4 absoluteEigenvalues = Matrix4::Zero();
-            absoluteEigenvalues.diagonal() << lambdaMinusAbs,
-                lambdaTangentialAbs,
-                lambdaTangentialAbs,
-                lambdaPlusAbs;
-            preconditionedDissipation =
-                rightEigenvectors * absoluteEigenvalues * leftEigenvectors * increment;
+            minus = AcousticRightEigenvectorLocal(meanState, eigenvalues.lambdaMinus, settings.beta2, settings.alpha);
+            plus = AcousticRightEigenvectorLocal(meanState, eigenvalues.lambdaPlus, settings.beta2, settings.alpha);
+            const real gap = eigenvalues.lambdaPlus - eigenvalues.lambdaMinus;
+            minusProjection << -settings.beta2 / gap, 0, 0, eigenvalues.lambdaPlus / gap;
+            plusProjection << settings.beta2 / gap, 0, 0, -eigenvalues.lambdaMinus / gap;
+            // The acoustic amplitudes follow directly from the normal-velocity
+            // and pressure rows. Tangential columns are coordinate unit vectors.
+            // Bound the basis condition without an SVD: cond_2(R) <= 4 cond_inf(R).
+            Matrix4 right = Matrix4::Zero(), left = Matrix4::Identity();
+            right.col(0) = minus;
+            right(1, 1) = right(2, 2) = 1;
+            right.col(3) = plus;
+            left.row(0) = minusProjection;
+            left.row(3) = plusProjection;
+            left.row(1) -= minus(1) * minusProjection + plus(1) * plusProjection;
+            left.row(2) -= minus(2) * minusProjection + plus(2) * plusProjection;
+            const real conditionBound = 4 * right.cwiseAbs().rowwise().sum().maxCoeff() *
+                                            left.cwiseAbs().rowwise().sum().maxCoeff();
+            useCharacteristic = std::isfinite(conditionBound) && conditionBound < 1e10;
         }
+        if (useCharacteristic)
+            preconditionedDissipation = lambdaTangentialAbs * increment +
+                (lambdaMinusAbs - lambdaTangentialAbs) * (minusProjection * increment)(0) * minus +
+                (lambdaPlusAbs - lambdaTangentialAbs) * (plusProjection * increment)(0) * plus;
         else
         {
             // A confluent-Hermite polynomial evaluates f(B), f=lambda->|lambda|_delta,
@@ -980,6 +998,25 @@ namespace DNDS::ACMGPU
         timeMarchSettings.Validate();
         turbulenceSettings.Validate();
         timeMarchSettings.ValidateDualTimeConvergence(4 + TurbulenceVariableCount(turbulenceSettings.model));
+        DNDS_check_throw_info(TurbulenceVariableCount(turbulenceSettings.model) > 0 ||
+                                 (timeMarchSettings.dualTimeRANSContinuationSteps == 0 &&
+                                  timeMarchSettings.dualTimeRANSStartupSteps == 0 &&
+                                  timeMarchSettings.dualTimeRANSAndersonDepth == 0 &&
+                                  !timeMarchSettings.dualTimeRANSMatrixFreeJacobian),
+                              "ACM RANS implicit controls require an active RANS closure");
+        DNDS_check_throw_info(!timeMarchSettings.steadyUntilConverged ||
+                                 (timeMarchSettings.integrator == TimeIntegratorType::ImplicitEulerLUSGS &&
+                                  turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                                  timeMarchSettings.useCFLTimeStep && timeMarchSettings.useLocalTimeStep),
+                              "Steady until-converged resident SST requires implicit LU-SGS and local CFL time steps");
+        DNDS_check_throw_info(std::isfinite(timeMarchSettings.steadyConvergenceRelativeTolerance) &&
+                                 timeMarchSettings.steadyConvergenceRelativeTolerance >= 0 &&
+                                 timeMarchSettings.steadyConvergenceRelativeTolerance < 1 &&
+                                 timeMarchSettings.steadyConvergenceWindow > 0 && timeMarchSettings.steadyLineSearchWindow > 0,
+                              "Invalid steady convergence controls");
+        for (real tolerance : timeMarchSettings.steadyConvergenceAbsoluteTolerances)
+            DNDS_check_throw_info(std::isfinite(tolerance) && tolerance > 0,
+                                  "Steady absolute residual tolerances must be finite and positive");
         DNDS_check_throw_info(
             !IsBDF2DualTimeIntegrator(timeMarchSettings.integrator) ||
                 SupportsBDF2TurbulenceModel(turbulenceSettings.model),
@@ -1065,10 +1102,22 @@ namespace DNDS::ACMGPU
             restartSettings.flowFile.empty() || restartSettings.writerRanks > 0,
             "ACM VTK-HDF restart requires a positive writerRanks value");
         DNDS_check_throw_info(
+            std::isfinite(restartSettings.physicalTime) && restartSettings.physicalTime >= 0,
+            "ACM restart physicalTime must be finite and nonnegative");
+        DNDS_check_throw_info(
+            !restartSettings.flowFile.empty() ||
+                (restartSettings.physicalTime == 0 && !restartSettings.resetBDFHistory && !restartSettings.initializeBDF2History),
+            "ACM restart physicalTime/resetBDFHistory requires a flowFile");
+        DNDS_check_throw_info(
             restartSettings.flowFile.empty() ||
+                restartSettings.resetBDFHistory ||
+                restartSettings.initializeBDF2History ||
                 (timeMarchSettings.integrator != TimeIntegratorType::BDF2DualTimeLUSGS &&
                  timeMarchSettings.integrator != TimeIntegratorType::BDF2DualTimeGMRES),
-            "ACM VTK-HDF restart contains no BDF2 history and cannot initialize dual-time marching");
+            "ACM VTK-HDF restart contains no BDF2 history; explicitly enable resetBDFHistory for BE startup");
+        DNDS_check_throw_info(!restartSettings.initializeBDF2History ||
+                                 (!restartSettings.flowFile.empty() && IsBDF2DualTimeIntegrator(timeMarchSettings.integrator)),
+                              "ACM initializeBDF2History requires a restart field and a BDF2 integrator");
     }
 
     /** @copydoc KernelConfiguration::LeftState */
@@ -1146,10 +1195,15 @@ namespace DNDS::ACMGPU
             timeMarch["physicalTimeStep"] = TimeMarchSettings{}.physicalTimeStep;
         const nlohmann::ordered_json timeDefaults = TimeMarchSettings{};
         for (const char *key : {"steadyRelativeTolerance", "steadyAdaptiveCFL", "steadyCFLMin", "steadyCFLMax",
-                                "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
+                                "steadyCFLGrowth", "steadyCFLReduction", "steadyUntilConverged",
+                                "steadyConvergenceRelativeTolerance", "steadyConvergenceAbsoluteTolerances",
+                                "steadyConvergenceWindow", "steadyLineSearch", "steadyLineSearchWindow", "dualTimeResidualScales",
                                 "dualTimeRelativeTolerances", "dualTimeRequireConvergence",
                                 "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion",
                                 "dualTimeUpdateRelativeTolerance", "dualTimeUpdateMinimumIterations",
+                                "dualTimeRANSStartupSteps", "dualTimeRANSStartupIterations",
+                                "dualTimeRANSContinuationSteps", "dualTimeRANSContinuationFactor",
+                                "dualTimeRANSAndersonDepth", "dualTimeRANSMatrixFreeJacobian",
                                 "linearRelativeTolerance", "linearAbsoluteTolerance"})
             if (!timeMarch.contains(key))
                 timeMarch[key] = timeDefaults.at(key);
@@ -1162,6 +1216,11 @@ namespace DNDS::ACMGPU
                 reconstruction[key] = reconstructionDefaults.at(key);
         if (!resolved.contains("restartSettings"))
             resolved["restartSettings"] = RestartSettings{};
+        auto &restart = resolved.at("restartSettings");
+        const nlohmann::ordered_json restartDefaults = RestartSettings{};
+        for (const char *key : {"physicalTime", "resetBDFHistory", "initializeBDF2History"})
+            if (!restart.contains(key))
+                restart[key] = restartDefaults.at(key);
 
         KernelConfiguration configuration = resolved.get<KernelConfiguration>();
         configuration.Validate();

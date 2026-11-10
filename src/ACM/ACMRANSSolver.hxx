@@ -37,16 +37,23 @@ namespace DNDS::ACM
     void ACMSolver<model, true>::ReadMeshAndInitialize()
     {
         _flowSolver.ReadMeshAndInitialize();
+        _flowSolver.GetTurbulenceTransport()->SetPreparationReuse(true);
         _flowSolver.GetTurbulenceTransport()->SetFaceVolumeFlux([this](index face, int point, real time)
         {
             return GetEvaluator()->FaceVolumeFlux(_flowSolver.GetState(), face, point, time);
         });
         auto &vfv = *GetReconstruction();
-        for (TDof *field : {&_u, &_rhs, &_defect, &_increment})
+        for (TDof *field : {&_u, &_rhs, &_defect, &_increment, &_scaledLinearInput})
         {
             vfv.BuildUDof(*field, nVarsFixed);
             field->setConstant(0.0);
         }
+        if (_configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian)
+            for (TDof *field : {&_matrixFreeRhs, &_matrixFreeMinusRhs})
+            {
+                vfv.BuildUDof(*field, nVarsFixed);
+                field->setConstant(0.0);
+            }
         for (TFlowDof *field : {&_flowRhs, &_flowInput, &_flowOutput})
         {
             vfv.BuildUDof(*field, 4);
@@ -169,6 +176,7 @@ namespace DNDS::ACM
     template <ACMModel model>
     void ACMSolver<model, true>::ProjectState()
     {
+        _flowSolver.GetTurbulenceTransport()->InvalidatePreparation();
         auto &flow = _flowSolver.GetState();
         auto &turbulence = _flowSolver.GetTurbulenceTransport()->GetState();
         _u.trans.startPersistentPull();
@@ -188,11 +196,11 @@ namespace DNDS::ACM
     }
 
     template <ACMModel model>
-    void ACMSolver<model, true>::EvaluateRHS(TDof &rhs, real time)
+    void ACMSolver<model, true>::EvaluateRHS(TDof &rhs, real time, bool rebuildReconstruction)
     {
         ProjectState();
         auto &flow = _flowSolver.GetState();
-        GetEvaluator()->EvaluateRHS(_flowRhs, flow, time);
+        GetEvaluator()->EvaluateRHS(_flowRhs, flow, time, rebuildReconstruction);
         _flowSolver.GetTurbulenceTransport()->EvaluateRHS(_turbulenceRhs, flow, time);
         rhs.setConstant(0.0);
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
@@ -295,7 +303,8 @@ namespace DNDS::ACM
                             (coefficients.current * _u[cell](variable) +
                              coefficients.previous * _previous[i](variable) +
                              coefficients.previousPrevious * _previousPrevious[i](variable)) /
-                            _configuration.timeMarchSettings.physicalTimeStep;
+                            _configuration.timeMarchSettings.physicalTimeStep +
+                            _continuationMass * (_u[cell](variable) - old[i](variable));
                     }
             }
             else
@@ -315,19 +324,45 @@ namespace DNDS::ACM
     void ACMSolver<model, true>::BuildImplicitSystem(
         const TStateField &old, const ScalarField &steps, bool physical, real time)
     {
+        _matrixFreePhysical = physical && _configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian;
+        if (_matrixFreePhysical)
+        {
+            _matrixFreeBaseState = OwnedState();
+            _matrixFreeSteps = steps;
+            _matrixFreeTime = time;
+            TState local = TState::Zero(), global;
+            for (const auto &state : _matrixFreeBaseState)
+                local += state.array().square().matrix();
+            MPI::Allreduce(local.data(), global.data(), nVarsFixed, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+            for (int variable = 0; variable < nVarsFixed; variable++)
+                _matrixFreeStateScales(variable) = std::max(std::sqrt(global(variable) /
+                    std::max<real>(1, GetMesh()->NumCellGlobal())), real(1e-12));
+            // Zero transverse velocity or gauge pressure is not a vanishing
+            // characteristic scale; use the common velocity/pressure units.
+            const real velocityScale = std::max(real(1), _matrixFreeStateScales.template head<3>().norm());
+            _matrixFreeStateScales.template head<3>().setConstant(velocityScale);
+            _matrixFreeStateScales(3) = std::max(_matrixFreeStateScales(3),
+                _configuration.acmSettings.rho0 * velocityScale * velocityScale);
+            _matrixFreeBaseNorm = 0;
+            for (int variable = 0; variable < nVarsFixed; variable++)
+                _matrixFreeBaseNorm += global(variable) / std::pow(_matrixFreeStateScales(variable), 2);
+            _matrixFreeBaseNorm = std::sqrt(_matrixFreeBaseNorm);
+        }
         GetEvaluator()->AssembleImplicitLinearization(
             _flowSolver.GetState(), steps, _flowDiagonal, _faceJacobians, time);
         std::vector<Eigen::Matrix<real, 2, 2>> turbulenceDiagonal;
         _flowSolver.GetTurbulenceTransport()->EvaluateImplicitDiagonal(
-            _flowSolver.GetState(), turbulenceDiagonal, time);
+            _flowSolver.GetState(), turbulenceDiagonal, time, &_turbulenceFaceJacobians);
         _diagonal.assign(static_cast<std::size_t>(GetMesh()->NumCell()), TMatrix::Zero());
+        _turbulencePressureMass.assign(static_cast<std::size_t>(GetMesh()->NumCell()),
+                                       Eigen::Vector<real, nTurbulence>::Zero());
         const auto base = GetBDF2Coefficients(_completedPhysicalSteps);
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
         {
             const auto i = static_cast<std::size_t>(cell);
             if (physical)
-                _flowDiagonal[i] += base.current * PhysicalTimeMassMatrix() /
-                                    _configuration.timeMarchSettings.physicalTimeStep;
+                _flowDiagonal[i] += (base.current / _configuration.timeMarchSettings.physicalTimeStep +
+                                     _continuationMass) * PhysicalTimeMassMatrix();
             else
                 _flowDiagonal[i] +=
                     PseudoTimeProductJacobian(State(_u[cell].template head<4>()),
@@ -337,20 +372,116 @@ namespace DNDS::ACM
             _diagonal[i].template topLeftCorner<4, 4>() = _flowDiagonal[i];
             _diagonal[i].template bottomRightCorner<nTurbulence, nTurbulence>() =
                 turbulenceDiagonal[i].template topLeftCorner<nTurbulence, nTurbulence>();
+            if (physical)
+            {
+                // Primitive-scalar pseudo-time preconditioning in conservative variables:
+                // add (rho*q)/beta^2 * dp/dtau, matching the continuity pseudo mass.
+                // This changes the iteration matrix, never the physical BDF defect.
+                _turbulencePressureMass[i] = _u[cell].template tail<nTurbulence>() /
+                    (_configuration.acmSettings.beta2 * steps[i]);
+                _diagonal[i].template block<nTurbulence, 1>(4, 3) = _turbulencePressureMass[i];
+            }
             for (int variable = 4; variable < nVarsFixed; variable++)
             {
                 _diagonal[i](variable, variable) +=
                     1 / (steps[i] * _configuration.turbulenceSettings.transportTimeScale);
                 if (physical)
                     _diagonal[i](variable, variable) += EquationCoefficients(cell, variable, base).current /
-                                                        _configuration.timeMarchSettings.physicalTimeStep;
+                                                        _configuration.timeMarchSettings.physicalTimeStep + _continuationMass;
             }
         }
+        const auto transport = _flowSolver.GetTurbulenceTransport();
+        _faceAdvectedConservativeTurbulence.resize(static_cast<std::size_t>(GetMesh()->NumFaceProc()));
+        for (index face = 0; face < GetMesh()->NumFaceProc(); face++)
+        {
+            const TurbulenceState value = _configuration.acmSettings.rho0 * transport->FrozenFaceAdvectionValue(
+                _flowSolver.GetState(), face, time);
+            _faceAdvectedConservativeTurbulence[face] = value;
+            const auto cells = GetMesh()->face2cell[face];
+            if (cells[0] == cells[1])
+                continue;
+            const auto &blocks = _faceJacobians[face];
+            if (cells[0] < GetMesh()->NumCell())
+                _diagonal[cells[0]].template bottomLeftCorner<nTurbulence, 4>() +=
+                    value.template head<nTurbulence>() * blocks.left.row(3) / GetReconstruction()->GetCellVol(cells[0]);
+            if (cells[1] != UnInitIndex && cells[1] < GetMesh()->NumCell())
+                _diagonal[cells[1]].template bottomLeftCorner<nTurbulence, 4>() -=
+                    value.template head<nTurbulence>() * blocks.right.row(3) / GetReconstruction()->GetCellVol(cells[1]);
+        }
+    }
+
+    template <ACMModel model>
+    void ACMSolver<model, true>::ApplyMatrixFreeOperator(TDof &input, TDof &output)
+    {
+        real localNorm = 0, globalNorm = 0;
+        for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+            localNorm += TState(input[cell]).cwiseQuotient(_matrixFreeStateScales).squaredNorm();
+        MPI::Allreduce(&localNorm, &globalNorm, 1, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+        if (globalNorm == 0)
+        {
+            output.setConstant(0.0);
+            return;
+        }
+        real localSafeStep = 1e100, safeStep = 0;
+        for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+            for (int variable = 0; variable < nVarsFixed; variable++)
+                if (input[cell](variable) != 0)
+                {
+                    const real reference = variable < 4
+                        ? std::max(std::abs(_matrixFreeBaseState[cell](variable)), _matrixFreeStateScales(variable))
+                        : _matrixFreeBaseState[cell](variable);
+                    localSafeStep = std::min(localSafeStep, 1e-3 * reference / std::abs(input[cell](variable)));
+                }
+        MPI::Allreduce(&localSafeStep, &safeStep, 1, DNDS_MPI_REAL, MPI_MIN, _mpi.comm);
+        const real epsilon = CentralJacobianProbeStep(_matrixFreeBaseNorm, std::sqrt(globalNorm), safeStep);
+        const auto turbulence = _flowSolver.GetTurbulenceTransport();
+        turbulence->SetLimiterFrozen(true);
+        try
+        {
+            // No extra variational sweep: only cell means, closure gradients,
+            // eddy viscosity, numerical fluxes and sources are perturbed.
+            for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                _u[cell] = _matrixFreeBaseState[cell] + epsilon * input[cell];
+            EvaluateRHS(_matrixFreeRhs, _matrixFreeTime, false);
+            for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                _u[cell] = _matrixFreeBaseState[cell] - epsilon * input[cell];
+            EvaluateRHS(_matrixFreeMinusRhs, _matrixFreeTime, false);
+        }
+        catch (...)
+        {
+            turbulence->SetLimiterFrozen(false);
+            AssignOwned(_matrixFreeBaseState);
+            throw;
+        }
+        turbulence->SetLimiterFrozen(false);
+        const auto base = GetBDF2Coefficients(_completedPhysicalSteps);
+        for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+        {
+            output[cell] = (_matrixFreeMinusRhs[cell] - _matrixFreeRhs[cell]) / (2 * epsilon);
+            output[cell].template head<4>() += GammaLocal(
+                State(_matrixFreeBaseState[cell].template head<4>()), _configuration.acmSettings.beta2,
+                _configuration.acmSettings.alpha) * input[cell].template head<4>() / _matrixFreeSteps[cell];
+            output[cell].template tail<nTurbulence>() += input[cell].template tail<nTurbulence>() /
+                (_matrixFreeSteps[cell] * _configuration.turbulenceSettings.transportTimeScale) +
+                _turbulencePressureMass[cell] * input[cell](3);
+            for (int variable = 0; variable < nVarsFixed; variable++)
+                if (variable != 3)
+                    output[cell](variable) += (EquationCoefficients(cell, variable, base).current /
+                                             _configuration.timeMarchSettings.physicalTimeStep + _continuationMass) * input[cell](variable);
+        }
+        AssignOwned(_matrixFreeBaseState);
     }
 
     template <ACMModel model>
     void ACMSolver<model, true>::ApplyOperator(TDof &input, TDof &output)
     {
+        if (_matrixFreePhysical)
+        {
+            ApplyMatrixFreeOperator(input, output);
+            return;
+        }
+        input.trans.startPersistentPull();
+        input.trans.waitPersistentPull();
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
             _flowInput[cell] = input[cell].template head<4>();
         GetEvaluator()->ApplyImplicitLinearization(_flowInput, _flowDiagonal, _faceJacobians, _flowOutput);
@@ -360,6 +491,36 @@ namespace DNDS::ACM
             output[cell].template tail<nTurbulence>() =
                 _diagonal[static_cast<std::size_t>(cell)].template bottomRightCorner<nTurbulence, nTurbulence>() *
                 input[cell].template tail<nTurbulence>();
+            output[cell].template tail<nTurbulence>() +=
+                _turbulencePressureMass[cell] * input[cell](3);
+        }
+        const auto &mesh = GetMesh();
+        for (index face = 0; face < mesh->NumFaceProc(); face++)
+        {
+            const auto cells = mesh->face2cell[face];
+            if (cells[0] == cells[1])
+                continue;
+            const auto &flowBlocks = _faceJacobians[face];
+            real volumeFluxIncrement = (flowBlocks.left.row(3) * input[cells[0]].template head<4>())(0);
+            if (cells[1] != UnInitIndex)
+                volumeFluxIncrement += (flowBlocks.right.row(3) * input[cells[1]].template head<4>())(0);
+            const Eigen::Vector<real, nTurbulence> fluxIncrement = volumeFluxIncrement *
+                _faceAdvectedConservativeTurbulence[face].template head<nTurbulence>();
+            if (cells[0] < mesh->NumCell())
+                output[cells[0]].template tail<nTurbulence>() += fluxIncrement / GetReconstruction()->GetCellVol(cells[0]);
+            if (cells[1] != UnInitIndex && cells[1] < mesh->NumCell())
+                output[cells[1]].template tail<nTurbulence>() -= fluxIncrement / GetReconstruction()->GetCellVol(cells[1]);
+            if (cells[1] == UnInitIndex)
+                continue;
+            const auto &blocks = _turbulenceFaceJacobians[static_cast<std::size_t>(face)];
+            if (cells[0] < mesh->NumCell())
+                output[cells[0]].template tail<nTurbulence>() +=
+                    blocks[1].template topLeftCorner<nTurbulence, nTurbulence>() *
+                    input[cells[1]].template tail<nTurbulence>() / GetReconstruction()->GetCellVol(cells[0]);
+            if (cells[1] < mesh->NumCell())
+                output[cells[1]].template tail<nTurbulence>() -=
+                    blocks[0].template topLeftCorner<nTurbulence, nTurbulence>() *
+                    input[cells[0]].template tail<nTurbulence>() / GetReconstruction()->GetCellVol(cells[1]);
         }
     }
 
@@ -373,13 +534,99 @@ namespace DNDS::ACM
                                       sweeps > 0 ? sweeps : _configuration.timeMarchSettings.lusgsSweeps);
         else
             GetEvaluator()->ApplyBlockJacobi(_flowInput, _flowDiagonal, _flowOutput);
+        using TurbulenceMatrix = Eigen::Matrix<real, nTurbulence, nTurbulence>;
+        using TurbulenceVector = Eigen::Vector<real, nTurbulence>;
+        std::vector<TurbulenceMatrix> inverse(static_cast<std::size_t>(GetMesh()->NumCell()));
+        std::vector<TurbulenceVector> rhs(static_cast<std::size_t>(GetMesh()->NumCell()));
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
         {
             output[cell].template head<4>() = _flowOutput[cell];
-            const auto decomposition = _diagonal[static_cast<std::size_t>(cell)]
-                                           .template bottomRightCorner<nTurbulence, nTurbulence>().fullPivLu();
-            DNDS_check_throw_info(decomposition.isInvertible(), "ACM implicit RANS diagonal is singular");
-            output[cell].template tail<nTurbulence>() = decomposition.solve(input[cell].template tail<nTurbulence>());
+            const Eigen::Matrix<real, nTurbulence, nTurbulence> block =
+                _diagonal[static_cast<std::size_t>(cell)].template bottomRightCorner<nTurbulence, nTurbulence>();
+            const auto decomposition = block.fullPivLu();
+            if (decomposition.isInvertible())
+                inverse[cell] = decomposition.inverse();
+            else
+            {
+                for (int column = 0; column < nTurbulence; column++)
+                    inverse[cell].col(column) = SolveEquilibratedImplicitBlock<nTurbulence>(
+                        block, TurbulenceVector(TurbulenceVector::Unit(column)));
+                if (!_reportedScaledTurbulenceBlock)
+                {
+                    nlohmann::ordered_json entries = nlohmann::ordered_json::array();
+                    for (int row = 0; row < nTurbulence; row++)
+                    {
+                        nlohmann::ordered_json values = nlohmann::ordered_json::array();
+                        for (int column = 0; column < nTurbulence; column++)
+                            values.push_back(block(row, column));
+                        entries.push_back(std::move(values));
+                    }
+                    std::cerr << "ACM RANS block equilibration rank=" << _mpi.rank << " localCell=" << cell
+                              << " unscaledRank=" << decomposition.rank() << " block=" << entries.dump() << std::endl;
+                    _reportedScaledTurbulenceBlock = true;
+                }
+            }
+            rhs[cell] = input[cell].template tail<nTurbulence>() - _turbulencePressureMass[cell] * _flowOutput[cell](3);
+            output[cell].template tail<nTurbulence>().setZero();
+        }
+        output.trans.startPersistentPull();
+        output.trans.waitPersistentPull();
+        const auto mesh = GetMesh();
+        // Block-triangular elimination uses the complete shared-flux cross operator,
+        // including neighbours, rather than only its cell-local diagonal.
+        for (index face = 0; face < mesh->NumFaceProc(); face++)
+        {
+            const auto cells = mesh->face2cell[face];
+            if (cells[0] == cells[1])
+                continue;
+            const auto &blocks = _faceJacobians[face];
+            real flux = (blocks.left.row(3) * output[cells[0]].template head<4>())(0);
+            if (cells[1] != UnInitIndex)
+                flux += (blocks.right.row(3) * output[cells[1]].template head<4>())(0);
+            const TurbulenceVector crossFlux = flux * _faceAdvectedConservativeTurbulence[face].template head<nTurbulence>();
+            if (cells[0] < mesh->NumCell())
+                rhs[cells[0]] -= crossFlux / GetReconstruction()->GetCellVol(cells[0]);
+            if (cells[1] != UnInitIndex && cells[1] < mesh->NumCell())
+                rhs[cells[1]] += crossFlux / GetReconstruction()->GetCellVol(cells[1]);
+        }
+        if (!lusgs)
+        {
+            for (index cell = 0; cell < mesh->NumCell(); cell++)
+                output[cell].template tail<nTurbulence>() = inverse[cell] * rhs[cell];
+            return;
+        }
+        const int count = sweeps > 0 ? sweeps : _configuration.timeMarchSettings.lusgsSweeps;
+        const auto sweepCell = [&](index cell)
+        {
+            TurbulenceVector value = rhs[cell];
+            const auto faces = mesh->cell2face[cell];
+            for (rowsize incidence = 0; incidence < faces.size(); incidence++)
+            {
+                const index face = faces[incidence];
+                const auto cells = mesh->face2cell[face];
+                if (cells[1] == UnInitIndex || cells[0] == cells[1])
+                    continue;
+                const auto &blocks = _turbulenceFaceJacobians[face];
+                if (cells[0] == cell)
+                    value -= blocks[1].template topLeftCorner<nTurbulence, nTurbulence>() *
+                             output[cells[1]].template tail<nTurbulence>() / GetReconstruction()->GetCellVol(cell);
+                else
+                    value += blocks[0].template topLeftCorner<nTurbulence, nTurbulence>() *
+                             output[cells[0]].template tail<nTurbulence>() / GetReconstruction()->GetCellVol(cell);
+            }
+            output[cell].template tail<nTurbulence>() = inverse[cell] * value;
+        };
+        for (int sweep = 0; sweep < count; sweep++)
+        {
+            for (index cell = 0; cell < mesh->NumCell(); cell++)
+                sweepCell(cell);
+            for (index cell = mesh->NumCell(); cell-- > 0;)
+                sweepCell(cell);
+            if (sweep + 1 < count)
+            {
+                output.trans.startPersistentPull();
+                output.trans.waitPersistentPull();
+            }
         }
     }
 
@@ -394,29 +641,79 @@ namespace DNDS::ACM
             return;
         }
         const auto &settings = _configuration.timeMarchSettings;
+        const bool useSGS = lusgs || settings.gmresPreconditioner == GMRESPreconditionerType::LUSGS;
+        TState variableScales = TState::Ones();
+        if (!lusgs)
+        {
+            ApplyPreconditioner(_defect, _increment, useSGS, settings.lusgsSweeps);
+            TState localScales = TState::Zero(), globalScales;
+            for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                localScales += TState(_increment[cell]).array().square().matrix();
+            MPI::Allreduce(localScales.data(), globalScales.data(), nVarsFixed, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+            for (int variable = 0; variable < nVarsFixed; variable++)
+                variableScales(variable) = std::max(std::sqrt(globalScales(variable) /
+                    std::max<real>(1, GetMesh()->NumCellGlobal())), real(1e-14));
+        }
+        if (_matrixFreePhysical)
+        {
+            // A cold omega field can be orders of magnitude below its first
+            // implicit correction. Include that correction in the FD units so
+            // resolving omega does not round transverse flow perturbations away.
+            _matrixFreeStateScales = _matrixFreeStateScales.cwiseMax(variableScales);
+            real localNorm = 0, globalNorm = 0;
+            for (const auto &state : _matrixFreeBaseState)
+                localNorm += state.cwiseQuotient(_matrixFreeStateScales).squaredNorm();
+            MPI::Allreduce(&localNorm, &globalNorm, 1, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+            _matrixFreeBaseNorm = std::sqrt(globalNorm);
+        }
+        const auto initial = NormReport(_defect);
+        std::array<real, 6> linearTargets{}, linearResiduals{};
+        for (int variable = 0; variable < nVarsFixed; variable++)
+            linearTargets[variable] = std::max(settings.linearAbsoluteTolerance,
+                settings.linearRelativeTolerance * initial.equationDefectNorms[variable]);
         const auto report = SolveImplicitLinearSystem(
             _defect, _increment, lusgs,
             settings.lusgsSweeps, settings.gmresSubspace, settings.gmresRestarts,
             settings.linearAbsoluteTolerance, settings.linearRelativeTolerance,
             std::sqrt(static_cast<real>(GetMesh()->NumCellGlobal()) * nVarsFixed),
-            [this](TDof &input, TDof &output) { ApplyOperator(input, output); },
             [&](TDof &input, TDof &output)
             {
-                ApplyPreconditioner(input, output,
-                    lusgs || settings.gmresPreconditioner == GMRESPreconditionerType::LUSGS,
-                    lusgs ? 1 : settings.lusgsSweeps);
+                for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                    _scaledLinearInput[cell] = TState(input[cell]).cwiseProduct(variableScales);
+                ApplyOperator(_scaledLinearInput, output);
+            },
+            [&](TDof &input, TDof &output)
+            {
+                ApplyPreconditioner(input, output, useSGS, lusgs ? 1 : settings.lusgsSweeps);
+                for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                    output[cell] = TState(output[cell]).cwiseQuotient(variableScales);
             },
             [this](TDof &field)
             {
                 GetReconstruction()->BuildUDof(field, nVarsFixed);
                 field.setConstant(0.0);
+            },
+            [&](const TDof &residual)
+            {
+                const auto norms = NormReport(residual);
+                linearResiduals = norms.equationDefectNorms;
+                for (int variable = 0; variable < nVarsFixed; variable++)
+                    if (linearResiduals[variable] > linearTargets[variable])
+                        return false;
+                return true;
             });
+        for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+            _increment[cell] = TState(_increment[cell]).cwiseProduct(variableScales);
         if (_mpi.rank == 0)
             log() << "ACM linear solver=" << (lusgs ? "LUSGS" : "GMRES")
                   << " iterations=" << report.iterations << " trueResidual=" << report.finalResidual
                   << " initial=" << report.initialResidual << " target=" << report.tolerance
                   << " relativeResidual=" << (report.initialResidual > 0 ? report.finalResidual / report.initialResidual : 0)
-                  << " converged=" << report.converged << std::endl;
+                  << " converged=" << report.converged
+                  << " equationResiduals=" << nlohmann::ordered_json(std::vector<real>(
+                      linearResiduals.begin(), linearResiduals.begin() + nVarsFixed)).dump()
+                  << " equationTargets=" << nlohmann::ordered_json(std::vector<real>(
+                      linearTargets.begin(), linearTargets.begin() + nVarsFixed)).dump() << std::endl;
     }
 
     template <ACMModel model>
@@ -449,31 +746,262 @@ namespace DNDS::ACM
     TimeStepReport ACMSolver<model, true>::AdvanceImplicit(const ScalarField &steps, bool physical, real time)
     {
         const auto old = OwnedState();
+        const auto &settings = _configuration.timeMarchSettings;
+        real continuationFactor = physical && _completedPhysicalSteps < settings.dualTimeRANSContinuationSteps
+            ? settings.dualTimeRANSContinuationFactor : 1;
+        _continuationMass = physical ? (continuationFactor - 1) / settings.physicalTimeStep : 0;
         FormDefect(old, steps, physical, time);
         TimeStepReport initial = NormReport(_defect), report = initial;
         report.initialDefectNorm = initial.finalDefectNorm;
         report.initialTurbulenceDefectNorm = initial.turbulenceDefectNorm;
         report.initialEquationDefectNorms = initial.equationDefectNorms;
-        const auto &settings = _configuration.timeMarchSettings;
         report.defectTolerance = physical ? settings.DualTimeGroupTarget(report.initialDefectNorm, false)
                                          : settings.SteadyImplicitTarget(report.initialDefectNorm);
         report.turbulenceDefectTolerance = physical ? settings.DualTimeGroupTarget(report.initialTurbulenceDefectNorm, true)
                                                    : settings.SteadyImplicitTarget(report.initialTurbulenceDefectNorm);
-        const auto converged = [&]()
+        const int iterationLimit = physical ? settings.RANSInnerIterationLimit(_completedPhysicalSteps)
+                                            : settings.maxImplicitIterations;
+        if (physical && _mpi.rank == 0)
+            log() << "ACM physical step=" << _completedPhysicalSteps + 1
+                  << " innerIterationLimit=" << iterationLimit << std::endl;
+        const auto stageConverged = [&]()
         {
             return physical ? settings.DualTimeConverged(report, nVarsFixed)
                             : report.finalDefectNorm <= report.defectTolerance &&
                               report.turbulenceDefectNorm <= report.turbulenceDefectTolerance;
         };
-        for (int iteration = 0; iteration < settings.maxImplicitIterations && !converged(); iteration++)
+        const auto converged = [&]() { return _continuationMass == 0 && stageConverged(); };
+        const auto logDefect = [&]()
         {
+            if (!physical)
+                return;
+            if (_continuationMass == 0 &&
+                (report.iterations == 0 || report.iterations == 10 || report.iterations == iterationLimit))
+            {
+                std::array<real, 6> local{}, global{};
+                const auto transport = _flowSolver.GetTurbulenceTransport();
+                std::array<real, 2> largest{-1, -1}, maximum{}, nearLower{}, globalNearLower{};
+                std::array<index, 2> worst{};
+                for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                {
+                    const auto source = transport->CellSource(cell);
+                    for (int variable = 0; variable < nTurbulence; variable++)
+                    {
+                        const real s = _configuration.acmSettings.rho0 * source(variable);
+                        const real t = _rhs[cell](4 + variable) - s;
+                        const real b = _rhs[cell](4 + variable) - _defect[cell](4 + variable);
+                        local[variable] += s * s;
+                        local[2 + variable] += t * t;
+                        local[4 + variable] += b * b;
+                        if (std::abs(_defect[cell](4 + variable)) > largest[variable])
+                        {
+                            largest[variable] = std::abs(_defect[cell](4 + variable));
+                            worst[variable] = cell;
+                        }
+                        if (_u[cell](4 + variable) <= 1.1 * _configuration.acmSettings.rho0 *
+                            _configuration.turbulenceSettings.minimumValue[variable])
+                            nearLower[variable]++;
+                    }
+                }
+                MPI::Allreduce(local.data(), global.data(), 6, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+                MPI::Allreduce(largest.data(), maximum.data(), nTurbulence, DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
+                MPI::Allreduce(nearLower.data(), globalNearLower.data(), nTurbulence, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+                for (int variable = 0; variable < nTurbulence; variable++)
+                if (largest[variable] == maximum[variable] && GetMesh()->NumCell() > 0)
+                {
+                    const index cell = worst[variable];
+                    const auto point = GetReconstruction()->GetCellQuadraturePPhys(cell, -1);
+                    const TurbulenceState source = _configuration.acmSettings.rho0 * transport->CellSource(cell);
+                    TurbulenceState spatialTransport = TurbulenceState::Zero(), physicalDerivative = TurbulenceState::Zero();
+                    for (int entry = 0; entry < nTurbulence; entry++)
+                    {
+                        spatialTransport(entry) = _rhs[cell](4 + entry) - source(entry);
+                        physicalDerivative(entry) = _rhs[cell](4 + entry) - _defect[cell](4 + entry);
+                    }
+                    std::cerr << "ACM turbulence defect hotspot step=" << (_completedPhysicalSteps + 1)
+                              << " inner=" << report.iterations << " variable=" << (4 + variable)
+                              << " rank=" << _mpi.rank << " cell=" << cell
+                              << " xyz=" << point.transpose() << " wallDistance=" << transport->CellWallDistance(cell)
+                              << " state=" << _u[cell].transpose() << " defect=" << _defect[cell].transpose()
+                              << " source=" << source.transpose()
+                              << " transport=" << spatialTransport.transpose() << " BDF=" << physicalDerivative.transpose()
+                              << " nearLowerBoundCells=" << globalNearLower[variable] << std::endl;
+                }
+                if (_mpi.rank == 0)
+                {
+                    for (real &value : global)
+                        value = std::sqrt(value / std::max<real>(1, GetMesh()->NumCellGlobal()));
+                    log() << "ACM turbulence defect terms step=" << (_completedPhysicalSteps + 1)
+                          << " inner=" << report.iterations << " source_transport_BDF_RMS="
+                          << nlohmann::ordered_json(global).dump() << std::endl;
+                }
+            }
+            if (_mpi.rank != 0)
+                return;
+            const auto equationTargets = settings.DualTimeTargets(report.initialEquationDefectNorms);
+            std::vector<real> equationRatios(nVarsFixed);
+            for (int variable = 0; variable < nVarsFixed; variable++)
+                equationRatios[variable] = report.equationDefectNorms[variable] /
+                    std::max(report.initialEquationDefectNorms[variable], real(1e-30));
+            log() << "ACM dual-time defect step=" << (_completedPhysicalSteps + 1)
+                  << " inner=" << report.iterations
+                  << " eqResidual=" << nlohmann::ordered_json(std::vector<real>(
+                      report.equationDefectNorms.begin(), report.equationDefectNorms.begin() + nVarsFixed)).dump()
+                  << " flow=" << report.finalDefectNorm << " flowTarget=" << report.defectTolerance
+                  << " turbulence=" << report.turbulenceDefectNorm
+                  << " turbulenceTarget=" << report.turbulenceDefectTolerance
+                  << " continuationFactor=" << continuationFactor
+                  << " turbulenceCriterion=" << (settings.dualTimeTurbulenceRelativeTolerance > 0 ? "GroupRMS" : "PerEquation")
+                  << " turbulenceEquationTargets=" << nlohmann::ordered_json(std::vector<real>(
+                      equationTargets.begin() + 4, equationTargets.begin() + nVarsFixed)).dump()
+                  << " equationRatios=" << nlohmann::ordered_json(equationRatios).dump() << std::endl;
+        };
+        logDefect();
+        std::vector<std::pair<TStateField, TStateField>> mixingHistory;
+        const int mixingDepth = physical ? settings.dualTimeRANSAndersonDepth : 0;
+        real previousMixingNorm = std::numeric_limits<real>::infinity();
+        TState mixingScales = TState::Ones();
+        bool haveMixingScales = false, canRejectMixing = false;
+        TStateField unmixedFallback;
+        real mixingBaseMerit = 0;
+        const auto physicalMerit = [&]()
+        {
+            const real flow = report.finalDefectNorm / std::max(report.defectTolerance, real(1e-30));
+            real result = flow * flow;
+            const auto targets = settings.DualTimeTargets(report.initialEquationDefectNorms);
+            if (settings.dualTimeTurbulenceRelativeTolerance > 0)
+            {
+                const real ratio = report.turbulenceDefectNorm / std::max(report.turbulenceDefectTolerance, real(1e-30));
+                result += ratio * ratio;
+            }
+            else
+                for (int variable = 4; variable < nVarsFixed; variable++)
+                {
+                    const real ratio = report.equationDefectNorms[variable] / std::max(targets[variable], real(1e-30));
+                    result += ratio * ratio / nTurbulence;
+                }
+            return result;
+        };
+        for (int iteration = 0; iteration < iterationLimit && !converged(); iteration++)
+        {
+            if (_continuationMass > 0 && stageConverged())
+            {
+                continuationFactor = std::max(real(1), continuationFactor * 0.5);
+                _continuationMass = (continuationFactor - 1) / settings.physicalTimeStep;
+                mixingHistory.clear();
+                previousMixingNorm = std::numeric_limits<real>::infinity();
+                haveMixingScales = canRejectMixing = false;
+                FormDefect(old, steps, physical, time);
+                const auto norms = NormReport(_defect);
+                report.finalDefectNorm = norms.finalDefectNorm;
+                report.turbulenceDefectNorm = norms.turbulenceDefectNorm;
+                report.equationDefectNorms = norms.equationDefectNorms;
+                report.iterations = iteration + 1;
+                if (_mpi.rank == 0)
+                    log() << "ACM nonlinear continuation step=" << _completedPhysicalSteps + 1
+                          << " inner=" << report.iterations << " factor=" << continuationFactor << std::endl;
+                logDefect();
+                continue;
+            }
+            // Reject a bad accelerated candidate using the next available residual evaluation.
+            // The fallback consumes an inner iteration, preserving the reconstruction budget.
+            if (mixingDepth > 0 && canRejectMixing && physicalMerit() > 1.5 * mixingBaseMerit)
+            {
+                AssignOwned(unmixedFallback);
+                FormDefect(old, steps, physical, time);
+                const auto norms = NormReport(_defect);
+                report.finalDefectNorm = norms.finalDefectNorm;
+                report.turbulenceDefectNorm = norms.turbulenceDefectNorm;
+                report.equationDefectNorms = norms.equationDefectNorms;
+                report.iterations = iteration + 1;
+                mixingHistory.clear();
+                previousMixingNorm = std::numeric_limits<real>::infinity();
+                canRejectMixing = false;
+                if (_mpi.rank == 0)
+                    log() << "ACM RANS Anderson rejected step=" << (_completedPhysicalSteps + 1)
+                          << " inner=" << report.iterations << std::endl;
+                logDefect();
+                continue;
+            }
+            canRejectMixing = false;
             BuildImplicitSystem(old, steps, physical, time);
             SolveCorrection(physical ? BDF2UsesLUSGS(settings.integrator)
                                      : settings.integrator == TimeIntegratorType::ImplicitEulerLUSGS);
+            const auto current = mixingDepth > 0 ? OwnedState() : TStateField{};
             for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
             {
                 const TState state = _u[cell];
                 _u[cell] += BoundedIncrement(state, TState(settings.implicitRelaxation * _increment[cell]));
+            }
+            if (mixingDepth > 0)
+            {
+                // Standard Anderson fixed-point residual is G(U)-U, rather than the
+                // raw stiff PDE defect. Freeze one RMS scale per variable for this step.
+                TStateField scaledDefect = OwnedState();
+                if (!haveMixingScales)
+                {
+                    TState localScales = TState::Zero(), globalScales;
+                    for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                        localScales += TState(_u[cell] - current[cell]).array().square().matrix();
+                    MPI::Allreduce(localScales.data(), globalScales.data(), nVarsFixed, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+                    for (int variable = 0; variable < nVarsFixed; variable++)
+                        mixingScales(variable) = std::max(std::sqrt(globalScales(variable) /
+                            std::max<real>(1, GetMesh()->NumCellGlobal())), real(1e-14));
+                    haveMixingScales = true;
+                }
+                for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                    scaledDefect[cell] = TState(_u[cell] - current[cell]).cwiseQuotient(mixingScales);
+                real localNorm = 0, globalNorm = 0;
+                for (const auto &value : scaledDefect)
+                    localNorm += value.squaredNorm();
+                MPI::Allreduce(&localNorm, &globalNorm, 1, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+                if (globalNorm > 4 * previousMixingNorm)
+                    mixingHistory.clear();
+                previousMixingNorm = globalNorm;
+                mixingHistory.emplace_back(OwnedState(), std::move(scaledDefect));
+                if (mixingHistory.size() > static_cast<std::size_t>(mixingDepth + 1))
+                    mixingHistory.erase(mixingHistory.begin());
+                const int depth = static_cast<int>(mixingHistory.size()) - 1;
+                if (depth > 0)
+                {
+                    Eigen::MatrixXd localGram = Eigen::MatrixXd::Zero(depth, depth + 1);
+                    const auto &latest = mixingHistory.back();
+                    for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                        for (int i = 0; i < depth; i++)
+                        {
+                            const TState difference = mixingHistory[i].second[cell] - latest.second[cell];
+                            localGram(i, depth) += difference.dot(latest.second[cell]);
+                            for (int j = 0; j <= i; j++)
+                                localGram(i, j) += difference.dot(mixingHistory[j].second[cell] - latest.second[cell]);
+                        }
+                    Eigen::MatrixXd globalGram(depth, depth + 1);
+                    MPI::Allreduce(localGram.data(), globalGram.data(), static_cast<int>(localGram.size()),
+                                   DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+                    Eigen::MatrixXd gram = globalGram.leftCols(depth).selfadjointView<Eigen::Lower>();
+                    const real trace = gram.trace();
+                    if (trace > std::numeric_limits<real>::min() && std::isfinite(trace))
+                    {
+                        gram.diagonal().array() += 1e-12 * trace / depth;
+                        const Eigen::VectorXd weights = gram.fullPivLu().solve(-globalGram.col(depth));
+                        const real l1 = weights.lpNorm<1>() + std::abs(1 - weights.sum());
+                        if (weights.allFinite() && l1 <= 100)
+                        {
+                            unmixedFallback = latest.first;
+                            mixingBaseMerit = physicalMerit();
+                            canRejectMixing = true;
+                            for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                            {
+                                TState candidate = latest.first[cell];
+                                for (int i = 0; i < depth; i++)
+                                    candidate += weights(i) * (mixingHistory[i].first[cell] - latest.first[cell]);
+                                _u[cell] = current[cell] + BoundedIncrement(current[cell], TState(candidate - current[cell]));
+                            }
+                            if (_mpi.rank == 0)
+                                log() << "ACM RANS Anderson step=" << (_completedPhysicalSteps + 1)
+                                      << " inner=" << (iteration + 1) << " depth=" << depth << " coefficientL1=" << l1 << std::endl;
+                        }
+                    }
+                }
             }
             FormDefect(old, steps, physical, time);
             const auto norms = NormReport(_defect);
@@ -481,8 +1009,25 @@ namespace DNDS::ACM
             report.turbulenceDefectNorm = norms.turbulenceDefectNorm;
             report.equationDefectNorms = norms.equationDefectNorms;
             report.iterations = iteration + 1;
+            logDefect();
         }
-        report.converged = converged();
+        const bool physicalEquationReached = _continuationMass == 0;
+        if (!physicalEquationReached)
+        {
+            // Report the original BDF defect if the auxiliary solve exhausted its budget.
+            for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
+                for (int variable = 0; variable < nVarsFixed; variable++)
+                    if (variable != 3)
+                        _defect[cell](variable) += _continuationMass * (_u[cell](variable) - old[cell](variable));
+            _continuationMass = 0;
+            continuationFactor = 1;
+            const auto norms = NormReport(_defect);
+            report.finalDefectNorm = norms.finalDefectNorm;
+            report.turbulenceDefectNorm = norms.turbulenceDefectNorm;
+            report.equationDefectNorms = norms.equationDefectNorms;
+            logDefect();
+        }
+        report.converged = physicalEquationReached && stageConverged();
         return report;
     }
 
@@ -530,9 +1075,13 @@ namespace DNDS::ACM
         ScalarField steps(static_cast<std::size_t>(GetMesh()->NumCell()), settings.pseudoTimeStep);
         _previous = OwnedState();
         _previousPrevious = _previous;
+        _physicalTime = _configuration.restartSettings.physicalTime;
+        if (physical && _configuration.restartSettings.initializeBDF2History && _mpi.rank == 0)
+            log() << "ACM field restart at time=" << _physicalTime
+                  << ": one backward-Euler step initializes new BDF2 history" << std::endl;
         real cfl = settings.cfl;
         if (_configuration.outputSettings.interval > 0 && _configuration.outputSettings.writeInitial)
-            WriteOutput(_configuration.restartSettings.completedSteps, 0);
+            WriteOutput(_configuration.restartSettings.completedSteps, physical ? _physicalTime : 0);
         for (int step = 1; step <= settings.nSteps; step++)
         {
             const auto usedCoefficients = GetBDF2Coefficients(_completedPhysicalSteps);

@@ -2,6 +2,7 @@
 #include "ResidentCommon.cuh"
 #include "FluxMath.cuh"
 #include <iostream>
+#include <fstream>
 
 namespace DNDS::GPU
 {
@@ -460,11 +461,11 @@ namespace DNDS::GPU
         Impl(const ResidentACMData &data, MPI_Comm communicator) : comm(communicator), levels(data.reconstructionLevels), halo(data.globals, data.owned, comm)
         {
             using namespace ResidentDetail;
-            if (data.settings.sst && data.settings.integrator != 4)
-                throw std::runtime_error("Resident SST requires BDF2DualTimeLUSGS; CPU fallback is disabled");
+            if (data.settings.sst && data.settings.integrator != 4 && data.settings.integrator != 2)
+                throw std::runtime_error("Resident SST requires ImplicitEulerLUSGS or BDF2DualTimeLUSGS; CPU fallback is disabled");
             if (!data.settings.sst && data.settings.integrator == 4)
                 throw std::runtime_error("Resident BDF2 currently requires the conservative six-variable SST solver; CPU fallback is disabled");
-            if (data.settings.integrator != 0 && data.settings.integrator != 4)
+            if (data.settings.integrator != 0 && data.settings.integrator != 4 && !(data.settings.sst && data.settings.integrator == 2))
                 throw std::runtime_error("Resident ACM implicit integrators are still being ported; CPU fallback is disabled");
             if (data.settings.limiter && data.settings.limiterType != 0)
                 throw std::runtime_error("Resident ACM characteristic limiter is still being ported; CPU fallback is disabled");
@@ -508,7 +509,7 @@ namespace DNDS::GPU
             v.flux = flux.data;
             v.rhs = rhs.data;
             v.dt = dt.data;
-            if (v.s.integrator == 4)
+            if (v.s.integrator == 4 || (v.s.sst && v.s.integrator == 2))
                 advanced = std::make_unique<ACMSSTWorkspace>(v, data, halo, comm, globalOwned, nodes.data, levels);
             if (v.s.reconstruction == 2 && v.s.sor && !v.s.controlled)
             {
@@ -618,6 +619,47 @@ namespace DNDS::GPU
     };
     ResidentACM::ResidentACM(const ResidentACMData &data, MPI_Comm communicator) : _impl(std::make_unique<Impl>(data, communicator)) {}
     ResidentACM::~ResidentACM() = default;
+    void ResidentACM::SetCFL(double cfl)
+    {
+        if (_impl->inStep || !std::isfinite(cfl) || cfl <= 0)
+            throw std::runtime_error("Invalid resident CFL update");
+        _impl->v.s.cfl = cfl;
+    }
+    void ResidentACM::WriteSSTAudit(const std::string &filename)
+    {
+        using namespace ResidentDetail;
+        using namespace ACMResidentDetail;
+        auto &p = *_impl;
+        if (p.inStep || !p.advanced || !p.v.s.sst)
+            throw std::runtime_error("SST audit requires an idle resident SST solver");
+        p.Residual(false);
+        if (p.v.owned)
+        {
+            TimeStep<<<Impl::Blocks(p.v.owned), 128>>>(p.v, p.v.s.cflStep ? -1 : p.v.s.fixedStep);
+            FaceJacobian<<<Impl::Blocks(p.v.faceCount), 128>>>(p.v, p.advanced->jac.data);
+            SSTImplicitFaces<<<Impl::Blocks(p.v.faceCount), 128>>>(p.v, p.advanced->qJac.data, p.advanced->advected.data);
+            ImplicitDiagonal<<<Impl::Blocks(p.v.owned), 128>>>(p.v, p.advanced->jac.data, p.advanced->qJac.data,
+                p.advanced->diagonal.data, p.advanced->qDiagonal.data,
+                p.advanced->qPrevious.data, p.advanced->qPreviousPrevious.data, true);
+        }
+        // Only a small chunk is allocated in addition to the resident workspace.
+        constexpr I chunk = 8192, stride = 49;
+        Buffer<double> device;
+        device.Resize(chunk * stride);
+        std::vector<double> host(chunk * stride);
+        std::ofstream stream(filename, std::ios::binary);
+        if (!stream) throw std::runtime_error("Cannot open SST audit output");
+        const std::uint64_t header[3]{1, static_cast<std::uint64_t>(p.v.owned), stride};
+        stream.write(reinterpret_cast<const char *>(header), sizeof(header));
+        for (I begin = 0; begin < p.v.owned; begin += chunk)
+        {
+            const I count = std::min(chunk, p.v.owned - begin);
+            SSTAuditCells<<<Impl::Blocks(count), 128>>>(p.v, p.advanced->qDiagonal.data, begin, count, device.data);
+            Check(cudaMemcpy(host.data(), device.data, count * stride * sizeof(double), cudaMemcpyDeviceToHost), "read SST audit chunk");
+            stream.write(reinterpret_cast<const char *>(host.data()), count * stride * sizeof(double));
+        }
+        if (!stream) throw std::runtime_error("Failed to write SST audit output");
+    }
     ResidentACMReport ResidentACM::Advance()
     {
         using namespace ResidentDetail;

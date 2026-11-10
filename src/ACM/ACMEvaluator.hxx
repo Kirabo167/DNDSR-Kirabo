@@ -608,9 +608,15 @@ namespace DNDS::ACM
     }
 
     template <int gDim>
-    void ACMEvaluator<gDim>::EvaluateRHS(TDof &rhs, TDof &u, real time)
+    void ACMEvaluator<gDim>::EvaluateRHS(TDof &rhs, TDof &u, real time, bool rebuildReconstruction)
     {
-        Reconstruct(u, time);
+        if (rebuildReconstruction)
+            Reconstruct(u, time);
+        else
+        {
+            u.trans.startPersistentPull();
+            u.trans.waitPersistentPull();
+        }
         if (_prepareTurbulence)
             _prepareTurbulence(u, time);
         rhs.setConstant(0.0);

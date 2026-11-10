@@ -876,6 +876,70 @@ namespace
 using UnifiedSA = std::integral_constant<ACM::ACMModel, ACM::ACMModel::ConstantDensitySA2D>;
 using Unified2EQ = std::integral_constant<ACM::ACMModel, ACM::ACMModel::ConstantDensity2EQ2D>;
 
+TEST_CASE("ACM turbulence face Jacobian matches periodic transport finite differences")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    for (auto closure : {ACM::TurbulenceModel::KOmegaWilcox, ACM::TurbulenceModel::KOmegaSST})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.solver = ACM::ModelSelection<ACM::ACMModel::ConstantDensity2D>();
+        cfg.initialState = {0.3, -0.1, 0, 0.3};
+        cfg.turbulenceSettings.model = closure;
+        cfg.turbulenceSettings.initialValue = {0.4, 0.08};
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        // Freeze molecular diffusion without a state-dependent eddy-viscosity derivative.
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto transport = solver.GetTurbulenceTransport();
+        auto &state = transport->GetState();
+        auto &flow = solver.GetState();
+        auto metrics = solver.GetReconstruction();
+        const auto grid = solver.GetMesh();
+        using Field = ACM::ACMTurbulenceTransport<2>::TTurbulenceDof;
+        Field minusRhs, plusRhs;
+        metrics->BuildUDof(minusRhs, 2);
+        metrics->BuildUDof(plusRhs, 2);
+        std::vector<ACM::TurbulenceState> base(grid->NumCell()), direction(grid->NumCell());
+        for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+        {
+            base[cell] << 0.4 + 0.02 * cell, 0.08 + 0.01 * cell;
+            direction[cell] << std::sin(1.0 + cell), std::cos(0.3 + cell);
+            state[cell] = base[cell];
+        }
+        std::vector<Eigen::Matrix<DNDS::real, 2, 2>> diagonal;
+        ACM::ACMTurbulenceTransport<2>::FaceJacobianField faces;
+        transport->EvaluateImplicitDiagonal(flow, diagonal, 0, &faces);
+        std::vector<ACM::TurbulenceState> product(grid->NumCell());
+        for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+            product[cell] = diagonal[cell] * direction[cell];
+        for (DNDS::index face = 0; face < grid->NumFaceProc(); face++)
+        {
+            const auto cells = grid->face2cell[face];
+            REQUIRE(cells[1] != UnInitIndex);
+            if (cells[0] == cells[1])
+                continue;
+            product[cells[0]] += faces[face][1] * direction[cells[1]] / metrics->GetCellVol(cells[0]);
+            product[cells[1]] -= faces[face][0] * direction[cells[0]] / metrics->GetCellVol(cells[1]);
+        }
+        constexpr DNDS::real epsilon = 1e-6;
+        for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+            state[cell] = base[cell] + epsilon * direction[cell];
+        transport->EvaluateRHS(plusRhs, flow);
+        for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+            state[cell] = base[cell] - epsilon * direction[cell];
+        transport->EvaluateRHS(minusRhs, flow);
+        for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+        {
+            const ACM::TurbulenceState finiteDifference = -(plusRhs[cell] - minusRhs[cell]) / (2 * epsilon);
+            CHECK((product[cell] - finiteDifference).norm() < 1e-8);
+        }
+    }
+}
+
 TEST_CASE_TEMPLATE("ACM unified RANS stores density-weighted variables and shares every integration stage",
                    TModel, UnifiedSA, Unified2EQ)
 {
@@ -909,6 +973,62 @@ TEST_CASE_TEMPLATE("ACM unified RANS stores density-weighted variables and share
             CHECK(solver.SimulationTime() == doctest::Approx(0.03));
         }
     }
+}
+
+TEST_CASE("ACM turbulence advection cross Jacobian follows shared velocity pressure flux")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.solver = ACM::ModelSelection<ACM::ACMModel::ConstantDensity2D>();
+    cfg.initialState = {0.3, -0.1, 0, 0.3};
+    cfg.turbulenceSettings.initialValue = {0.4, 0.08};
+    cfg.turbulenceSettings.secondOrderReconstruction = false;
+    cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    auto &flow = solver.GetState();
+    const auto evaluator = solver.GetEvaluator();
+    const auto transport = solver.GetTurbulenceTransport();
+    transport->SetFaceVolumeFlux([&](DNDS::index face, int point, DNDS::real time)
+    {
+        return evaluator->FaceVolumeFlux(flow, face, point, time);
+    });
+    using Field = ACM::ACMTurbulenceTransport<2>::TTurbulenceDof;
+    Field plus, minus;
+    solver.GetReconstruction()->BuildUDof(plus, 2);
+    solver.GetReconstruction()->BuildUDof(minus, 2);
+    const auto grid = solver.GetMesh();
+    std::vector<ACM::State> base(grid->NumCell()), direction(grid->NumCell());
+    for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+    {
+        base[cell] = flow[cell];
+        direction[cell] << std::sin(1.0 + cell), std::cos(0.2 + cell), 0, std::sin(0.4 + 2 * cell);
+    }
+    ACM::MatrixField diagonal;
+    ACM::ACMEvaluator<2>::FaceJacobianField faces;
+    evaluator->AssembleImplicitLinearization(flow, ACM::ScalarField(grid->NumCell(), 0.02), diagonal, faces);
+    std::vector<ACM::TurbulenceState> product(grid->NumCell(), ACM::TurbulenceState::Zero());
+    for (DNDS::index face = 0; face < grid->NumFaceProc(); face++)
+    {
+        const auto cells = grid->face2cell[face];
+        const DNDS::real flux = (faces[face].left.row(3) * direction[cells[0]] +
+                                 faces[face].right.row(3) * direction[cells[1]])(0);
+        const ACM::TurbulenceState crossFlux = transport->FrozenFaceAdvectionValue(flow, face) * flux;
+        product[cells[0]] += crossFlux / solver.GetReconstruction()->GetCellVol(cells[0]);
+        product[cells[1]] -= crossFlux / solver.GetReconstruction()->GetCellVol(cells[1]);
+    }
+    constexpr DNDS::real epsilon = 1e-6;
+    for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+        flow[cell] = base[cell] + epsilon * direction[cell];
+    transport->EvaluateRHS(plus, flow);
+    for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+        flow[cell] = base[cell] - epsilon * direction[cell];
+    transport->EvaluateRHS(minus, flow);
+    for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
+        CHECK((product[cell] + (plus[cell] - minus[cell]) / (2 * epsilon)).norm() < 1e-7);
 }
 
 TEST_CASE("ACM unified two-equation BDF2 reproduces conservative Wilcox decay with both linear solvers")
@@ -949,6 +1069,292 @@ TEST_CASE("ACM unified two-equation BDF2 reproduces conservative Wilcox decay wi
         CHECK(solver.GetState()[0](4) / cfg.acmSettings.rho0 == doctest::Approx(expected(0)).epsilon(1e-10));
         CHECK(solver.GetState()[0](5) / cfg.acmSettings.rho0 == doctest::Approx(expected(1)).epsilon(1e-10));
     }
+}
+
+TEST_CASE("ACM field restart reinitializes BE BDF2 history after a physical step change")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    struct TempOutput
+    {
+        std::filesystem::path path;
+        ~TempOutput() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } output{mesh.path.string() + ".restart"};
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeLUSGS;
+    cfg.turbulenceSettings.enableSourceTerms = true;
+    cfg.timeMarchSettings.nSteps = 1;
+    cfg.timeMarchSettings.physicalTimeStep = 0.001;
+    cfg.outputSettings.interval = 1;
+    cfg.outputSettings.writeInitial = false;
+    cfg.outputSettings.directory = output.path.string();
+    cfg.outputSettings.prefix = "restart";
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> first(mpi, cfg);
+    first.ReadMeshAndInitialize();
+    first.Run();
+    const auto initial = first.GetState()[0].eval();
+    cfg.restartSettings.flowFile = (output.path / "restart_00000001.vtkhdf").string();
+    cfg.restartSettings.completedSteps = 1;
+    cfg.restartSettings.writerRanks = 1;
+    cfg.restartSettings.requireTurbulence = true;
+    CHECK_THROWS_AS(cfg.Validate(), std::runtime_error);
+    cfg.restartSettings.initializeBDF2History = true;
+    cfg.restartSettings.physicalTime = 0.001;
+    cfg.timeMarchSettings.nSteps = 2;
+    cfg.timeMarchSettings.physicalTimeStep = 0.01;
+    cfg.Validate();
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> second(mpi, cfg);
+    second.ReadMeshAndInitialize();
+    CHECK((second.GetState()[0] - initial).norm() < 1e-14);
+    second.Run();
+    CHECK(second.SimulationTime() == doctest::Approx(0.021));
+    ACM::TurbulenceState expected = initial.tail<2>() / cfg.acmSettings.rho0;
+    auto older = expected;
+    for (int step = 0; step < 2; step++)
+    {
+        const auto coefficients = ACM::GetBDF2Coefficients(step);
+        const ACM::TurbulenceState history = -coefficients.previous * expected - coefficients.previousPrevious * older;
+        ACM::TurbulenceState next;
+        next(1) = 2 * history(1) / (coefficients.current + std::sqrt(coefficients.current * coefficients.current +
+            4 * 0.0708 * 0.01 * history(1)));
+        next(0) = history(0) / (coefficients.current + 0.09 * 0.01 * next(1));
+        older = expected;
+        expected = next;
+    }
+    CHECK(second.GetState()[0](4) / cfg.acmSettings.rho0 == doctest::Approx(expected(0)).epsilon(1e-10));
+    CHECK(second.GetState()[0](5) / cfg.acmSettings.rho0 == doctest::Approx(expected(1)).epsilon(1e-10));
+    CHECK(std::filesystem::exists(output.path / "restart_00000003.vtkhdf"));
+}
+
+TEST_CASE("ACM conservative turbulence pseudo mass preserves constant scalar during a flow correction")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeGMRES;
+    // A deliberately incomplete physical solve tests pseudo-time constant-scalar
+    // preservation; production cases still require converged physical histories.
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.timeMarchSettings.nSteps = 1;
+    cfg.timeMarchSettings.dualTimeRequireConvergence = false;
+    cfg.timeMarchSettings.linearRelativeTolerance = 1e-12;
+    cfg.turbulenceSettings.secondOrderReconstruction = false;
+    cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+    {
+        solver.GetState()[cell](0) = 0.3 + 0.1 * std::sin(1.0 + cell);
+        solver.GetState()[cell](3) = 0.3 + 0.1 * std::cos(0.2 + cell);
+    }
+    solver.Run();
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+    {
+        CHECK(solver.GetState()[cell](4) == doctest::Approx(1.2).epsilon(1e-10));
+        CHECK(solver.GetState()[cell](5) == doctest::Approx(0.24).epsilon(1e-10));
+    }
+}
+
+TEST_CASE("ACM nonlinear mass continuation solves the original BDF2 equations")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    std::vector<Solver::TState> reference;
+    for (int continuationSteps : {0, 1})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeLUSGS;
+        cfg.timeMarchSettings.dualTimeRANSContinuationSteps = continuationSteps;
+        // This strict absolute-accuracy test solves all auxiliary stages without
+        // Anderson acceleration; its budget is independent of production cases.
+        cfg.timeMarchSettings.maxImplicitIterations = 3000;
+        cfg.timeMarchSettings.implicitTolerance = 1e-10;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+        {
+            solver.GetState()[cell](0) += 0.05 * std::sin(1.0 + cell);
+            solver.GetState()[cell](1) += 0.03 * std::cos(1.0 + cell);
+            solver.GetState()[cell](3) += 0.02 * std::sin(2.0 + cell);
+            solver.GetState()[cell](4) += 0.02 * cell;
+            solver.GetState()[cell](5) += 0.01 * cell;
+        }
+        solver.Run();
+        REQUIRE(solver.CompletedPhysicalSteps() == 3);
+        CHECK(solver.SimulationTime() == doctest::Approx(0.03));
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+            if (continuationSteps == 0)
+                reference.push_back(solver.GetState()[cell]);
+            else
+                CHECK((solver.GetState()[cell] - reference[cell]).norm() < 1e-9);
+    }
+}
+
+TEST_CASE("ACM unfinished auxiliary stages cannot commit physical histories")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeLUSGS;
+    cfg.timeMarchSettings.dualTimeRANSContinuationSteps = 1;
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.timeMarchSettings.nSteps = 1;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    CHECK_THROWS_WITH_AS(solver.Run(), doctest::Contains("histories were not committed"), std::runtime_error);
+    CHECK(solver.CompletedPhysicalSteps() == 0);
+    CHECK(solver.SimulationTime() == 0);
+}
+
+TEST_CASE("ACM RANS prepared closure reuse preserves nonuniform LUSGS BDF2 transport")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    std::vector<Solver::TState> reference;
+    DNDS::index referencePreparations = 0;
+    for (bool reuse : {false, true})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeLUSGS;
+        cfg.timeMarchSettings.implicitTolerance = 1e-9;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        const auto transport = solver.GetTurbulenceTransport();
+        transport->SetPreparationReuse(reuse);
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+        {
+            solver.GetState()[cell](0) += 0.05 * std::sin(1.0 + cell);
+            solver.GetState()[cell](1) += 0.03 * std::cos(1.0 + cell);
+            solver.GetState()[cell](3) += 0.02 * std::sin(2.0 + cell);
+            solver.GetState()[cell](4) += 0.02 * cell;
+            solver.GetState()[cell](5) += 0.01 * cell;
+        }
+        solver.Run();
+        REQUIRE(solver.CompletedPhysicalSteps() == 3);
+        if (!reuse)
+            referencePreparations = transport->PreparationCount();
+        else
+            CHECK(transport->PreparationCount() * 2 < referencePreparations);
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+            if (!reuse)
+                reference.push_back(solver.GetState()[cell]);
+            else
+                CHECK((solver.GetState()[cell] - reference[cell]).norm() < 1e-9);
+    }
+}
+
+TEST_CASE("ACM RANS Anderson acceleration preserves converged BDF2 transport states")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    std::vector<Solver::TState> reference;
+    for (int depth : {0, 6})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeGMRES;
+        cfg.timeMarchSettings.dualTimeRANSAndersonDepth = depth;
+        cfg.timeMarchSettings.maxImplicitIterations = 30;
+        cfg.timeMarchSettings.implicitTolerance = 1e-10;
+        cfg.initialState[0] = 0.3;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+        {
+            solver.GetState()[cell](4) += 0.02 * cell;
+            solver.GetState()[cell](5) += 0.01 * cell;
+        }
+        solver.Run();
+        REQUIRE(solver.CompletedPhysicalSteps() == 3);
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+            if (depth == 0)
+                reference.push_back(solver.GetState()[cell]);
+            else
+                CHECK((solver.GetState()[cell] - reference[cell]).norm() < 1e-9);
+    }
+}
+
+TEST_CASE("ACM matrix free coupled transport preserves the BDF2 solution")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    std::vector<Solver::TState> reference;
+    for (bool matrixFree : {false, true})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeGMRES;
+        cfg.timeMarchSettings.dualTimeRANSMatrixFreeJacobian = matrixFree;
+        cfg.timeMarchSettings.implicitTolerance = 1e-9;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        cfg.initialState[0] = 0.3;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+        {
+            solver.GetState()[cell](0) += 0.05 * std::sin(1.0 + cell);
+            solver.GetState()[cell](1) += 0.03 * std::cos(1.0 + cell);
+            solver.GetState()[cell](3) += 0.02 * std::sin(2.0 + cell);
+            solver.GetState()[cell](4) += 0.02 * cell;
+            solver.GetState()[cell](5) += 0.01 * cell;
+        }
+        solver.Run();
+        REQUIRE(solver.CompletedPhysicalSteps() == 3);
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+            if (!matrixFree)
+                reference.push_back(solver.GetState()[cell]);
+            else
+                CHECK((solver.GetState()[cell] - reference[cell]).norm() < 1e-8);
+    }
+}
+
+TEST_CASE("ACM matrix free probes do not add variational reconstruction sweeps")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeGMRES;
+    cfg.timeMarchSettings.dualTimeRANSMatrixFreeJacobian = true;
+    cfg.timeMarchSettings.maxImplicitIterations = 1;
+    cfg.timeMarchSettings.nSteps = 1;
+    cfg.timeMarchSettings.dualTimeRequireConvergence = false;
+    cfg.reconstructionSettings.type = ACM::ReconstructionType::Variational;
+    cfg.reconstructionSettings.variationalIterations = 1;
+    cfg.reconstructionSettings.variationalTolerance = 0;
+    cfg.vfvSettings.maxOrder = 1;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); cell++)
+        solver.GetState()[cell](3) += 0.1 * std::sin(1.0 + cell);
+    const auto before = solver.GetEvaluator()->GetTotalReconstructionSweeps();
+    solver.Run();
+    CHECK(solver.GetEvaluator()->GetTotalReconstructionSweeps() - before == 2);
 }
 
 TEST_CASE("ACM unified RANS keeps failed physical histories uncommitted and validates model choices")
@@ -1006,4 +1412,60 @@ int main(int argc, char **argv)
     const int result = context.run();
     MPI_Finalize();
     return result;
+}
+
+/// @test Positive cell floors must not reintroduce turbulent viscosity on no-slip faces.
+TEST_CASE("ACM and variable ACM no-slip faces have exactly zero eddy viscosity")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile meshFile;
+    WriteSingleCellQuad(meshFile.path, false);
+    const auto checkFaces = [](auto &transport, auto &solver)
+    {
+        transport.Initialize();
+        transport.Prepare(solver.GetState());
+        const auto mesh = solver.GetMesh();
+        REQUIRE(mesh->NumFaceProc() == 4);
+        for (DNDS::index face = 0; face < mesh->NumFaceProc(); ++face)
+        {
+            const auto quad = solver.GetReconstruction()->GetFaceQuad(face);
+            for (int point = 0; point < quad.GetNumPoints(); ++point)
+                CHECK(transport.FaceEddyViscosity(face, point) == 0);
+        }
+    };
+    for (const auto wall : {ACM::BoundaryType::BCWall, ACM::BoundaryType::BCWallIsothermal})
+    {
+        auto cfg = MakeRANSPhysicalCase(meshFile.path, ACM::TurbulenceModel::KOmegaSST,
+                                        ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.05, 0);
+        cfg.defaultBoundaryType = wall;
+        cfg.turbulenceSettings.minimumValue[0] = 0.01;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACM::BoundaryHandler>(cfg.defaultBoundaryType,
+            cfg.InitialState(), cfg.boundaryConditions);
+        ACM::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+            cfg.acmSettings, cfg.turbulenceSettings, boundary);
+        checkFaces(transport, solver);
+    }
+    for (const auto wall : {ACMVariable::BoundaryType::BCWall, ACMVariable::BoundaryType::BCWallIsothermal})
+    {
+        ACMVariable::KernelConfiguration cfg;
+        cfg.meshSettings.meshFile = meshFile.path.string();
+        cfg.initialState = {1, 0, 0, 0, 0};
+        cfg.defaultBoundaryType = wall;
+        cfg.acmSettings.enableViscousFlux = true;
+        cfg.acmSettings.dynamicViscosity = 0.001;
+        cfg.turbulenceSettings.model = ACMVariable::TurbulenceModel::KOmegaSST;
+        cfg.turbulenceSettings.initialValue = {0.2, 4};
+        cfg.turbulenceSettings.minimumValue[0] = 0.01;
+        ACMVariable::ACMSolver<ACMVariable::ACMModel::VariableDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACMVariable::BoundaryHandler>(cfg.defaultBoundaryType,
+            cfg.InitialState(), cfg.boundaryConditions);
+        ACMVariable::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+            cfg.acmSettings, cfg.turbulenceSettings, boundary);
+        checkFaces(transport, solver);
+    }
 }

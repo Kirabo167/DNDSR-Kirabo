@@ -1,0 +1,151 @@
+diff --git a/src/NCFV/NCFVSolver.hpp b/src/NCFV/NCFVSolver.hpp
+index 1b3f33a..410595e 100644
+--- a/src/NCFV/NCFVSolver.hpp
++++ b/src/NCFV/NCFVSolver.hpp
+@@ -216,0 +217,6 @@ namespace DNDS::NCFV
++        void SetTraditionalEdgeMidpointFluxForDiagnostics(bool enabled)
++        {
++            DNDS_check_throw_info(_spatial != nullptr,
++                                  "Initialize solver before selecting midpoint flux");
++            _spatial->SetTraditionalEdgeMidpointFluxForDiagnostics(enabled);
++        }
+diff --git a/src/NCFV/NCFVSpatial.cpp b/src/NCFV/NCFVSpatial.cpp
+index df813bd..28ae41a 100644
+--- a/src/NCFV/NCFVSpatial.cpp
++++ b/src/NCFV/NCFVSpatial.cpp
+@@ -250,0 +251,38 @@ namespace DNDS::NCFV
++        if (_referenceRoeHarten)
++        {
++            const real rhoL = left(0), rhoR = right(0);
++            const SpatialVector vL = left.template segment<dimension>(1) / rhoL;
++            const SpatialVector vR = right.template segment<dimension>(1) / rhoR;
++            const real pL = Pressure(left), pR = Pressure(right);
++            const real ratio = std::sqrt(rhoR / rhoL);
++            const real rho = std::sqrt(rhoL * rhoR);
++            const SpatialVector velocity = (vL + ratio * vR) / (1 + ratio);
++            const real enthalpy = ((left(dimension + 1) + pL) / rhoL +
++                                   ratio * (right(dimension + 1) + pR) / rhoR) / (1 + ratio);
++            const real aSquared = (_physics.gamma - 1) *
++                (enthalpy - 0.5 * velocity.squaredNorm());
++            DNDS_check_throw_info(aSquared > 0, "Reference Roe sound speed is nonpositive");
++            const real sound = std::sqrt(aSquared);
++            const real un = velocity.dot(unitNormal);
++            const real threshold = 0.15 * sound;
++            const auto fixed = [threshold](real value)
++            {
++                value = std::abs(value);
++                return value < threshold ? 0.5 * (value * value / threshold + threshold) : value;
++            };
++            const real contact = fixed(un);
++            const SpatialVector dv = vR - vL;
++            const real dun = dv.dot(unitNormal);
++            const real b0 = contact * (rhoR - rhoL - (pR - pL) / aSquared);
++            const real bp = 0.5 * fixed(un + sound) * (pR - pL + rho * sound * dun) / aSquared;
++            const real bm = 0.5 * fixed(un - sound) * (pR - pL - rho * sound * dun) / aSquared;
++            const real mass = b0 + bp + bm;
++            const real normal = sound * (bp - bm);
++            const SpatialVector shear = contact * rho * (dv - unitNormal * dun);
++            State dissipation;
++            dissipation(0) = mass;
++            dissipation.template segment<dimension>(1) = velocity * mass + unitNormal * normal + shear;
++            dissipation(dimension + 1) = enthalpy * mass + un * normal +
++                velocity.dot(shear) - aSquared * b0 / (_physics.gamma - 1);
++            return 0.5 * (PhysicalFlux(left, unitNormal) + PhysicalFlux(right, unitNormal) - dissipation);
++        }
+@@ -332,0 +371,14 @@ namespace DNDS::NCFV
++        if (_referenceDocumentFlux)
++        {
++            DNDS_assert(_referenceMeans != nullptr);
++            const State mean = (*_referenceMeans)[anchorNode];
++            const State candidate = mean + _coefficients[anchorNode].transpose() *
++                (Reconstruction::EvaluateBasis(
++                     _nodeHalo.DisplacementToPoint(anchorNode, point), referenceLengths, dimension) -
++                 _referenceBasisMeans[static_cast<std::size_t>(anchorNode)]);
++            if (candidate.allFinite() && candidate(0) > 0 &&
++                candidate(dimension + 1) > 0 && Pressure(candidate) > 0)
++                return candidate;
++            ++_referenceMeanFallbackCount;
++            return mean;
++        }
+@@ -766,0 +819,16 @@ namespace DNDS::NCFV
++            if (_traditionalEdgeMidpointFlux)
++            {
++                // Use the edge's minimum-image frame, including periodic edges.
++                const Vector3 midpoint = 0.5 *
++                    (surface.nodeCoordinates[0] + surface.nodeCoordinates[1]);
++                const real effectiveArea = surface.vectorMeasure.template head<dimension>().norm();
++                const State left = EvaluateTraditionalState(node0, midpoint);
++                const State right = EvaluateTraditionalState(node1, midpoint);
++                State flux = NumericalFlux(left, right, unitNormal);
++                if (_physics.viscous.enabled)
++                    flux -= InternalViscousFlux(
++                        left, right, EvaluateTraditionalGradient(node0, midpoint),
++                        EvaluateTraditionalGradient(node1, midpoint),
++                        unitNormal, characteristicDistance);
++                return effectiveArea * flux;
++            }
+@@ -1189,0 +1258 @@ namespace DNDS::NCFV
++        _referenceMeans = &means;
+@@ -1546,0 +1616 @@ namespace DNDS::NCFV
++            {
+@@ -1547,0 +1618,8 @@ namespace DNDS::NCFV
++                if (_referenceDocumentFlux)
++                {
++                    SpatialVector areaVector;
++                    for (int d = 0; d < dimension; d++)
++                        areaVector(d) = _geometry.EdgeMetrics()(incidence.edge, d);
++                    residual -= incidence.outwardSign * PhysicalFlux(State(means[iNode]), areaVector);
++                }
++            }
+diff --git a/src/NCFV/NCFVSpatial.hpp b/src/NCFV/NCFVSpatial.hpp
+index bc61753..f400a16 100644
+--- a/src/NCFV/NCFVSpatial.hpp
++++ b/src/NCFV/NCFVSpatial.hpp
+@@ -169,0 +170,6 @@ namespace DNDS::NCFV
++        bool _traditionalEdgeMidpointFlux = false;
++        bool _referenceRoeHarten = false;
++        bool _referenceDocumentFlux = false;
++        const NodeStatePair *_referenceMeans = nullptr;
++        std::vector<Eigen::VectorXd> _referenceBasisMeans;
++        mutable index _referenceMeanFallbackCount = 0;
+@@ -586,0 +593,40 @@ namespace DNDS::NCFV
++        /** Evaluate each internal macro-interface once at its primal-edge midpoint. */
++        void SetTraditionalEdgeMidpointFluxForDiagnostics(bool enabled)
++        {
++            DNDS_check_throw_info(!enabled || _mode == IntegrationMode::TraditionalQuadrature,
++                                  "Edge midpoint flux requires traditional reconstruction");
++            _traditionalEdgeMidpointFlux = enabled;
++        }
++        /** Static-grid Roe--Pike flux with the supplied reference's delta=0.15*a fix. */
++        void SetReferenceRoeHartenForDiagnostics(bool enabled)
++        {
++            DNDS_check_throw_info(!enabled || _physics.riemannSolver == Euler::Gas::Roe,
++                                  "Reference Harten flux requires Roe");
++            _referenceRoeHarten = enabled;
++        }
++        State EvaluateNumericalFluxForDiagnostics(
++            const State &left, const State &right, const SpatialVector &normal) const
++        {
++            return NumericalFlux(left, right, normal);
++        }
++        /** Literal stationary, periodic InvisFluxRoeHO assembly for accuracy diagnostics. */
++        void SetReferenceDocumentFluxForDiagnostics(bool enabled)
++        {
++            if (enabled)
++            {
++                DNDS_check_throw_info(!_physics.viscous.enabled,
++                                      "Reference document diagnostic requires inviscid flow");
++                for (const auto &volume : _geometry.NodeVolumes())
++                    DNDS_check_throw_info(volume.boundaryPieces.empty(),
++                                          "Reference document diagnostic requires stitched periodic geometry");
++                SetTraditionalEdgeMidpointFluxForDiagnostics(true);
++                SetReferenceRoeHartenForDiagnostics(true);
++                _referenceBasisMeans.resize(static_cast<std::size_t>(_nodeHalo.NumNodeProc()));
++                for (index node = 0; node < _nodeHalo.NumNodeProc(); node++)
++                    _referenceBasisMeans[static_cast<std::size_t>(node)] = Reconstruction::MeanBasis(
++                        _nodeHalo.MomentsRelative(node, node), Vector3::Zero(),
++                        _reconstruction.ReferenceLengths(node), dimension);
++            }
++            _referenceDocumentFlux = enabled;
++        }
++        [[nodiscard]] index ReferenceMeanFallbackCount() const { return _referenceMeanFallbackCount; }

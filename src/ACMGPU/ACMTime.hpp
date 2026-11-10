@@ -139,6 +139,14 @@ namespace DNDS::ACMGPU
         real cfl = 0.5;                                                     ///< CFL multiplier for spectral-radius stepping.
         real maximumPseudoTimeStep = 1e100;                                 ///< Upper clamp for a CFL-derived step.
         int maxImplicitIterations = 20;                                     ///< Inner defect-correction iterations per implicit/physical step.
+        int dualTimeRANSStartupSteps = 0;                                  ///< Initial physical steps with an extended RANS iteration budget.
+        int dualTimeRANSStartupIterations = 100;                            ///< Maximum corrections during those startup steps.
+        int dualTimeRANSContinuationSteps = 0;                              ///< Initial physical steps using nonlinear mass continuation.
+        real dualTimeRANSContinuationFactor = 10;                           ///< Initial auxiliary mass multiplier, reduced to one before acceptance.
+        int RANSInnerIterationLimit(index completedSteps) const
+        {
+            return completedSteps < dualTimeRANSStartupSteps ? dualTimeRANSStartupIterations : maxImplicitIterations;
+        }
         real implicitTolerance = 1e-8;                                      ///< Global RMS steady or physical defect absolute tolerance.
         std::string dualTimeConvergenceCriterion = "Absolute";              ///< Defect criterion, or RelativeUpdate for laminar flow.
         real dualTimeUpdateRelativeTolerance = 1e-5;                       ///< Applied-update L2 / updated-state L2; zero disables early exit.
@@ -148,12 +156,20 @@ namespace DNDS::ACMGPU
         std::array<real, 6> dualTimeResidualScales{1, 1, 1, 1, 1, 1};         ///< Characteristic residual scales for [u,v,w,p,q1,q2].
         std::array<real, 6> dualTimeRelativeTolerances{};                    ///< Per-equation target relative to the initial physical defect; zero disables it.
         bool dualTimeRequireConvergence = true;                            ///< Reject an unconverged physical step before committing histories.
+        int dualTimeRANSAndersonDepth = 0;                                 ///< Optional unified RANS nonlinear residual mixing; zero disables it.
+        bool dualTimeRANSMatrixFreeJacobian = false;                       ///< Coupled RANS Jacobian action with frozen flow reconstruction coefficients.
         real steadyRelativeTolerance = 0;                                 ///< Steady inner target relative to this outer step's spatial RMS.
         bool steadyAdaptiveCFL = false;                                   ///< Adapt CFL using post-step spatial residual and inner success.
         real steadyCFLMin = 0.1;
         real steadyCFLMax = 20;
         real steadyCFLGrowth = 1.5;                                        ///< Maximum increase per successful outer step.
         real steadyCFLReduction = 0.5;                                    ///< Reduction after residual growth or inner failure.
+        bool steadyUntilConverged = false;                               ///< GPU steady SST: continue until all spatial equations converge.
+        real steadyConvergenceRelativeTolerance = 1e-6;                  ///< Relative to the fixed initial spatial equation norms.
+        std::array<real, 6> steadyConvergenceAbsoluteTolerances{1e-8, 1e-8, 1e-8, 1e-8, 1e-10, 1e-3};
+        int steadyConvergenceWindow = 20;                                ///< Consecutive successful global convergence checks.
+        bool steadyLineSearch = true;                                   ///< Backtrack steady corrections using true spatial residuals.
+        int steadyLineSearchWindow = 20;                                ///< Nonmonotone residual merit history length.
         real implicitRelaxation = 1.0;                                      ///< Damping applied to every implicit correction.
         int lusgsSweeps = 2;                                                ///< Maximum standalone SGS sweeps; fixed GMRES preconditioner sweeps.
         int gmresSubspace = 10;                                             ///< Arnoldi vectors per GMRES restart.
@@ -180,6 +196,10 @@ namespace DNDS::ACMGPU
             DNDS_FIELD(maximumPseudoTimeStep, "Maximum CFL-derived pseudo-time step", DNDS::Config::range(0.0));
             DNDS_FIELD(maxImplicitIterations, "Maximum inner iterations per implicit or physical step",
                        DNDS::Config::range(1));
+            DNDS_FIELD(dualTimeRANSStartupSteps, "Initial RANS BDF physical steps with extended inner budget", DNDS::Config::range(0));
+            DNDS_FIELD(dualTimeRANSStartupIterations, "Maximum inner iterations during RANS BDF startup", DNDS::Config::range(1));
+            DNDS_FIELD(dualTimeRANSContinuationSteps, "Initial RANS BDF steps with nonlinear mass continuation", DNDS::Config::range(0));
+            DNDS_FIELD(dualTimeRANSContinuationFactor, "Initial nonlinear continuation mass factor; final physical equation is unchanged", DNDS::Config::range(1.0));
             DNDS_FIELD(implicitTolerance, "Implicit global RMS steady or physical defect tolerance",
                        DNDS::Config::range(0.0));
             DNDS_FIELD(dualTimeConvergenceCriterion, "BDF convergence: Absolute, Relative, AbsoluteOrRelative, or laminar RelativeUpdate; residuals remain reported",
@@ -195,6 +215,9 @@ namespace DNDS::ACMGPU
             DNDS_FIELD(dualTimeResidualScales, "Positive characteristic residual scales for BDF [u,v,w,p,q1,q2]");
             DNDS_FIELD(dualTimeRelativeTolerances, "BDF per-equation relative defect targets in [0,1); zero uses only the scaled absolute target");
             DNDS_FIELD(dualTimeRequireConvergence, "Reject unconverged BDF physical steps; false explicitly enables diagnostic budget-limited marching");
+            DNDS_FIELD(dualTimeRANSAndersonDepth, "Unified RANS BDF nonlinear Anderson history depth; zero disables acceleration",
+                       DNDS::Config::range(0, 10));
+            DNDS_FIELD(dualTimeRANSMatrixFreeJacobian, "Coupled RANS BDF finite-difference Jacobian action; flow reconstruction remains frozen within the linear solve");
             DNDS_FIELD(steadyRelativeTolerance, "Steady inner defect relative to current outer spatial residual; zero uses absolute tolerance",
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(steadyAdaptiveCFL, "Adapt steady implicit CFL using actual spatial residual progress");
@@ -202,6 +225,12 @@ namespace DNDS::ACMGPU
             DNDS_FIELD(steadyCFLMax, "Maximum adaptive steady CFL", DNDS::Config::range(0.0));
             DNDS_FIELD(steadyCFLGrowth, "Maximum steady CFL growth factor", DNDS::Config::range(1.0));
             DNDS_FIELD(steadyCFLReduction, "Steady CFL reduction factor", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(steadyUntilConverged, "Resident steady SST: ignore nSteps budget and stop only after spatial convergence");
+            DNDS_FIELD(steadyConvergenceRelativeTolerance, "Steady equation target relative to fixed initial spatial norms", DNDS::Config::range(0.0, 1.0));
+            DNDS_FIELD(steadyConvergenceAbsoluteTolerances, "Absolute steady spatial RMS targets for [u,v,w,p,k,omega]");
+            DNDS_FIELD(steadyConvergenceWindow, "Consecutive all-equation steady convergence checks", DNDS::Config::range(1));
+            DNDS_FIELD(steadyLineSearch, "Backtrack steady corrections against normalized spatial residuals");
+            DNDS_FIELD(steadyLineSearchWindow, "History window for nonmonotone steady residual backtracking", DNDS::Config::range(1));
             DNDS_FIELD(implicitRelaxation, "Implicit correction relaxation", DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(lusgsSweeps, "Maximum standalone LU-SGS sweeps; fixed sweeps for GMRES preconditioning", DNDS::Config::range(1));
             DNDS_FIELD(gmresSubspace, "ACM GMRES Krylov subspace size", DNDS::Config::range(2));

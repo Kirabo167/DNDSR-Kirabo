@@ -577,3 +577,75 @@ TEST_CASE("GetSource_SA: production limit changes the physical source")
     CHECK(sourceRelaxed.allFinite());
     CHECK(sourceRelaxed(I4 + 1) > sourceCapped(I4 + 1));
 }
+
+/// @test Inner/outer SST omega production must use the corresponding gamma coefficient.
+/// Reference: Menter (1994), DOI 10.2514/3.12149; TMR sst.html#sst-std.
+TEST_CASE("GetSource_SST: omega production blends both coefficient sets")
+{
+    constexpr real rho = 1.3, k = 0.2, omega = 4, mu = 0.0013, shear = 2;
+    auto U = buildState(rho, 0, 0, 0, 1, k, omega);
+    auto gradient = buildShearGrad(U, shear);
+    for (const real distance : {0.01, 1.0, 100.0})
+    {
+        const real argument = std::max(std::sqrt(k) / (0.09 * omega * distance),
+                                      500 * mu / rho / (distance * distance * omega));
+        const real f1 = std::tanh(std::pow(argument, 4)); // CD term is inactive here
+        const real gamma1 = 0.075 / 0.09 - 0.5 * 0.41 * 0.41 / 0.3;
+        const real gamma2 = 0.0828 / 0.09 - 0.856 * 0.41 * 0.41 / 0.3;
+        const real gamma = f1 * gamma1 + (1 - f1) * gamma2;
+        const real beta = f1 * 0.075 + (1 - f1) * 0.0828;
+        Eigen::Vector<real, nVars> source = Eigen::Vector<real, nVars>::Zero();
+        GetSource_SST<dim>(U, gradient, mu, distance, 1e10, source, 0, g_kOmegaSSTConfig);
+        const real production = source(I4 + 2) / rho + beta * omega * omega;
+        CHECK(production == doctest::Approx(gamma * shear * shear).epsilon(1e-12));
+    }
+}
+
+/// @test Source and diffusion share the original SST CD floor in weak turbulence.
+TEST_CASE("GetSource_SST: 1994 weak turbulence retains the inner blending limit")
+{
+    constexpr real rho = 1, k = 1e-8, omega = 1e-6, mu = 1e-6, distance = 100;
+    auto U = buildState(rho, 0, 0, 0, 1, k, omega);
+    Eigen::Matrix<real, dim, nVars> gradient = Eigen::Matrix<real, dim, nVars>::Zero();
+    Eigen::Vector<real, nVars> source = Eigen::Vector<real, nVars>::Zero();
+    GetSource_SST<dim>(U, gradient, mu, distance, 1e10, source, 1, g_kOmegaSSTConfig);
+    CHECK(source(I4 + 2) / (2 * omega) == doctest::Approx(0.075));
+    gradient(0, I4 + 1) = 1;
+    gradient(1, I4 + 2) = 1; // orthogonal gradients keep CD=0
+    Eigen::Vector<real, dim> normal;
+    normal << 1, 1, 0;
+    normal.normalize();
+    Eigen::Vector<real, nVars> flux = Eigen::Vector<real, nVars>::Zero();
+    GetVisFlux_SST<dim>(U, gradient, normal, 1e-5, distance, mu, flux, g_kOmegaSSTConfig);
+    CHECK(flux(I4 + 1) * std::sqrt(2.0) == doctest::Approx(mu + 0.85e-5).epsilon(1e-12));
+    CHECK(flux(I4 + 2) * std::sqrt(2.0) == doctest::Approx(mu + 0.5e-5).epsilon(1e-12));
+}
+
+/// @test Epsilon must set the turbulent time scale even when k and epsilon differ.
+TEST_CASE("GetSource_RealizableKe: homogeneous decay uses the epsilon state entry")
+{
+    constexpr real rho = 1.2, k = 0.4, mu = 1.8e-5;
+    for (const real epsilon : {0.08, 0.16})
+    {
+        auto U = buildState(rho, 0, 0, 0, 1, k, epsilon);
+        Eigen::Matrix<real, dim, nVars> gradient = Eigen::Matrix<real, dim, nVars>::Zero();
+        Eigen::Vector<real, nVars> source = Eigen::Vector<real, nVars>::Zero();
+        GetSource_RealizableKe<dim>(U, gradient, mu, 1, source, 0, g_rkeConfig);
+        CHECK(source(I4 + 1) == doctest::Approx(-rho * epsilon));
+        CHECK(source(I4 + 2) == doctest::Approx(-1.92 * rho * epsilon * epsilon / k).epsilon(1e-10));
+        GetSource_RealizableKe<dim>(U, gradient, mu, 1, source, 1, g_rkeConfig);
+        CHECK(source(I4 + 2) == doctest::Approx(1.92 * epsilon / k).epsilon(1e-10));
+    }
+}
+
+/// @test The exact SST wall value is zero in both supported kernel dimensions.
+TEST_CASE("GetMut_SST: zero wall k is not replaced by an interior positivity floor")
+{
+    auto U = buildState(1, 0, 0, 0, 1, 0, 4);
+    const Eigen::Matrix<real, dim, nVars> gradient = Eigen::Matrix<real, dim, nVars>::Zero();
+    CHECK(GetMut_SST<dim>(U, gradient, 0.001, 0.01, g_kOmegaSSTConfig) == 0);
+    Eigen::Vector<real, 6> state2D;
+    state2D << 1, 0, 0, 2.5, 0, 4;
+    const Eigen::Matrix<real, 2, 6> gradient2D = Eigen::Matrix<real, 2, 6>::Zero();
+    CHECK(GetMut_SST<2>(state2D, gradient2D, 0.001, 0.01, g_kOmegaSSTConfig) == 0);
+}

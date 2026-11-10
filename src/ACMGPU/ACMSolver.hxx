@@ -717,7 +717,7 @@ namespace DNDS::ACMGPU
             if (_turbulence)
                 _turbulence->InitializePhysicalHistory();
         }
-        real physicalTime = 0;
+        real physicalTime = _configuration.restartSettings.physicalTime;
         real currentCFL = _configuration.timeMarchSettings.cfl;
         real residualTime = 0;
 
@@ -739,7 +739,7 @@ namespace DNDS::ACMGPU
             _configuration.outputSettings.writeInitial)
             WriteFlowField(
                 _configuration.restartSettings.completedSteps,
-                static_cast<real>(_configuration.restartSettings.completedSteps));
+                useBDF2 ? physicalTime : static_cast<real>(_configuration.restartSettings.completedSteps));
 
         for (int iStep = 1; iStep <= _configuration.timeMarchSettings.nSteps; iStep++)
         {

@@ -1,6 +1,10 @@
 #pragma once
 #include "ACMSolver.hpp"
 #include "GPU/ResidentACM.hpp"
+#include <iomanip>
+#include <limits>
+#include <cstdlib>
+#include <fstream>
 
 namespace DNDS::ACMGPU
 {
@@ -268,6 +272,11 @@ namespace DNDS::ACMGPU
         s.cfl = time.cfl;
         s.maximumStep = time.maximumPseudoTimeStep;
         s.implicitIterations = time.maxImplicitIterations;
+        s.startupSteps = time.dualTimeRANSStartupSteps;
+        s.startupIterations = time.dualTimeRANSStartupIterations;
+        DNDS_check_throw_info(time.dualTimeRANSContinuationSteps == 0 && time.dualTimeRANSAndersonDepth == 0 &&
+                                  !time.dualTimeRANSMatrixFreeJacobian,
+                              "Resident CUDA does not yet support RANS continuation, Anderson mixing or matrix-free GMRES; CPU fallback is disabled");
         s.implicitTolerance = time.implicitTolerance;
         s.implicitRelaxation = time.implicitRelaxation;
         s.lusgsSweeps = time.lusgsSweeps;
@@ -283,8 +292,11 @@ namespace DNDS::ACMGPU
         {
             s.residualScales[k] = time.dualTimeResidualScales[k];
             s.relativeTolerances[k] = time.dualTimeRelativeTolerances[k];
+            s.steadyAbsoluteTolerances[k] = time.steadyConvergenceAbsoluteTolerances[k];
         }
-        DNDS_check_throw_info(!time.steadyAdaptiveCFL && time.steadyRelativeTolerance == 0,
+        s.steadyLineSearch = time.steadyLineSearch;
+        s.steadyLineSearchWindow = time.steadyLineSearchWindow;
+        DNDS_check_throw_info(s.integrator == 2 || (!time.steadyAdaptiveCFL && time.steadyRelativeTolerance == 0),
                               "Resident ACM adaptive steady controls are not available");
     }
 
@@ -319,6 +331,72 @@ namespace DNDS::ACMGPU
     }
 
     template <ACMModel model>
+    bool ACMSolver<model, true>::TryHostSnapshotAudit()
+    {
+        if (const char *audit = std::getenv("DNDS_GPU_SST_HOST_AUDIT_FILE"))
+        {
+            DNDS_check_throw_info(nTurbulence == 2, "Host SST audit requires two turbulence equations");
+            DNDS_check_throw_info(_mpi.size == 1, "Host snapshot audit currently requires one MPI rank");
+            EvaluateRHS(_rhs, _physicalTime);
+            nlohmann::ordered_json report;
+            report["backend"] = "host reference, one spatial residual evaluation, no state advance";
+            report["cells"] = GetMesh()->NumCell();
+            std::array<real, 6> square{};
+            std::array<std::vector<index>, 6> worst;
+            std::array<index, 2> floorCount{}, floorNegative{};
+            std::array<real, 2> floorNegativeSquare{};
+            const auto sample = [&](index cell)
+            {
+                const auto center = GetReconstruction()->GetCellQuadraturePPhys(cell, -1);
+                std::array<real, 6> state{}, rhs{};
+                for (int k = 0; k < 6; ++k) { state[k] = _u[cell](k); rhs[k] = _rhs[cell](k); }
+                return nlohmann::ordered_json{{"cell", cell}, {"center", {center(0), center(1), center(2)}},
+                    {"state", state}, {"rhs", rhs}, {"volume", GetReconstruction()->GetCellVol(cell)}};
+            };
+            for (index cell = 0; cell < GetMesh()->NumCell(); ++cell)
+            {
+                for (int k = 0; k < 6; ++k)
+                {
+                    square[k] += _rhs[cell](k) * _rhs[cell](k);
+                    auto &ids = worst[k];
+                    if (ids.size() < 10 || std::abs(_rhs[cell](k)) > std::abs(_rhs[ids.back()](k)))
+                    {
+                        ids.push_back(cell);
+                        std::sort(ids.begin(), ids.end(), [&](index a, index b) { return std::abs(_rhs[a](k)) > std::abs(_rhs[b](k)); });
+                        if (ids.size() > 10) ids.pop_back();
+                    }
+                }
+                for (int k = 0; k < 2; ++k)
+                    if (_u[cell](4 + k) <= 1.01 * _configuration.acmSettings.rho0 * _configuration.turbulenceSettings.minimumValue[k])
+                    {
+                        ++floorCount[k];
+                        if (_rhs[cell](4 + k) < 0)
+                        {
+                            ++floorNegative[k];
+                            floorNegativeSquare[k] += _rhs[cell](4 + k) * _rhs[cell](4 + k);
+                        }
+                    }
+            }
+            for (int k = 0; k < 6; ++k)
+            {
+                report["equation_rms"].push_back(std::sqrt(square[k] / GetMesh()->NumCell()));
+                report["worst_cells"][k] = nlohmann::ordered_json::array();
+                for (index cell : worst[k]) report["worst_cells"][k].push_back(sample(cell));
+            }
+            report["floor_cells"] = floorCount;
+            report["floor_negative_rhs_cells"] = floorNegative;
+            for (int k = 0; k < 2; ++k) report["floor_negative_rhs_rms"].push_back(std::sqrt(floorNegativeSquare[k] / GetMesh()->NumCell()));
+            std::ofstream stream(audit);
+            DNDS_check_throw_info(bool(stream), "Cannot open host snapshot audit output");
+            stream << report.dump(2) << std::endl;
+            DNDS_check_throw_info(bool(stream), "Cannot write host snapshot audit output");
+            log() << "Host SST snapshot audit saved without advancing state: " << audit << std::endl;
+            return true;
+        }
+        return false;
+    }
+
+    template <ACMModel model>
     void ACMSolver<model, true>::RunResident()
     {
         DNDS_check_throw_info(nTurbulence == 2 && _configuration.turbulenceSettings.model == TurbulenceModel::KOmegaSST,
@@ -330,14 +408,99 @@ namespace DNDS::ACMGPU
         GPU::ResidentACM resident(data, _mpi.comm);
         const auto &time = _configuration.timeMarchSettings;
         data = GPU::ResidentACMData{};
+        if (const char *audit = std::getenv("DNDS_GPU_SST_AUDIT_FILE"))
+        {
+            DNDS_check_throw_info(_mpi.size == 1, "SST snapshot audit currently requires one MPI rank");
+            resident.WriteSSTAudit(audit);
+            log() << "SST snapshot audit saved without advancing state: " << audit << std::endl;
+            return;
+        }
         const auto &output = _configuration.outputSettings;
         if (output.interval > 0 && output.writeInitial)
-            WriteOutput(_configuration.restartSettings.completedSteps, 0);
+            WriteOutput(_configuration.restartSettings.completedSteps, _physicalTime);
+        if (time.integrator == TimeIntegratorType::ImplicitEulerLUSGS)
+        {
+            std::array<real, 6> reference{}, targets{};
+            int stable = 0;
+            real cfl = time.cfl;
+            const auto save = [&](int absolute)
+            {
+                std::vector<double> flow, turbulence;
+                resident.Download(flow);
+                resident.DownloadTurbulence(turbulence);
+                for (index cell = 0; cell < GetMesh()->NumCell(); ++cell)
+                {
+                    for (int k = 0; k < 4; ++k) _u[cell](k) = flow[cell * 4 + k];
+                    for (int k = 0; k < 2; ++k) _u[cell](4 + k) = _configuration.acmSettings.rho0 * turbulence[cell * 2 + k];
+                }
+                // There is no physical-time advance in a steady solve.
+                WriteOutput(absolute, _physicalTime);
+            };
+            for (int step = 1; time.steadyUntilConverged || step <= time.nSteps; ++step)
+            {
+                DNDS_check_throw_info(step < std::numeric_limits<int>::max() - _configuration.restartSettings.completedSteps,
+                                      "Steady iteration index exhausted; convergence has not been established");
+                resident.SetCFL(cfl);
+                const auto report = resident.Advance();
+                const int absolute = step + _configuration.restartSettings.completedSteps;
+                if (step == 1)
+                {
+                    reference = report.initialEquationNorms;
+                    for (int k = 0; k < 6; ++k)
+                        targets[k] = std::max(time.steadyConvergenceAbsoluteTolerances[k],
+                                              reference[k] * time.steadyConvergenceRelativeTolerance);
+                    if (_mpi.rank == 0)
+                        log() << "ACM resident steady reference eqInitial=" << nlohmann::ordered_json(reference).dump()
+                              << " eqTarget=" << nlohmann::ordered_json(targets).dump()
+                              << " window=" << time.steadyConvergenceWindow << std::endl;
+                }
+                bool all = true;
+                real before = 0, after = 0;
+                for (int k = 0; k < 6; ++k)
+                {
+                    all = all && report.equationNorms[k] <= targets[k];
+                    const real scale = std::max(reference[k], time.steadyConvergenceAbsoluteTolerances[k]);
+                    before += std::pow(report.initialEquationNorms[k] / scale, 2);
+                    after += std::pow(report.equationNorms[k] / scale, 2);
+                }
+                stable = all ? stable + 1 : 0;
+                const bool converged = stable >= time.steadyConvergenceWindow;
+                real nextCFL = cfl;
+                if (time.steadyAdaptiveCFL)
+                {
+                    if (!report.updateAccepted || report.acceptedRelaxation < .5 * time.implicitRelaxation)
+                        nextCFL *= time.steadyCFLReduction;
+                    else if (after < before && report.acceptedRelaxation >= .99 * time.implicitRelaxation)
+                        nextCFL *= time.steadyCFLGrowth;
+                    nextCFL = std::clamp(nextCFL, time.steadyCFLMin, time.steadyCFLMax);
+                }
+                if (_mpi.rank == 0)
+                    log() << std::scientific << std::setprecision(10)
+                          << "ACM resident steady iteration " << absolute
+                          << " residual " << report.initialNorm << " -> " << report.finalNorm
+                          << " dtauMin=" << report.minimumStep << " turbResidual=" << report.turbulenceNorm
+                          << " cfl=" << cfl << " nextCFL=" << nextCFL
+                          << " relaxation=" << report.acceptedRelaxation
+                          << " accepted=" << report.updateAccepted << " stable=" << stable
+                          << " converged=" << converged
+                          << " eqResidual=" << nlohmann::ordered_json(report.equationNorms).dump() << std::endl;
+                if (output.interval > 0 && (absolute % output.interval == 0 || converged || (!time.steadyUntilConverged && step == time.nSteps)))
+                    save(absolute);
+                if (converged)
+                {
+                    if (_mpi.rank == 0) log() << "ACM resident steady spatial convergence reached" << std::endl;
+                    break;
+                }
+                cfl = nextCFL;
+            }
+            resident.Report(_mpi.rank);
+            return;
+        }
         for (int step = 1; step <= time.nSteps; ++step)
         {
             const auto report = resident.Advance();
             const int absolute = step + _configuration.restartSettings.completedSteps;
-            _physicalTime = time.physicalTimeStep * step;
+            _physicalTime = _configuration.restartSettings.physicalTime + time.physicalTimeStep * step;
             _completedPhysicalSteps = step;
             if (_mpi.rank == 0)
                 log() << "ACM resident physical step " << absolute << " time=" << _physicalTime

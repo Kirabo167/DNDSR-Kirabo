@@ -78,7 +78,10 @@ namespace DNDS::Euler::RANS
         }
     };
 
-    /** @brief Menter k-omega SST kernel configuration. */
+    /** @brief Original Menter (1994) SST kernel configuration.
+     * @details Omega-based viscosity limiter, 20x k-production cap, CD floor 1e-20.
+     * This is not SST-2003; see https://tmbwg.github.io/turbmodels/sst.html#sst-std.
+     */
     struct KOmegaSSTConfig
     {
         real turbulentViscosityLimit = 1e5; ///< Upper multiplier in mu_t <= limit * mu.
@@ -265,7 +268,7 @@ namespace DNDS::Euler::RANS
         Eigen::Matrix<real, dim, dim> SS = diffU + diffU.transpose() - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity();
         real rho = UMeanXy(0);
         real k = std::max(UMeanXy(I4 + 1) / rho, verySmallReal_4);
-        real epsilon = std::max(UMeanXy(I4 + 1) / rho, verySmallReal_4);
+        real epsilon = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
         real Ret = rho * sqr(k) / (muf * epsilon) + verySmallReal_4;
         real S = std::sqrt(SS.squaredNorm() / 2) + verySmallReal_4;
         real fmu = (1 - std::exp(-0.01 * Ret)) / std::max(1 - exp(-std::sqrt(Ret)), verySmallReal_4) * std::max(1., std::sqrt(2 / Ret));
@@ -503,6 +506,11 @@ namespace DNDS::Euler::RANS
         static const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
         static const auto verySmallReal_4 = std::pow(verySmallReal, 1. / 4);
 
+        // k=0 is the exact low-Re wall condition. Interior denominator floors
+        // must not create eddy viscosity at a CFV wall face (Menter, 1994).
+        if (UMeanXy(I4 + 1) <= 0)
+            return 0;
+
         real a1 = 0.31;
         real betaStar = 0.09;
         real sigOmega2 = 0.856;
@@ -596,7 +604,8 @@ namespace DNDS::Euler::RANS
         real omegaaa = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
         real S = std::sqrt(SS.squaredNorm() / 2) + verySmallReal_4;
         real nuPhy = muf / rho;
-        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1)), 1e-10);
+        // Original SST (1994), consistent with the Omega limiter and 20x k cap.
+        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1)), 1e-20);
         real F1 = std::tanh(std::pow(
             std::min(std::max(std::sqrt(k) / (betaStar * omegaaa * d), 500 * nuPhy / (sqr(d) * omegaaa)),
                      4 * rho * sigO2 * k / (CDKW * sqr(d))),
@@ -695,7 +704,8 @@ namespace DNDS::Euler::RANS
         real omegaaa = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
         real S = std::sqrt(SS.squaredNorm() / 2) + verySmallReal_4;
         real nuPhy = muf / rho;
-        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1)), 1e-10);
+        // Original SST (1994), consistent with the Omega limiter and 20x k cap.
+        real CDKW = std::max(2 * rho * sigO2 / omegaaa * diffKO(EigenAll, 0).dot(diffKO(EigenAll, 1)), 1e-20);
         real F1 = std::tanh(std::pow(
             std::min(std::max(std::sqrt(k) / (betaStar * omegaaa * d), 500 * nuPhy / (sqr(d) * omegaaa)),
                      4 * rho * sigO2 * k / (CDKW * sqr(d))),
@@ -718,7 +728,8 @@ namespace DNDS::Euler::RANS
         PkTilde = std::min(Pk, config.productionLimit * betaStar * rho * k * omegaaa); // CFD++'s limiting: 10 times
 #endif
 
-        real gammaC = gamma1 * F1 + gamma1 * (1 - F1);
+        // Menter (1994): each coefficient blends its inner and outer values.
+        real gammaC = gamma1 * F1 + gamma2 * (1 - F1);
         real sigK = sigK1 * F1 + sigK2 * (1 - F1);
         real sigO = sigO1 * F1 + sigO2 * (1 - F1);
         real beta = beta1 * F1 + beta2 * (1 - F1);

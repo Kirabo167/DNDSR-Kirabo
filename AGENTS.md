@@ -508,8 +508,10 @@ a fresh authorization, even for follow-up fixes.
 
 The user froze the current CPU versions. Preserve `src/ACM`, `src/NCFV`,
 `app/ACM`, and `app/NCFV` during GPU development. The user subsequently requested
-an update before GPU implementation; the active baseline is now `3e7cb94` plus
-preserved local CPU changes. Its snapshot is selected by
+an update before GPU implementation and on 2026-11-10 explicitly authorized
+synchronizing CPU/GPU with GitHub main. The active baseline is now `88635e1`
+plus preserved local NCFV changes, recorded by CPU main commit `03d020f`.
+Its snapshot is selected by
 `frozen/active_cpu_snapshot.txt`; the earlier `ACM_NCFV_CPU_20261103` snapshot
 remains available as history.
 Run `python3 scripts/verify_cpu_freeze.py` to check it. Develop the independent

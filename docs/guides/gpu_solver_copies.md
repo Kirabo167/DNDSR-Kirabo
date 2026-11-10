@@ -1,13 +1,24 @@
 # ACM / NCFV 显存常驻 GPU 显式求解器
 
-项目先更新到 3e7cb94，保留既有本地修改，再冻结 CPU 并创建 GPU 副本。
-当前快照为 frozen/ACM_NCFV_CPU_20261103_3e7cb94/，由 frozen/active_cpu_snapshot.txt 选择。
-原 CPU 模块和四个二进制没有为 CUDA 修改。
+2026-11-10 按用户授权同步 GitHub main `88635e1`，保留既有 NCFV 本地修改。
+当前 CPU 快照为 frozen/ACM_NCFV_CPU_20261110_88635e1/，由 frozen/active_cpu_snapshot.txt 选择，
+CPU main 提交为 `03d020f`；旧快照继续保留。CPU 模块独立编译，未为 CUDA 改写。
 `GPUACM` 分支保存当前源码与配置。重新克隆后使用
 `python3 scripts/verify_cpu_freeze.py --sources-only` 核对冻结源码；
 默认完整校验还要求原开发机器上的二进制与压缩快照，详见 `frozen/README.md`。
 
 ## 实际运行范围
+
+2026-11-10 同步的 SST 使用原始 1994 定义：Omega/F2 应力限制、20 倍 k 生产限制，
+以及 `1e-20` 交叉扩散下限。无滑移面涡黏性严格为零。GPU 隐式算子加入冻结的
+相邻单元湍流输运块、共享连续性通量对湍流的导数、BDF 伪时间压力耦合和湍流 SGS，
+源项迭代矩阵采用与 CPU 一致的隐式耗散近似。残差中的物理源项仍完整求值。
+扩展启动内迭代预算已在 GPU 支持；CPU 新增的 Anderson、质量延拓和矩阵无关 GMRES
+仅在 host 对照路径可用，CUDA 选择它们会报错。`initializeBDF2History` 与既有
+GPU `resetBDFHistory` 均可显式请求从场文件进行一次 BE 启动，随后重新建立 BDF2 历史。
+
+GPU 同时保留单卡定常局部步长、固定初始六方程收敛目标、检查点迁移和逐单元诊断。
+验证与尚未解决的 SST 空间离散问题见 `docs/dev/gpu_main_sync_20261110.md`。
 
 | 程序 | 运行入口 | GPU 数值模块 |
 | --- | --- | --- |

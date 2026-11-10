@@ -23,6 +23,103 @@
 using namespace DNDS;
 using namespace DNDS::ACM;
 
+TEST_CASE("ACM RANS startup budget ends at the configured physical step")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::BDF2DualTimeGMRES;
+    settings.maxImplicitIterations = 30;
+    settings.dualTimeRANSStartupSteps = 10;
+    settings.dualTimeRANSStartupIterations = 100;
+    settings.Validate();
+    CHECK(settings.RANSInnerIterationLimit(0) == 100);
+    CHECK(settings.RANSInnerIterationLimit(9) == 100);
+    CHECK(settings.RANSInnerIterationLimit(10) == 30);
+    CHECK(settings.RANSInnerIterationLimit(19999) == 30);
+    settings.dualTimeRANSStartupIterations = 29;
+    CHECK_THROWS_AS(settings.Validate(), std::runtime_error);
+}
+
+TEST_CASE("ACM RANS nonlinear continuation validates its auxiliary mass")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
+    settings.dualTimeRANSContinuationSteps = 1;
+    settings.dualTimeRANSContinuationFactor = 10;
+    settings.Validate();
+    settings.dualTimeRANSContinuationFactor = 0.5;
+    CHECK_THROWS_AS(settings.Validate(), std::runtime_error);
+    settings.dualTimeRANSContinuationFactor = 10;
+    settings.integrator = TimeIntegratorType::ExplicitSSPRK3;
+    CHECK_THROWS_AS(settings.Validate(), std::runtime_error);
+}
+
+TEST_CASE("ACM central Jacobian probe remains linear across a cold positive omega scale")
+{
+    constexpr DNDS::real state = 1, direction = -1e8;
+    constexpr DNDS::real oldStep = 3e-8;
+    const DNDS::real projected = std::max(state + oldStep * direction, DNDS::real(1e-10));
+    const DNDS::real projectedDerivative = (projected * projected - state * state) / oldStep;
+    CHECK(std::abs(projectedDerivative - 2 * state * direction) > 1e8);
+    const DNDS::real step = CentralJacobianProbeStep(2, 1, 1e-3 * state / std::abs(direction));
+    const DNDS::real plus = state + step * direction, minus = state - step * direction;
+    REQUIRE(plus > 0);
+    REQUIRE(minus > 0);
+    CHECK((plus * plus - minus * minus) / (2 * step) == doctest::Approx(2 * state * direction).epsilon(1e-10));
+    CHECK_THROWS_AS(CentralJacobianProbeStep(1, 0, 1), std::runtime_error);
+}
+
+/// @test Equation and variable units must not make a nonsingular turbulence block unsolvable.
+TEST_CASE("ACM implicit block equilibration preserves solutions across extreme units")
+{
+    Eigen::Matrix<DNDS::real, 2, 2> matrix;
+    matrix << 1e-20, 2,
+              3, 4e20;
+    Eigen::Vector<DNDS::real, 2> rhs;
+    rhs << 3, 7e20;
+    REQUIRE_FALSE(matrix.fullPivLu().isInvertible());
+    const auto result = SolveEquilibratedImplicitBlock<2>(matrix, rhs);
+    CHECK(result(0) == doctest::Approx(1e20).epsilon(1e-12));
+    CHECK(result(1) == doctest::Approx(1).epsilon(1e-12));
+
+    Eigen::Matrix<DNDS::real, 2, 2> reference;
+    reference << 4, 1,
+                 2, 3;
+    Eigen::Vector<DNDS::real, 2> rowUnits, columnUnits, expected;
+    rowUnits << 1e-30, 1e30;
+    columnUnits << 1e-20, 1e20;
+    expected << 2, -1;
+    matrix = rowUnits.asDiagonal() * reference * columnUnits.asDiagonal();
+    rhs = rowUnits.asDiagonal() * reference * expected;
+    const auto rescaled = SolveEquilibratedImplicitBlock<2>(matrix, rhs);
+    for (int variable = 0; variable < 2; variable++)
+        CHECK(rescaled(variable) * columnUnits(variable) == doctest::Approx(expected(variable)).epsilon(1e-12));
+
+    Eigen::Matrix<DNDS::real, 1, 1> scalar;
+    Eigen::Vector<DNDS::real, 1> scalarRhs;
+    scalar << 1e-200;
+    scalarRhs << 2e-200;
+    CHECK(SolveEquilibratedImplicitBlock<1>(scalar, scalarRhs)(0) == doctest::Approx(2));
+}
+
+/// @test Equilibration must retain rejection of genuinely singular and non-finite systems.
+TEST_CASE("ACM implicit block equilibration rejects invalid systems")
+{
+    Eigen::Matrix<DNDS::real, 2, 2> matrix;
+    Eigen::Vector<DNDS::real, 2> rhs = Eigen::Vector<DNDS::real, 2>::Ones();
+    matrix << 1, 2,
+              2, 4;
+    CHECK_THROWS(SolveEquilibratedImplicitBlock<2>(matrix, rhs));
+    matrix.setIdentity();
+    matrix.row(0).setZero();
+    CHECK_THROWS(SolveEquilibratedImplicitBlock<2>(matrix, rhs));
+    matrix.setIdentity();
+    matrix(0, 0) = std::numeric_limits<DNDS::real>::infinity();
+    CHECK_THROWS(SolveEquilibratedImplicitBlock<2>(matrix, rhs));
+    matrix.setIdentity();
+    rhs(1) = std::numeric_limits<DNDS::real>::quiet_NaN();
+    CHECK_THROWS(SolveEquilibratedImplicitBlock<2>(matrix, rhs));
+}
+
 /// @test A small applied update can stop independently of the true defect, but only after the minimum count.
 TEST_CASE("ACM BDF2 relative update convergence remains separate from residual convergence")
 {
@@ -123,6 +220,26 @@ TEST_CASE("ACM BDF2 grouped relative convergence keeps independent flow and RANS
     report.equationDefectNorms[5] = std::numeric_limits<DNDS::real>::quiet_NaN();
     CHECK(settings.DualTimeConverged(report, 5)); // SA ignores its inactive second storage slot.
     CHECK_FALSE(settings.DualTimeConverged(report, 6));
+}
+
+TEST_CASE("ACM per-equation turbulence convergence prevents omega masking k")
+{
+    TimeMarchSettings settings;
+    settings.integrator = TimeIntegratorType::BDF2DualTimeGMRES;
+    settings.dualTimeConvergenceCriterion = "AbsoluteOrRelative";
+    settings.implicitTolerance = 1e-8;
+    settings.dualTimeFlowRelativeTolerance = 0.01;
+    settings.dualTimeTurbulenceRelativeTolerance = 0.01;
+    const std::array<DNDS::real, 6> initial{1, 1, 1, 1, 0.014, 8e8};
+    std::array<DNDS::real, 6> final{0.001, 0.001, 0.001, 0.001, 0.001, 1e6};
+    CHECK(settings.DualTimeConverged(initial, final, 6));
+    settings.dualTimeTurbulenceRelativeTolerance = 0;
+    settings.dualTimeRelativeTolerances = {0, 0, 0, 0, 0.01, 0.01};
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
+    final[4] = 1e-4;
+    CHECK(settings.DualTimeConverged(initial, final, 6));
+    final[5] = 1e7;
+    CHECK_FALSE(settings.DualTimeConverged(initial, final, 6));
 }
 
 /// @test The explicit criterion uses only its selected threshold, for group and per-equation interfaces.
@@ -263,6 +380,27 @@ TEST_CASE("ACM implicit linear solves use true absolute or relative residuals")
     CHECK(absolute.converged);
     CHECK(absolute.iterations == 0);
     CHECK(x.values.norm() == 0);
+}
+
+TEST_CASE("ACM linear component checks prevent large units masking a small equation")
+{
+    DenseLinearField rhs, x;
+    rhs.values << 1, 1e12;
+    const auto build = [](DenseLinearField &field) { field.setConstant(0); };
+    const auto apply = [](DenseLinearField &input, DenseLinearField &output) { output.values = input.values; };
+    const auto approximate = [](DenseLinearField &input, DenseLinearField &output)
+    {
+        output.values << 0.5 * input.values(0), input.values(1);
+    };
+    const auto check = [](const DenseLinearField &residual)
+    {
+        return std::abs(residual.values(0)) <= 1e-4 && std::abs(residual.values(1)) <= 1e8;
+    };
+    CHECK(SolveImplicitLinearSystem(rhs, x, true, 1, 2, 2, 0, 1e-4, 1, apply, approximate, build).converged);
+    CHECK_FALSE(SolveImplicitLinearSystem(rhs, x, true, 1, 2, 2, 0, 1e-4, 1, apply, approximate, build, check).converged);
+    const auto strict = SolveImplicitLinearSystem(rhs, x, true, 30, 2, 2, 0, 1e-4, 1, apply, approximate, build, check);
+    CHECK(strict.converged);
+    CHECK(std::abs(rhs.values(0) - x.values(0)) <= 1e-4);
 }
 
 /// @test Relative mode requires configured thresholds only for active equations; unsupported combination names are rejected.
@@ -899,6 +1037,8 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     const std::filesystem::path temporaryConfiguration =
         std::filesystem::temp_directory_path() / "dndsr_acm_legacy_bdf2_config.json";
     nlohmann::ordered_json legacyConfiguration = KernelConfiguration{};
+    legacyConfiguration.at("restartSettings").erase("initializeBDF2History");
+    legacyConfiguration.at("restartSettings").erase("physicalTime");
     legacyConfiguration.at("timeMarchSettings")["gmresRelativeTolerance"] = 1e-4;
     legacyConfiguration.at("timeMarchSettings").erase("linearRelativeTolerance");
     legacyConfiguration.at("timeMarchSettings").erase("linearAbsoluteTolerance");
@@ -907,7 +1047,10 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
                             "steadyCFLGrowth", "steadyCFLReduction", "dualTimeResidualScales",
                             "dualTimeRelativeTolerances", "dualTimeRequireConvergence",
                             "dualTimeFlowRelativeTolerance", "dualTimeTurbulenceRelativeTolerance", "dualTimeConvergenceCriterion",
-                            "dualTimeUpdateRelativeTolerance", "dualTimeUpdateMinimumIterations"})
+                            "dualTimeUpdateRelativeTolerance", "dualTimeUpdateMinimumIterations",
+                            "dualTimeRANSStartupSteps", "dualTimeRANSStartupIterations",
+                            "dualTimeRANSContinuationSteps", "dualTimeRANSContinuationFactor",
+                            "dualTimeRANSAndersonDepth", "dualTimeRANSMatrixFreeJacobian"})
         legacyConfiguration.at("timeMarchSettings").erase(key);
     for (const char *key : {"variationalTolerance", "variationalMaxIterations", "variationalCheckInterval", "variationalRelaxation"})
         legacyConfiguration.at("reconstructionSettings").erase(key);
@@ -926,6 +1069,13 @@ TEST_CASE("ACM legacy configuration receives an in-memory BDF2 physical-step def
     std::filesystem::remove(temporaryConfiguration);
 
     CHECK(loaded.configuration.timeMarchSettings.physicalTimeStep == doctest::Approx(0.01));
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeRANSStartupSteps == 0);
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeRANSStartupIterations == 100);
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeRANSContinuationSteps == 0);
+    CHECK(loaded.configuration.timeMarchSettings.dualTimeRANSAndersonDepth == 0);
+    CHECK_FALSE(loaded.configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian);
+    CHECK_FALSE(loaded.configuration.restartSettings.initializeBDF2History);
+    CHECK(loaded.configuration.restartSettings.physicalTime == 0);
     CHECK(loaded.configuration.timeMarchSettings.steadyRelativeTolerance == 0);
     CHECK_FALSE(loaded.configuration.timeMarchSettings.steadyAdaptiveCFL);
     CHECK(loaded.configuration.timeMarchSettings.dualTimeRequireConvergence);

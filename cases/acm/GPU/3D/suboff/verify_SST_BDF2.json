@@ -39,7 +39,7 @@
         "dualTimeTurbulenceRelativeTolerance": 0.0,
         "dualTimeRelativeTolerances": [0.0, 0.0, 0.0, 0.0, 0.01, 0.01],
         "dualTimeRequireConvergence": false,
-        "dualTimeRANSAndersonDepth": 8,
+        "dualTimeRANSAndersonDepth": 0,
         "implicitRelaxation": 0.7,
         "lusgsSweeps": 1,
         "gmresSubspace": 20,

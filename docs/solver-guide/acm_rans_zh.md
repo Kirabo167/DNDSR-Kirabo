@@ -40,7 +40,7 @@ $$
 
 $$
 \begin{aligned}
-CD_{k\omega}&=\max(2\rho_0\sigma_{\omega2}\nabla k\cdot\nabla\omega/\omega,10^{-10}),\\
+CD_{k\omega}&=\max(2\rho_0\sigma_{\omega2}\nabla k\cdot\nabla\omega/\omega,10^{-20}),\\
 A_1&=\min\!\left[\max\!\left(\frac{\sqrt{k}}{\beta^*\omega d},
 \frac{500\nu}{d^2\omega}\right),\frac{4\rho_0\sigma_{\omega2}k}{CD_{k\omega}d^2}\right],\\
 A_2&=\max\!\left(\frac{2\sqrt{k}}{\beta^*\omega d},

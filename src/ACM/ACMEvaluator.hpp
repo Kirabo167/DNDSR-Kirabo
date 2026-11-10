@@ -141,8 +141,9 @@ namespace DNDS::ACM
          * @param rhs Output residual `-div(F_inviscid-F_viscous)`.
          * @param u Distributed cell-mean ACM state.
          * @param time Current pseudo/physical time, reserved for time-dependent boundaries.
+         * @param rebuildReconstruction False reuses coefficients/limiters for a linearized RHS probe.
          */
-        void EvaluateRHS(TDof &rhs, TDof &u, real time = 0);
+        void EvaluateRHS(TDof &rhs, TDof &u, real time = 0, bool rebuildReconstruction = true);
 
         /**
          *  @brief Continuity flux from the same reconstructed face states as EvaluateRHS.

@@ -5,6 +5,12 @@ set_target_properties(dnds_gpu_flux PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_RE
 target_compile_options(dnds_gpu_flux PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>)
 
 add_library(dnds_gpu_resident STATIC ResidentNCFV.cu ResidentACM.cu)
+set(DNDS_GPU_ACM_MAXIMUM_MODES "19" CACHE STRING "Resident ACM polynomial capacity: 9 for quadratic, 19 for cubic")
+set_property(CACHE DNDS_GPU_ACM_MAXIMUM_MODES PROPERTY STRINGS 9 19)
+if(NOT DNDS_GPU_ACM_MAXIMUM_MODES MATCHES "^(9|19)$")
+    message(FATAL_ERROR "DNDS_GPU_ACM_MAXIMUM_MODES must be 9 or 19")
+endif()
+target_compile_definitions(dnds_gpu_resident PUBLIC DNDS_GPU_ACM_MAXIMUM_MODES=${DNDS_GPU_ACM_MAXIMUM_MODES})
 target_include_directories(dnds_gpu_resident PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(dnds_gpu_resident PUBLIC CUDA::cudart MPI::MPI_CXX ${CMAKE_DL_LIBS})
 set_target_properties(dnds_gpu_resident PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON)
