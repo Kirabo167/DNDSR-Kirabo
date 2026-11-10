@@ -13,6 +13,24 @@ same five-entry storage and keeps the out-of-plane equation for modular 2-D/3-D
 assembly. Physical-time histories contain only density and momentum. Pressure
 is an algebraic Lagrange multiplier for the discrete divergence constraint.
 
+## Turbulence stress and pressure convention
+
+Turbulence transport remains segregated from the five-entry flow state. For
+Wilcox, SST and realizable k-epsilon, `turbulenceSettings.includeIsotropicStress`
+defaults to `true`: the tensor `T_k=(2/3)rho*k I` enters the CFV face flux through
+effective pressure `p+(2/3)rho*k`, including Riemann dissipation and consistent
+flow/turbulence boundary states. Input and output `Pressure` is then static
+pressure. Use the local variable density in `rho*k`; SA and laminar models add
+no k stress.
+
+The flow implicit correction freezes k; outer updates reevaluate turbulence
+and its pressure contribution. This module does not use the constant-density
+unified RANS cross-Jacobian. Setting `includeIsotropicStress=false` retains the
+legacy modified-pressure convention. Initial states and pressure boundary values
+must follow the selected convention. The constant-density
+`restartSettings.pressureIsModified` conversion is not a variable-density
+restart option. See the [ACM pressure guide](../../docs/solver-guide/acm_model_state_zh.md).
+
 ## Build and configuration checks
 
 ```bash

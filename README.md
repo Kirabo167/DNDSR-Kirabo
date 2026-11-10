@@ -57,7 +57,7 @@ solver families or the other dimension's template instantiations.
 | Family | 2D executables | 3D executables |
 |---|---|---|
 | Euler / CFV | `euler`, `euler2D`, `eulerSA`, `euler2EQ`, `eulerEX` | `euler3D`, `eulerSA3D`, `euler2EQ3D`, `eulerEX3D` |
-| ACM | `acm2D`, `acmVariable2D` | `acm3D`, `acmVariable3D`, `ACM` (compatibility name) |
+| ACM | `acm2D`, `acmSA2D`, `acm2EQ2D`, `acmVariable2D` | `acm3D`, `acmSA3D`, `acm2EQ3D`, `acmVariable3D`, `ACM` (compatibility name) |
 | NCFV Euler | `ncfv_euler2D` | `ncfv_euler3D` |
 
 The original upstream Euler executables remain available. `euler` uses the
@@ -154,7 +154,9 @@ The two artificial-compressibility implementations are independent of the
 compressible Euler equation module while reusing `Geom`, `CFV`, and DNDS MPI
 arrays:
 
-- `ACM` advances the constant-density state `[u,v,w,p]`. It includes direct
+- `ACM` advances the constant-density flow state `[u,v,w,p]`, extended with
+  conservative turbulence variables in the SA and two-equation executables.
+  It includes direct
   Green-Gauss or arbitrary-order variational reconstruction, Roe/Rusanov
   fluxes, laminar viscosity, SSPRK3 pseudo-time marching, implicit backward
   Euler, and laminar/RANS BDF2 dual-time operation with block-Jacobi, LU-SGS, or
@@ -164,6 +166,30 @@ arrays:
   the algebraic component of a DAE mass matrix. It supplies explicit and
   implicit pseudo-/physical-time adapters, conservative variable-density
   transport, viscous terms, limiters, and segregated turbulence support.
+
+Constant-density `acmSA2D/3D` stores `[u,v,w,p,rho*nuTilde]`;
+`acm2EQ2D/3D` stores `[u,v,w,p,rho*k,rho*omega]` (or `rho*epsilon` for
+realizable k-epsilon). Flow and turbulence advance in the same RK stages or
+nonlinear iterations. The implicit system includes local turbulence source
+blocks and isotropic-pressure coupling, with other cross derivatives and
+turbulence spatial off-diagonal terms approximated or frozen. Variable-density
+ACM retains segregated turbulence updates.
+
+Both ACM modules enable `turbulenceSettings.includeIsotropicStress=true` by
+default for two-equation models. The isotropic stress tensor
+`T_k = (2/3) rho*k I` enters the CFV face flux through effective pressure
+`p + (2/3) rho*k`, including Riemann dissipation and boundary treatment.
+Input and output `Pressure` then represents static pressure. SA and laminar
+models add no k stress. Setting the option to `false` retains the legacy
+modified-pressure convention.
+
+For a constant-density VTK-HDF restart that stores modified pressure, set
+`restartSettings.pressureIsModified=true` together with explicit isotropic
+stress; conversion to static pressure requires loaded turbulence fields.
+Keep this restart option `false` for new static-pressure files. Initial states
+and pressure boundaries must use the selected pressure convention.
+See the [ACM state, pressure, and restart guide (中文)](docs/solver-guide/acm_model_state_zh.md)
+for model metadata, configuration examples, and coupling limits.
 
 See the [constant-density ACM guide](src/ACM/README.md), the
 [variable-density ACM guide](src/ACMVariable/README.md), and the
