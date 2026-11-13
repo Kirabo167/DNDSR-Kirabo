@@ -649,3 +649,44 @@ TEST_CASE("GetMut_SST: zero wall k is not replaced by an interior positivity flo
     const Eigen::Matrix<real, 2, 6> gradient2D = Eigen::Matrix<real, 2, 6>::Zero();
     CHECK(GetMut_SST<2>(state2D, gradient2D, 0.001, 0.01, g_kOmegaSSTConfig) == 0);
 }
+
+/// TMR SST-1994: exact P=tau:grad(u); no cap or viscosity floor in omega production.
+TEST_CASE("GetSource_SST: exact compressible production and weak viscosity scale")
+{
+    const auto verify = [](auto dimension)
+    {
+        constexpr int nd = decltype(dimension)::value;
+        constexpr int energy = nd + 1, count = nd + 4;
+        constexpr real rho = 1.3, k = 1e-8, omega = 4;
+        for (const real mu : {1e-3, 1e-12})
+            for (const real expansion : {-2.0, 0.0, 2.0})
+                for (const real shear : {0.0, 2.0, 100.0})
+                {
+                    Eigen::Vector<real, count> u = Eigen::Vector<real, count>::Zero();
+                    u(0) = rho; u(energy) = 2.5;
+                    u(energy + 1) = rho * k; u(energy + 2) = rho * omega;
+                    Eigen::Matrix<real, nd, count> gradient = Eigen::Matrix<real, nd, count>::Zero();
+                    for (int j = 0; j < nd; j++) gradient(j, j + 1) = rho * expansion;
+                    gradient(1, 1) = rho * shear;
+                    // Embed a 2D flow in 3D before forming deviatoric strain.
+                    Eigen::Matrix3d velocity = Eigen::Matrix3d::Zero();
+                    velocity.topLeftCorner<nd, nd>() = gradient.template block<nd, nd>(0, 1) / rho;
+                    const Eigen::Matrix3d strain = 0.5 * (velocity + velocity.transpose()) -
+                        velocity.trace() / 3 * Eigen::Matrix3d::Identity();
+                    const real mut = GetMut_SST<nd>(u, gradient, mu, 0.001, g_kOmegaSSTConfig);
+                    const real production = 2 * mut * strain.squaredNorm() - 2.0 / 3 * rho * k * velocity.trace();
+                    const real argument = std::max(std::sqrt(k) / (0.09 * omega * 0.001),
+                        500 * mu / rho / (0.001 * 0.001 * omega));
+                    const real f1 = std::tanh(std::pow(argument, 4));
+                    const real beta = 0.075 * f1 + 0.0828 * (1 - f1);
+                    const real gamma = (0.075 / 0.09 - 0.5 * 0.41 * 0.41 / 0.3) * f1 +
+                        (0.0828 / 0.09 - 0.856 * 0.41 * 0.41 / 0.3) * (1 - f1);
+                    Eigen::Vector<real, count> source = Eigen::Vector<real, count>::Zero();
+                    GetSource_SST<nd>(u, gradient, mu, 0.001, 1e100, source, 0, g_kOmegaSSTConfig);
+                    CHECK(source(energy + 1) == doctest::Approx(std::min(production, 20 * 0.09 * rho * k * omega) - 0.09 * rho * k * omega).epsilon(1e-11));
+                    CHECK(source(energy + 2) == doctest::Approx(gamma * production / (mut / rho) - beta * rho * omega * omega).epsilon(1e-11));
+                }
+    };
+    verify(std::integral_constant<int, 2>{});
+    verify(std::integral_constant<int, 3>{});
+}

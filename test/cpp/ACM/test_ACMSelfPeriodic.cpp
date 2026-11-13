@@ -7,6 +7,7 @@
 
 #include "ACM/ACMSolver.hpp"
 #include "ACMVariable/ACMSolver.hpp"
+#include "Euler/EulerEvaluator.hpp"
 
 #include <cgnslib.h>
 
@@ -55,7 +56,7 @@ namespace
         }
     };
 
-    void WriteSingleCellQuad(const std::filesystem::path &path, bool periodic = true)
+    void WriteSingleCellQuad(const std::filesystem::path &path, bool periodic = true, bool skew = false)
     {
         int file = -1;
         CheckCGNS(cg_open(path.c_str(), CG_MODE_WRITE, &file));
@@ -72,8 +73,8 @@ namespace
             CheckCGNS(cg_zone_write(
                 file, base, "Zone", zoneSize, Unstructured, &zone));
 
-            const std::array<double, 4> x{0, 1, 0, 1};
-            const std::array<double, 4> y{0, 0, 1, 1};
+            const std::array<double, 4> x{0, 1, skew ? 0.37 : 0, skew ? 1.37 : 1};
+            const std::array<double, 4> y{0, 0, skew ? 0.01 : 1, skew ? 0.01 : 1};
             CheckCGNS(cg_coord_write(
                 file, base, zone, RealDouble, "CoordinateX", x.data(), &coordinate));
             CheckCGNS(cg_coord_write(
@@ -226,10 +227,10 @@ namespace
             ACM::TurbulenceState next = ACM::TurbulenceState::Zero();
             if (model == ACM::TurbulenceModel::SpalartAllmaras)
             {
-                // On a unit cell, inflow reflection plus convection/diffusion gives
-                // dq/dt = 2*(1+D_in)*(q_in-q), D_in=(nu+q_in)/(2/3).
+                // Convection uses the prescribed face value; only diffusion reflects.
+                // On a unit cell dq/dt=(1+2*D_in)*(q_in-q), D_in=(nu+q_in)/(2/3).
                 constexpr DNDS::real inlet = 0.1;
-                constexpr DNDS::real rate = 2 * (1 + (0.001 + inlet) / (2.0 / 3.0));
+                constexpr DNDS::real rate = 1 + 2 * (0.001 + inlet) / (2.0 / 3.0);
                 next(0) = (historyRhs(0) + dt * rate * inlet) / (a0 + dt * rate);
             }
             else
@@ -760,7 +761,7 @@ TEST_CASE("ACM SA and realizable k-epsilon BDF2 has second-order physical accura
             ACM::TurbulenceState exact = ACM::TurbulenceState::Zero();
             if (model == ACM::TurbulenceModel::SpalartAllmaras)
             {
-                constexpr DNDS::real rate = 2 * (1 + (0.001 + 0.1) / (2.0 / 3.0));
+                constexpr DNDS::real rate = 1 + 2 * (0.001 + 0.1) / (2.0 / 3.0);
                 exact(0) = 0.1 + 0.1 * std::exp(-rate * endTime);
             }
             else
@@ -1656,5 +1657,206 @@ TEST_CASE("ACM modified-pressure restart converts to static pressure without dou
         CHECK(resumed.GetState()[cell](3) == doctest::Approx(
             source.GetState()[cell](3) - (2.0 / 3.0) * source.GetState()[cell](4)));
         CHECK(resumed.GetState()[cell](4) == source.GetState()[cell](4));
+    }
+}
+
+/// Diffusion ghost k=2*0.001-0.01 is negative; it must never be the incoming advective state.
+TEST_CASE("ACM prescribed turbulence inflow uses face data and its implicit derivative")
+{
+    MPIInfo mpi; mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WriteSingleCellQuad(mesh.path, false);
+    for (const auto boundaryType : {ACM::BoundaryType::BCIn, ACM::BoundaryType::BCInPsTs,
+                                    ACM::BoundaryType::BCSpecial, ACM::BoundaryType::BCFar})
+    {
+        auto cfg = MakeRANSPhysicalCase(mesh.path, ACM::TurbulenceModel::KOmegaSST,
+            ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.01, 0);
+        cfg.defaultBoundaryType = boundaryType;
+        cfg.initialState = {0, 0, 0, 0};
+        cfg.boundaryValue = {0, 0, 0, 0};
+        cfg.acmSettings.farFieldValue = {0, 0, 0, 0};
+        cfg.acmSettings.dynamicViscosity = 0.001;
+        cfg.turbulenceSettings.initialValue = {0.01, 4};
+        cfg.turbulenceSettings.farFieldValue = {0.001, 2};
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.enableSourceTerms = false;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto transport = solver.GetTurbulenceTransport();
+        const auto metrics = solver.GetReconstruction();
+        ACM::ACMTurbulenceTransport<2>::TTurbulenceDof base, incoming;
+        metrics->BuildUDof(base, 2); metrics->BuildUDof(incoming, 2);
+        transport->SetFaceVolumeFlux([](DNDS::index, int, DNDS::real) { return 0.0; });
+        transport->EvaluateRHS(base, solver.GetState());
+        std::vector<Eigen::Matrix<DNDS::real, 2, 2>> noAdvection, withAdvection;
+        transport->EvaluateImplicitDiagonal(solver.GetState(), noAdvection, 0);
+        transport->SetFaceVolumeFlux([](DNDS::index, int, DNDS::real) { return -1.0; });
+        transport->EvaluateRHS(incoming, solver.GetState());
+        transport->EvaluateImplicitDiagonal(solver.GetState(), withAdvection, 0);
+        CHECK((incoming[0] - base[0] - 4 * cfg.turbulenceSettings.FarFieldState()).norm() < 1e-11);
+        // Prescribed incoming advection has zero derivative with respect to the owner state.
+        CHECK((withAdvection[0] - noAdvection[0]).norm() < 1e-11);
+        for (DNDS::index face = 0; face < solver.GetMesh()->NumFaceProc(); face++)
+            CHECK((transport->FrozenFaceAdvectionValue(solver.GetState(), face) -
+                cfg.turbulenceSettings.FarFieldState()).norm() < 1e-12);
+        transport->SetFaceVolumeFlux([](DNDS::index, int, DNDS::real) { return 1.0; });
+        transport->EvaluateRHS(incoming, solver.GetState());
+        CHECK((incoming[0] - base[0] + 4 * cfg.turbulenceSettings.InitialState()).norm() < 1e-11);
+    }
+}
+
+TEST_CASE("Variable ACM prescribed turbulence inflow uses face values with shared mass flux")
+{
+    MPIInfo mpi; mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WriteSingleCellQuad(mesh.path, false);
+    for (const auto boundaryType : {ACMVariable::BoundaryType::BCIn, ACMVariable::BoundaryType::BCInPsTs,
+                                    ACMVariable::BoundaryType::BCSpecial, ACMVariable::BoundaryType::BCFar})
+    {
+        ACMVariable::KernelConfiguration cfg;
+        cfg.meshSettings.meshFile = mesh.path.string();
+        cfg.initialState = {3, 0, 0, 0, 0};
+        cfg.boundaryValue = cfg.initialState;
+        cfg.defaultBoundaryType = boundaryType;
+        cfg.acmSettings.enableViscousFlux = true;
+        cfg.acmSettings.dynamicViscosity = 0.001;
+        cfg.reconstructionSettings.type = ACMVariable::ReconstructionType::FirstOrder;
+        cfg.turbulenceSettings.model = ACMVariable::TurbulenceModel::KOmegaSST;
+        cfg.turbulenceSettings.initialValue = {0.01, 4};
+        cfg.turbulenceSettings.farFieldValue = {0.001, 2};
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.enableSourceTerms = false;
+        ACMVariable::ACMSolver<ACMVariable::ACMModel::VariableDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACMVariable::BoundaryHandler>(cfg.defaultBoundaryType,
+            cfg.InitialState(), cfg.boundaryConditions);
+        ACMVariable::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+            cfg.acmSettings, cfg.turbulenceSettings, boundary);
+        transport.Initialize();
+        ACMVariable::ACMTurbulenceTransport<2>::TTurbulenceDof base, incoming;
+        solver.GetReconstruction()->BuildUDof(base, 2); solver.GetReconstruction()->BuildUDof(incoming, 2);
+        transport.SetMassFluxProvider([](DNDS::index, int) { return 0.0; });
+        transport.EvaluateRHS(base, solver.GetState());
+        transport.SetMassFluxProvider([](DNDS::index, int) { return -3.0; });
+        transport.EvaluateRHS(incoming, solver.GetState());
+        CHECK((incoming[0] - base[0] - 12 * cfg.turbulenceSettings.FarFieldState()).norm() < 1e-11);
+        transport.SetMassFluxProvider([](DNDS::index, int) { return 3.0; });
+        transport.EvaluateRHS(incoming, solver.GetState());
+        CHECK((incoming[0] - base[0] + 12 * cfg.turbulenceSettings.InitialState()).norm() < 1e-11);
+    }
+}
+
+TEST_CASE("Euler SST impermeable faces have zero advective turbulence flux for either eigenvalue scheme")
+{
+    MPIInfo mpi; mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WriteSingleCellQuad(mesh.path);
+    // Reuse only the mesh/CFV fixture; the numerical flux is the production Euler evaluator.
+    auto cfg = MakeRANSPhysicalCase(mesh.path, ACM::TurbulenceModel::Laminar,
+        ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.01, 0);
+    cfg.meshSettings.periodicTranslation1 = {1, 0, 0};
+    cfg.meshSettings.periodicTranslation2 = {0, 1, 0};
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> fixture(mpi, cfg);
+    fixture.ReadMeshAndInitialize();
+    using Eval = Euler::EulerEvaluator<Euler::NS_2EQ>;
+    Euler::EulerEvaluatorSettings<Euler::NS_2EQ> settings(7);
+    settings.ransModel = Euler::RANSModel::RANS_KOSST;
+    auto boundary = std::make_shared<Euler::BoundaryHandler<Euler::NS_2EQ>>(7);
+    Eval eval(fixture.GetMesh(), fixture.GetReconstruction(), boundary, settings);
+    eval.deltaLambdaCell.setConstant(1.0);
+    Eval::TU left, right;
+    left << 1, 0.2, 0, 0, 2.52, 0.01, 4;
+    right = left;
+    right(1) = -left(1);
+    right(5) = -left(5);
+    right(6) = 8 - left(6);
+    Eval::TU_Batch l = left, r = right, flux, fixL, fixR;
+    Eval::TDiffU_Batch gradient(3, 7); gradient.setZero();
+    Eval::TDiffU_Batch primitiveGradient = gradient;
+    Eval::TVec_Batch normal(3, 1), grid(3, 1);
+    normal << 1, 0, 0; grid.setZero();
+    Eval::TReal_Batch lambda0, lambdaMid, lambda4;
+    for (const int scheme : {0, 1})
+    {
+        eval.settings.ransEigScheme = scheme;
+        eval.fluxFace(l, r, left, right, gradient, primitiveGradient, normal, grid,
+            Eval::TVec::UnitX(), Eval::TVec::Zero(), fixL, fixR, flux, lambda0, lambdaMid, lambda4,
+            Geom::BC_ID_DEFAULT_WALL, Euler::Gas::RiemannSolverType::Roe, 0, true);
+        CHECK(flux(0, 0) == 0);
+        CHECK(flux(5, 0) == 0);
+        CHECK(flux(6, 0) == 0);
+    }
+}
+
+TEST_CASE("Both ACM modules recover affine shear production on a skew stretched cell")
+{
+    MPIInfo mpi; mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WriteSingleCellQuad(mesh.path, false, true);
+    constexpr DNDS::real rho = 3, k = 0.2, omega = 4;
+    const DNDS::real gamma2 = 0.0828 / 0.09 - 0.856 * 0.41 * 0.41 / 0.3;
+    // No walls, F1=F2=0: nu_t=k/omega, du/dy=2, all other derivatives zero.
+    Eigen::Vector2d expected;
+    expected << (k / omega) * 4 - 0.09 * k * omega, gamma2 * 4 - 0.0828 * omega * omega;
+    {
+        auto cfg = MakeRANSPhysicalCase(mesh.path, ACM::TurbulenceModel::KOmegaSST,
+            ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.01, 0);
+        cfg.initialState = {0.01, 0, 0, 1};
+        cfg.acmSettings.rho0 = rho;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
+        cfg.turbulenceSettings.initialValue = {k, omega};
+        cfg.turbulenceSettings.minimumWallDistance = 1e20;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto transport = solver.GetTurbulenceTransport();
+        transport->SetFlowBoundaryProvider([](DNDS::index, const ACM::State &left,
+            const ACM::Vector3 &, const ACM::Vector3 &point, DNDS::real)
+        {
+            ACM::State face; face << 2 * point(1), 0, 0, 1;
+            return ACM::State(2 * face - left);
+        });
+        transport->SetFaceVolumeFlux([](DNDS::index, int, DNDS::real) { return 0.0; });
+        ACM::ACMTurbulenceTransport<2>::TTurbulenceDof rhs;
+        solver.GetReconstruction()->BuildUDof(rhs, 2);
+        transport->EvaluateRHS(rhs, solver.GetState());
+        CHECK((rhs[0] - expected).norm() < 1e-10);
+    }
+    {
+        ACMVariable::KernelConfiguration cfg;
+        cfg.meshSettings.meshFile = mesh.path.string();
+        cfg.initialState = {rho, rho * 0.01, 0, 0, 1};
+        cfg.defaultBoundaryType = ACMVariable::BoundaryType::BCSym;
+        cfg.acmSettings.enableViscousFlux = true;
+        cfg.acmSettings.dynamicViscosity = 0.001;
+        cfg.reconstructionSettings.type = ACMVariable::ReconstructionType::FirstOrder;
+        cfg.turbulenceSettings.model = ACMVariable::TurbulenceModel::KOmegaSST;
+        cfg.turbulenceSettings.initialValue = {k, omega};
+        cfg.turbulenceSettings.minimumWallDistance = 1e20;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        ACMVariable::ACMSolver<ACMVariable::ACMModel::VariableDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACMVariable::BoundaryHandler>(cfg.defaultBoundaryType,
+            cfg.InitialState(), cfg.boundaryConditions);
+        ACMVariable::ACMTurbulenceTransport<2> transport(solver.GetMesh(), solver.GetReconstruction(),
+            cfg.acmSettings, cfg.turbulenceSettings, boundary);
+        transport.Initialize();
+        transport.SetFlowBoundaryProvider([=](DNDS::index, const ACMVariable::State &left,
+            const ACMVariable::Vector3 &, const ACMVariable::Vector3 &point, DNDS::real)
+        {
+            ACMVariable::State face; face << rho, rho * 2 * point(1), 0, 0, 1;
+            return ACMVariable::State(2 * face - left);
+        });
+        transport.SetMassFluxProvider([](DNDS::index, int) { return 0.0; });
+        ACMVariable::ACMTurbulenceTransport<2>::TTurbulenceDof rhs;
+        solver.GetReconstruction()->BuildUDof(rhs, 2);
+        transport.EvaluateRHS(rhs, solver.GetState());
+        CHECK((rhs[0] / rho - expected).norm() < 1e-10);
     }
 }

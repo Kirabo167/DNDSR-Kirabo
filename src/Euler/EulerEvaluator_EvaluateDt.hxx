@@ -1603,6 +1603,11 @@ namespace DNDS::Euler
         if (impermeableWall)
         { 
             finc(0, EigenAll).setZero(); // no mass leak even using rs on wall
+            if constexpr (Traits::has2EQ)
+                if (settings.ransModel == RANSModel::RANS_KOSST)
+                    finc(Eigen::seq(I4 + 1, I4 + 2), EigenAll).setZero();
+            // SST wall ghosts prescribe diffusion, not advective transport.
+            // Viscous k/omega fluxes are subtracted below and remain active.
             if(phys_.nSpecies() > 1)
                 finc(Eigen::seq(nVars - (phys_.nSpecies() - 1), EigenLast), EigenAll).setZero();
         }

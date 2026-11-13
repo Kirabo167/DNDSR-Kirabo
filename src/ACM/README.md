@@ -1,7 +1,7 @@
 <!--
 File description: implementation status and integration boundary of the ACM module.
 Modifier: Runzhi Ma
-Last modified: 2026-11-10
+Last modified: 2026-11-13
 -->
 
 # ACM high-order solver
@@ -254,7 +254,7 @@ Current limits:
 
 - periodic translations are configurable, while rotational periodic setup is not exposed yet;
 - WBAP/CWBAP requires `Variational` reconstruction;
-- the independent turbulence field uses first-order or limited second-order Green-Gauss
+- the independent turbulence field uses first-order or limited second-order weighted least-squares
   reconstruction, controlled by `turbulenceSettings.secondOrderReconstruction`, with every
   supported flow reconstruction and time integrator;
 - LU-SGS/GMRES uses a first-order frozen face linearization as the implicit operator while the

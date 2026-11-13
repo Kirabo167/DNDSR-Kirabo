@@ -10,6 +10,7 @@
 #include "ACMTurbulenceTransport.hpp"
 
 #include "DNDS/Errors.hpp"
+#include "CFV/ScalarTransport.hpp"
 #include "ACMPeriodic.hpp"
 
 #include <algorithm>
@@ -18,6 +19,12 @@
 
 namespace DNDS::ACMVariable
 {
+    inline bool PrescribedTurbulenceInflow(BoundaryType type)
+    {
+        return type == BoundaryType::BCFar || type == BoundaryType::BCIn ||
+               type == BoundaryType::BCInPsTs || type == BoundaryType::BCSpecial;
+    }
+
 
     template <int gDim>
     State ACMTurbulenceTransport<gDim>::FlowBoundaryState(index face, const State &left,
@@ -106,6 +113,7 @@ namespace DNDS::ACMVariable
         _vfv->BuildUGrad(_gradient, nStoredVariables);
         _vfv->BuildUGrad(_flowGradient, nFlowVariables);
         _vfv->BuildUDof(_limiter, nStoredVariables);
+        _vfv->BuildUDof(_extrema, nStoredVariables);
         _vfv->BuildUDof(_flowLimiter, 1);
         _state.setConstant(0.0);
         _rhs.setConstant(0.0);
@@ -225,6 +233,29 @@ namespace DNDS::ACMVariable
         _state.trans.startPersistentPull();
         _state.trans.waitPersistentPull();
 
+        if (_gradientWeights.empty())
+        {
+            _gradientWeights.resize(static_cast<std::size_t>(_mesh->NumCell()));
+            for (index cell = 0; cell < _mesh->NumCell(); cell++)
+            {
+                std::vector<Eigen::Vector<real, gDim>> displacements;
+                const auto faces = _mesh->cell2face[cell];
+                const auto center = _vfv->GetCellQuadraturePPhys(cell, -1);
+                for (rowsize localFace = 0; localFace < faces.size(); localFace++)
+                {
+                    const index face = faces[localFace];
+                    const index other = _mesh->CellFaceOther(cell, face, localFace);
+                    const rowsize side = _mesh->CellIsFaceBack(cell, face, localFace) ? 0 : 1;
+                    const Geom::tPoint displacement = other == UnInitIndex
+                        ? Geom::tPoint(2 * (_vfv->GetFaceQuadraturePPhysFromCell(face, cell, side, -1) - center))
+                        : Geom::tPoint(_vfv->GetOtherCellPointFromCell(cell, other, face, side,
+                            _vfv->GetCellQuadraturePPhys(other, -1)) - center);
+                    displacements.push_back(displacement.template head<gDim>());
+                }
+                _gradientWeights[static_cast<std::size_t>(cell)] = CFV::ScalarGradientWeights<gDim>(displacements);
+            }
+        }
+
 #if defined(DNDS_DIST_MT_USE_OMP)
 #    pragma omp parallel for schedule(runtime)
 #endif
@@ -234,6 +265,7 @@ namespace DNDS::ACMVariable
                 Eigen::Matrix<real, nFlowVariables, gDim>::Zero();
             Eigen::Matrix<real, nStoredVariables, gDim> turbulenceGradient =
                 Eigen::Matrix<real, nStoredVariables, gDim>::Zero();
+            _extrema[iCell].setConstant(3);
             const auto cellFaces = _mesh->cell2face[iCell];
             for (rowsize iCellFace = 0; iCellFace < cellFaces.size(); iCellFace++)
             {
@@ -242,9 +274,6 @@ namespace DNDS::ACMVariable
                 const rowsize if2c = _mesh->CellIsFaceBack(iCell, iFace, iCellFace) ? 0 : 1;
                 const Geom::tPoint faceCenter =
                     _vfv->GetFaceQuadraturePPhysFromCell(iFace, iCell, if2c, -1);
-                real thisLength =
-                    (faceCenter - _vfv->GetCellQuadraturePPhys(iCell, -1)).norm();
-                real otherLength = thisLength;
                 State otherFlow;
                 TurbulenceState otherTurbulence;
                 Vector3 outward = ToVector3(
@@ -253,15 +282,6 @@ namespace DNDS::ACMVariable
 
                 if (otherCell != UnInitIndex)
                 {
-                    otherLength =
-                        (_vfv->GetOtherCellPointFromCell(
-                             iCell,
-                             otherCell,
-                             iFace,
-                             if2c,
-                             _vfv->GetCellQuadraturePPhys(otherCell, -1)) -
-                         faceCenter)
-                            .norm();
                     otherFlow = flow[otherCell];
                     Eigen::RowVector<real, nFlowVariables> flowRow =
                         otherFlow.transpose();
@@ -291,22 +311,22 @@ namespace DNDS::ACMVariable
                         otherTurbulence = _state[iCell];
                 }
 
-                const real interpolation = otherCell == UnInitIndex
-                                               ? 0.5
-                                               : thisLength /
-                                                     (thisLength + otherLength + verySmallReal);
-                const real area = _vfv->GetFaceArea(iFace);
-                flowGradient +=
-                    (otherFlow - State(flow[iCell])) * interpolation *
-                    area * outward.template head<gDim>().transpose();
-                turbulenceGradient +=
-                    (otherTurbulence - TurbulenceState(_state[iCell])) * interpolation *
-                    area * outward.template head<gDim>().transpose();
+                const auto &weight = _gradientWeights[static_cast<std::size_t>(iCell)][iCellFace];
+                flowGradient += (otherFlow - State(flow[iCell])) * weight.transpose();
+                turbulenceGradient += (otherTurbulence - TurbulenceState(_state[iCell])) * weight.transpose();
+                for (int variable = 0; variable < ActiveVariableCount(); variable++)
+                {
+                    int flags = static_cast<int>(_extrema[iCell](variable));
+                    if (otherTurbulence(variable) < _state[iCell](variable)) flags &= ~1;
+                    if (otherTurbulence(variable) > _state[iCell](variable)) flags &= ~2;
+                    _extrema[iCell](variable) = flags;
+                }
             }
-            const real inverseVolume = 1.0 / _vfv->GetCellVol(iCell);
-            _flowGradient[iCell] = (flowGradient * inverseVolume).transpose();
-            _gradient[iCell] = (turbulenceGradient * inverseVolume).transpose();
+            _flowGradient[iCell] = flowGradient.transpose();
+            _gradient[iCell] = turbulenceGradient.transpose();
         }
+        _extrema.trans.startPersistentPull();
+        _extrema.trans.waitPersistentPull();
         _flowGradient.trans.startPersistentPull();
         _flowGradient.trans.waitPersistentPull();
         _gradient.trans.startPersistentPull();
@@ -676,7 +696,7 @@ namespace DNDS::ACMVariable
                         point,
                         time);
                     centerDisplacement =
-                        2.0 * normal * (point - leftCenter).dot(normal);
+                        2.0 * (point - leftCenter);
 
                     // A characteristic far field prescribes turbulence only on inflow.
                     // On outflow, use the owner value for both the face state and the
@@ -828,7 +848,7 @@ namespace DNDS::ACMVariable
                             TurbulenceState(_state[faceToCell[0]]),
                             faceToCell[0]);
                         centerDisplacement =
-                            2.0 * normal * (point - leftCenter).dot(normal);
+                            2.0 * (point - leftCenter);
                         if (_boundaryHandler->GetTypeFromID(
                                 _mesh->GetFaceZone(iFace)) == BoundaryType::BCFar &&
                             Velocity(leftFlow).dot(normal) >= 0)
@@ -855,8 +875,10 @@ namespace DNDS::ACMVariable
                         _turbulenceSettings);
                     DNDS_check_throw_info(static_cast<bool>(_massFlux), "RANS requires shared flow mass flux");
                     const real massFlux = _massFlux(iFace, iG);
-                    TurbulenceState advectiveFlux =
-                        massFlux * (massFlux >= 0 ? leftTurbulence : rightTurbulence);
+                    const bool prescribedInflow = faceToCell[1] == UnInitIndex && massFlux < 0 &&
+                        PrescribedTurbulenceInflow(_boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(iFace)));
+                    TurbulenceState advectiveFlux = massFlux * (massFlux >= 0 ? leftTurbulence :
+                        (prescribedInflow ? _turbulenceSettings.FarFieldState() : rightTurbulence));
                     if (faceToCell[1] == UnInitIndex)
                     {
                         const BoundaryType boundaryType =
@@ -868,7 +890,7 @@ namespace DNDS::ACMVariable
                             boundaryType == BoundaryType::BCSym)
                             advectiveFlux.setZero();
                     }
-                    const TurbulenceState diffusiveFlux =
+                    TurbulenceState diffusiveFlux =
                         0.5 * (leftFlow(0) + rightFlow(0)) * TurbulenceDiffusiveFlux(
                             faceTurbulence,
                             faceGradient,
@@ -878,6 +900,12 @@ namespace DNDS::ACMVariable
                             _flowSettings.dynamicViscosity,
                             FaceEddyViscosity(iFace, iG),
                             _turbulenceSettings);
+                    // Bound the flux after computing the model coefficients: clipping must
+                    // not alter SST F1 or the other equation's diffusivity.
+                    for (int variable = 0; variable < ActiveVariableCount(); variable++)
+                        diffusiveFlux(variable) = CFV::BoundScalarNormalDerivative(diffusiveFlux(variable),
+                            static_cast<int>(_extrema[faceToCell[0]](variable)),
+                            faceToCell[1] == UnInitIndex ? -1 : static_cast<int>(_extrema[faceToCell[1]](variable)));
                     contribution = -(advectiveFlux - diffusiveFlux) *
                                    _vfv->GetFaceJacobiDet(iFace, iG);
                 });

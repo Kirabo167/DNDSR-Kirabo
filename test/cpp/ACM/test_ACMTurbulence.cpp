@@ -8,6 +8,7 @@
  */
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
+#include "CFV/ScalarTransport.hpp"
 
 #include "ACM/ACMTurbulence.hpp"
 
@@ -389,4 +390,82 @@ TEST_CASE("Isotropic turbulence stress is two thirds rho k times the identity")
     CHECK(stress.trace() == doctest::Approx(1.2));
     CHECK((stress - 0.4 * Eigen::Matrix<DNDS::real, 3, 3>::Identity()).norm() < 1e-15);
     CHECK(IsotropicTurbulenceStress(3, 0).norm() == 0);
+}
+
+/// Reference: TMR standard SST (1994), exact stress production. Only k is capped.
+TEST_CASE("SST exact production retains dilatation and caps only the k equation")
+{
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::KOmegaSST;
+    settings.maximumEddyViscosityRatio = 1e12;
+    constexpr real rho = 3, mu = 0.003, k = 0.2, omega = 4;
+    const TurbulenceState q(k, omega);
+    const TurbulenceGradient grad = TurbulenceGradient::Zero();
+    constexpr real beta = 0.075;
+    const real gamma = beta / 0.09 - 0.5 * 0.41 * 0.41 / 0.3;
+    for (const real expansion : {-2.0, 0.0, 2.0})
+        for (const real shear : {0.0, 2.0, 100.0})
+        {
+            VelocityGradient velocity = expansion * VelocityGradient::Identity();
+            velocity(0, 1) = shear;
+            const real mut = TurbulentDynamicViscosity(q, velocity, grad, 0.001, rho, mu, settings);
+            // Isotropic dilation has zero deviatoric strain; trace=3*expansion.
+            const real production = mut / rho * shear * shear - 2 * k * expansion;
+            const auto source = TurbulenceSource(q, velocity, grad, 0.001, rho, mu, settings);
+            CHECK(source(0) == doctest::Approx(std::min(production, 20 * 0.09 * k * omega) - 0.09 * k * omega));
+            CHECK(source(1) == doctest::Approx(gamma * rho / mut * production - beta * omega * omega));
+        }
+}
+
+TEST_CASE("Scalar transport gradients reproduce affine fields on skew stretched 2D and 3D stencils")
+{
+    const auto verify = [](auto dimension)
+    {
+        constexpr int dim = decltype(dimension)::value;
+        using Vector = Eigen::Vector<real, dim>;
+        for (const real stretch : {1.0, 1e-6, 1e-10})
+        {
+            Eigen::Matrix<real, dim, dim> map = Eigen::Matrix<real, dim, dim>::Identity();
+            map(1, 1) = stretch;
+            map(0, 1) = 0.37;
+            std::vector<Vector> distances;
+            for (int j = 0; j < dim; j++)
+            {
+                distances.push_back(map.col(j));
+                distances.push_back(-0.7 * map.col(j));
+            }
+            distances.push_back(map * Vector::Ones());
+            const auto weights = CFV::ScalarGradientWeights<dim>(distances);
+            Eigen::Matrix<real, dim, dim> moment = Eigen::Matrix<real, dim, dim>::Zero();
+            for (std::size_t i = 0; i < weights.size(); i++)
+                moment += weights[i] * distances[i].transpose();
+            CHECK((moment - Eigen::Matrix<real, dim, dim>::Identity()).norm() < 1e-5);
+            const Vector gradient = Vector::LinSpaced(1, dim);
+            Vector recovered = Vector::Zero();
+            for (std::size_t i = 0; i < weights.size(); i++)
+                recovered += weights[i] * gradient.dot(distances[i]);
+            CHECK((recovered - gradient).norm() < 1e-5);
+        }
+        std::vector<Vector> singular(3, Vector::UnitX());
+        CHECK_THROWS(CFV::ScalarGradientWeights<dim>(singular));
+    };
+    verify(std::integral_constant<int, 2>{});
+    verify(std::integral_constant<int, 3>{});
+}
+
+TEST_CASE("Scalar nonorthogonal diffusion cannot deepen a stencil extremum and stays conservative")
+{
+    for (const int left : {0, 1, 2, 3})
+        for (const int right : {0, 1, 2, 3})
+            for (const real derivative : {-3.0, 0.0, 2.0})
+            {
+                const real flux = CFV::BoundScalarNormalDerivative(derivative, left, right);
+                CHECK(flux == -CFV::BoundScalarNormalDerivative(-derivative, right, left));
+                if (left & 1) CHECK(flux >= 0);
+                if (left & 2) CHECK(flux <= 0);
+                if (right & 1) CHECK(flux <= 0);
+                if (right & 2) CHECK(flux >= 0);
+            }
+    CHECK(CFV::BoundScalarNormalDerivative(2, 0, 0) == 2);
+    CHECK(CFV::BoundScalarNormalDerivative(-3, 0, 0) == -3);
 }

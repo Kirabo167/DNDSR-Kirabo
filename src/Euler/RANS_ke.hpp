@@ -43,7 +43,7 @@
 /** @brief When set to 1, enable production limiters for SST (CFL3D-style capping). */
 #define KW_SST_PROD_LIMITS 1
 /** @brief Select omega production formulation for SST: 0 = classical, 1 = strain-rate based, 2 = vorticity based. */
-#define KW_SST_PROD_OMEGA_VERSION 1
+#define KW_SST_PROD_OMEGA_VERSION 0
 
 /** @brief When set to 1, enable the ft2 laminar suppression term in Spalart-Allmaras. Setting to 0 disables ft2. */
 #define SA_USE_FT2_TERM 1
@@ -718,14 +718,13 @@ namespace DNDS::Euler::RANS
 #if KW_SST_LIMIT_MUT == 1
         mut = std::min(mut, config.turbulentViscosityLimit * muf); // CFL3D
 #endif
-        real nutHat = std::max(mut / rho, 1e-8);
+        real nutHat = mut / rho; // No dimensional viscosity floor in the SST production term.
 
         Eigen::Matrix<real, dim, dim> rhoMuiuj = Eigen::Matrix<real, dim, dim>::Identity() * UMeanXy(I4 + 1) * (2. / 3.) - mut * SS;
         real Pk = -(rhoMuiuj.array() * diffU.array()).sum();
         real PkTilde = Pk;
 #if KW_SST_PROD_LIMITS == 1
-        PkTilde = std::max(PkTilde, verySmallReal);
-        PkTilde = std::min(Pk, config.productionLimit * betaStar * rho * k * omegaaa); // CFD++'s limiting: 10 times
+        PkTilde = std::min(Pk, config.productionLimit * betaStar * rho * k * omegaaa); // SST-1994: 20 by default.
 #endif
 
         // Menter (1994): each coefficient blends its inner and outer values.
@@ -733,7 +732,7 @@ namespace DNDS::Euler::RANS
         real sigK = sigK1 * F1 + sigK2 * (1 - F1);
         real sigO = sigO1 * F1 + sigO2 * (1 - F1);
         real beta = beta1 * F1 + beta2 * (1 - F1);
-        real POmega = gammaC / nutHat * Pk;
+        real POmega = nutHat > 0 ? gammaC * (Pk / nutHat) : 0;
 #if KW_SST_PROD_OMEGA_VERSION == 1
         POmega =
             0.5 * gammaC * rho * ((SR2 - SR2.trace() / 3. * Eigen::Matrix<real, dim, dim>::Identity()).array() * SR2.array()).sum();

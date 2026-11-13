@@ -176,6 +176,8 @@ namespace DNDS::ACMVariable
         TTurbulenceDof _rhs;                         ///< Internal SSPRK residual buffer.
         TTurbulenceGradient _gradient;               ///< Current turbulence gradients.
         TFlowGradient _flowGradient;                 ///< Current flow gradients for production/mu_t.
+        TLimiter _extrema; ///< MPI stencil minimum/maximum flags for each scalar.
+        std::vector<std::vector<Eigen::Vector<real, gDim>>> _gradientWeights;
         TLimiter _limiter;                           ///< Componentwise face-reconstruction limiter.
         TFlowLimiter _flowLimiter;                   ///< Shared limiter for all reconstructed flow entries.
         std::vector<real> _cellWallDistance;         ///< One positive value per owned/ghost cell.
@@ -191,7 +193,7 @@ namespace DNDS::ACMVariable
         void BuildWallDistance();
 
         /**
-         * @brief Compute Green--Gauss gradients for flow and turbulence fields.
+         * @brief Compute linearly exact weighted least-squares flow and turbulence gradients.
          * @param flow Current flow state with valid ghost values.
          * @param time Current boundary-evaluation time.
          */

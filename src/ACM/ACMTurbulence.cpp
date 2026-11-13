@@ -650,11 +650,15 @@ namespace DNDS::ACM
                 const real beta = beta1 * blending.f1 + beta2 * (1.0 - blending.f1);
                 const real gamma = gamma1 * blending.f1 + gamma2 * (1.0 - blending.f1);
                 const real limitedProduction = std::min(
-                    productionK,
+                    rawProductionK,
                     20.0 * betaStar * k * secondVariable);
                 const real cross = turbulenceGradient.col(0).dot(turbulenceGradient.col(1));
                 source(0) = limitedProduction - betaStar * k * secondVariable;
-                source(1) = gamma * productionInvariant - beta * secondVariable * secondVariable +
+                // Original SST: only k production is capped. Omega uses gamma*P/nu_t,
+                // including dilatation, with the same limited eddy viscosity as P.
+                const real omegaProduction = turbulentViscosity > 0
+                    ? gamma * rho0 * rawProductionK / turbulentViscosity : 0;
+                source(1) = omegaProduction - beta * secondVariable * secondVariable +
                             2.0 * (1.0 - blending.f1) * sigmaOmega2 * cross /
                                 PositiveDenominator(secondVariable);
             }

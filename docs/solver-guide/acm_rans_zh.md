@@ -14,7 +14,7 @@ $$
  -\tfrac13(\nabla\cdot\boldsymbol u)I.
 $$
 
-对于输运 $k$ 的双方程模型，$p^*=\bar p+2\rho_0 k/3$ 吸收了 Reynolds 应力的各向同性部分；SA 模型没有 $k$ 变量，其压力直接采用模型的平均压力约定。因此RANS流动子块将黏性应力中的 $\mu$ 换为 $\mu+\mu_t$；流动子块保留`[u,v,w,p]`和$4\times4$预条件矩阵；新主状态追加密度加权的SA或两个RANS变量。伪时间方程为 $\Gamma(U)\partial_\tau U+R_{\rm flow}(U,q)=0$。二维计算仍保存四分量，但 $w$ 不参与二维空间导数。
+对于输运 $k$ 的双方程模型，面通量使用有效压力 $p^*=\bar p+2\rho_0 k/3$。默认 `includeIsotropicStress=true` 时，主状态保存静压 $\bar p$，各向同性应力在面通量中显式计入；兼容模式 `false` 才直接保存 $p^*$。SA 模型没有 $k$ 变量，其压力直接采用模型的平均压力约定。因此RANS流动子块将黏性应力中的 $\mu$ 换为 $\mu+\mu_t$；流动子块保留`[u,v,w,p]`和$4\times4$预条件矩阵；新主状态追加密度加权的SA或两个RANS变量。伪时间方程为 $\Gamma(U)\partial_\tau U+R_{\rm flow}(U,q)=0$。二维计算仍保存四分量，但 $w$ 不参与二维空间导数。
 
 闭合计算使用原始变量$q$，新主状态存储$\rho_0q$。除以常密度后的输运形式为
 
@@ -32,15 +32,15 @@ $$
 $$
 \mu_t=\rho_0\frac{a_1 k}{\max(a_1\omega,|\Omega|F_2)},
 \qquad
-P_k=\max\left(\frac{\mu_t}{\rho_0}S^2
--\frac23k\nabla\cdot\boldsymbol u,0\right).
+P_k=\frac{\mu_t}{\rho_0}S^2
+-\frac23k\nabla\cdot\boldsymbol u.
 $$
 
 代码再将 $\mu_t/\mu$ 限于配置的上限，并将 $k$ 方程生产项限于 $20\beta^*k\omega$。SST 混合函数是
 
 $$
 \begin{aligned}
-CD_{k\omega}&=\max(2\rho_0\sigma_{\omega2}\nabla k\cdot\nabla\omega/\omega,10^{-10}),\\
+CD_{k\omega}&=\max(2\rho_0\sigma_{\omega2}\nabla k\cdot\nabla\omega/\omega,10^{-20}),\\
 A_1&=\min\!\left[\max\!\left(\frac{\sqrt{k}}{\beta^*\omega d},
 \frac{500\nu}{d^2\omega}\right),\frac{4\rho_0\sigma_{\omega2}k}{CD_{k\omega}d^2}\right],\\
 A_2&=\max\!\left(\frac{2\sqrt{k}}{\beta^*\omega d},
@@ -58,12 +58,12 @@ $$
 D_k&=(\mu+\sigma_k\mu_t)/\rho_0,
 &S_k&=\min(P_k,20\beta^*k\omega)-\beta^*k\omega,\\
 D_\omega&=(\mu+\sigma_\omega\mu_t)/\rho_0,
-&S_\omega&=\gamma S^2-\beta\omega^2
+&S_\omega&=\gamma\frac{\rho_0 P_k}{\mu_t}-\beta\omega^2
 +2(1-F_1)\sigma_{\omega2}\frac{\nabla k\cdot\nabla\omega}{\omega}.
 \end{aligned}
 $$
 
-壁面施加 $k_w=0$ 和 $\omega_w=C_\omega\nu/d^2$，默认 $C_\omega=800$；入口使用配置的 $k,\omega$，远场只在局部入流时使用配置值，出流用零法向梯度。有限体积边界状态用镜像值实现面上的 Dirichlet 值。
+壁面施加 $k_w=0$ 和 $\omega_w=C_\omega\nu/d^2$，默认 $C_\omega=800$；入口使用配置的 $k,\omega$，远场只在局部入流时使用配置值，出流用零法向梯度。扩散使用镜像虚单元实现面上的 Dirichlet 值；对流入流必须直接使用规定面值，不能使用镜像值。壁面与对称面湍流对流通量为零。
 
 ## 3. 其他模型和代码位置
 
@@ -77,8 +77,50 @@ $$
 
 模型公式、正值界限和壁面状态在 [`ACMTurbulence.cpp`](../../src/ACM/ACMTurbulence.cpp)；面通量、梯度、MPI ghost 交换与 SSPRK3 在 [`ACMTurbulenceTransport.hxx`](../../src/ACM/ACMTurbulenceTransport.hxx)；与流场黏性通量和黏性 CFL 的耦合在 [`ACMEvaluator.hxx`](../../src/ACM/ACMEvaluator.hxx)，求解流程在 [`ACMSolver.hxx`](../../src/ACM/ACMSolver.hxx)。`turbulenceSettings.model` 选择模型，`initialValue` 和 `farFieldValue` 按表中的变量顺序填写。VTK-HDF 字段分别命名为 `TurbulenceNuTilde`、`TurbulenceK`、`TurbulenceOmega` 或 `TurbulenceEpsilon`，重启按所选模型读取。
 
-新模型的统一主状态和完整残差在同一阶段/内迭代中更新。SA入口为acmSA2D/3D，两方程入口为acm2EQ2D/3D。物理BDF2保存完整守恒状态的两级历史，采用逐变量正性保护。隐式系统使用流场面耦合和局部湍流源项/谱半径近似，交叉导数冻结；细节见[统一状态与模型入口](acm_model_state_zh.md)。
+新模型的统一主状态和完整残差在同一阶段/内迭代中更新。SA入口为acmSA2D/3D，两方程入口为acm2EQ2D/3D。物理BDF2保存完整守恒状态的两级历史，采用逐变量正性保护。隐式系统使用流场面耦合、局部湍流源项/谱半径近似和 rho*k 到流场的各向同性压力交叉导数，其他交叉导数冻结；细节见[统一状态与模型入口](acm_model_state_zh.md)。
 
 流场的FirstOrder、GreenGauss、Variational及WBAP/CWBAP设置保持原有要求。湍流重构仍由secondOrderReconstruction控制；流场Variational不自动提高湍流多项式次数。初值以initialState的rho*q尾部为准，farFieldValue及上下界仍填原始量q。VTK-HDF同时保存原始和密度加权湍流数据。
 
 底层四变量兼容类及旧分离输运核保留用于流动子块、闭合工作缓存和原有回归；原生四变量入口仅接受层流配置。新统一入口使用[ACMRANSSolver.hxx](../../src/ACM/ACMRANSSolver.hxx)推进全部活跃方程。
+
+
+## 4. SST 文献核对与空间离散修复（2026-11-13）
+
+本项目 `KOmegaSST` 保持 **SST-1994 原始版本**，不混用 SST-2003 的应变率限制器、
+10 倍生产限制、交叉扩散下限或两方程同时限制的生产项。
+
+核对来源：
+
+1. Menter, F. R., “Two-Equation Eddy-Viscosity Turbulence Models for Engineering Applications,”
+   AIAA Journal 32(8), 1598–1605 (1994), [DOI: 10.2514/3.12149](https://doi.org/10.2514/3.12149)。
+2. [NASA/TMR 标准 SST 及版本区别](https://tmbwg.github.io/turbmodels/sst.html#sst-std)：
+   本次直接查阅的公式依据，包括守恒形式、完整 Reynolds 应力生产项、20 倍 k 生产限制、
+   `CD=1e-20` 和 `omega_wall=10*6*nu/(beta1*d1^2)=800*nu/d1^2`。
+3. [Menter, NASA TM 103975 (1992)](https://ntrs.nasa.gov/citations/19930013620)：
+   查阅其 SST 推导与 omega 生产项说明，作为历史背景；早期报告中的常数不覆盖 1994/TMR 定义。
+
+模型与数值保护须区分：涡黏度比上限、正值下限和扩散极值保护是数值措施，不是新增的 SST 常数。
+三个模块都使用完整 `P=tau:grad(u)`；只有 k 方程使用生产上限，omega 使用未截断的
+`gamma*P/nu_t`，允许膨胀导致的负生产。Euler 删除了 omega 生产中固定 `nu_t>=1e-8` 的
+有量纲下限，并将默认的应变率近似改为该原始形式。ACM 的生产项按密度换成原始变量变化率。
+密度守恒梯度先换算成 k、omega 与速度梯度，不能把 `grad(rho*k)` 直接当作 `grad(k)`。
+
+常密度与变密度 ACM 共用 [标量空间算子](../../src/CFV/ScalarTransport.hpp)：
+
+- 在静态网格上缓存按方向缩放的加权最小二乘 SVD 系数，使用实际邻居/周期像坐标；
+  模板秩不足时报告错误，避免静默使用不一致梯度。Dirichlet 虚单元坐标与穿过实际面点的反射值匹配。
+- 对流按共享体积/质量通量方向取迎风状态。规定入流取原始面值；扩散仍使用镜像值。
+  常密度的冻结迎风量和隐式边界导数同步采用这一约定。
+- 对当前模板的局部极值，截断会加深极值的面法向扩散梯度；一个面只产生一个通量，
+  两侧以相反符号累加。极值标志通过 MPI ghost 交换，内部平滑模板保留完整非正交修正。
+  这不构成完整高阶对流、源项和时间推进的无条件正性证明；现有变量界限仍保留。
+- Euler 使用自己的 CFV 重构和边界接口；其远场/入口没有复用 ACM 的镜像入流路径。
+  Euler SST 的不可穿透面在减去黏性通量之前清零 k/omega 对流通量，保留真实壁面扩散，
+  避免耗散特征值方案引入伪对流。
+
+回归覆盖压缩/膨胀、强剪切触发生产上限、弱黏度、二维/三维公式、倾斜拉伸梯度模板、
+扩散面守恒、规定入流及其隐式导数，以及真实 Euler 面通量。共享边界修复也纠正了 SA 入流，
+其已有 BE/BDF2 独立解析测试随正确的边界离散更新，精度阈值保持不变。
+
+完整 SUBOFF 的收敛变化需要从相同检查点、相同参数和残差阈值另做对照；
+小网格或核函数回归通过不能替代工程网格上的验证。
