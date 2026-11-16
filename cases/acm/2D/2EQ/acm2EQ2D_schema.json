@@ -401,6 +401,11 @@
                     "default": true,
                     "description": "Add isotropic k stress and interpret pressure as static; false uses legacy modified pressure"
                 },
+                "boundedSSTDiffusion": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use bounded non-negative SST face conductance; false retains extremum-limited diffusion"
+                },
                 "enableSourceTerms": {
                     "type": "boolean",
                     "default": true,

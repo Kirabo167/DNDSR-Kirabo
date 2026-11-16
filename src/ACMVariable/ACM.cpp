@@ -1098,6 +1098,8 @@ namespace DNDS::ACMVariable
         auto &turbulence = resolved.at("turbulenceSettings");
         if (!turbulence.contains("includeIsotropicStress"))
             turbulence["includeIsotropicStress"] = TurbulenceSettings{}.includeIsotropicStress;
+        if (!turbulence.contains("boundedSSTDiffusion"))
+            turbulence["boundedSSTDiffusion"] = TurbulenceSettings{}.boundedSSTDiffusion;
         auto &timeMarch = resolved.at("timeMarchSettings");
         if (!timeMarch.contains("physicalTimeStep"))
             timeMarch["physicalTimeStep"] = TimeMarchSettings{}.physicalTimeStep;

@@ -1860,3 +1860,100 @@ TEST_CASE("Both ACM modules recover affine shear production on a skew stretched 
         CHECK((rhs[0] / rho - expected).norm() < 1e-10);
     }
 }
+
+TEST_CASE("SST near-floor diffusion shares conservative residual and frozen face matrix")
+{
+    MPIInfo mpi; mpi.setWorld();
+    REQUIRE(mpi.size == 1);
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    for (const bool bounded : {false, true})
+    {
+        auto cfg = MakeRANSPhysicalCase(mesh.path, ACM::TurbulenceModel::KOmegaSST,
+            ACM::TimeIntegratorType::BDF2DualTimeLUSGS, 0.01, 0);
+        cfg.meshSettings.periodicTranslation1 = {1, 0, 0};
+        cfg.meshSettings.periodicTranslation2 = {0, 1, 0};
+        cfg.turbulenceSettings.boundedSSTDiffusion = bounded;
+        cfg.turbulenceSettings.minimumValue = {1e-14, 1e-10};
+        cfg.turbulenceSettings.enableSourceTerms = false;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 0;
+        cfg.turbulenceSettings.secondOrderReconstruction = false;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::FirstOrder;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto transport = solver.GetTurbulenceTransport();
+        transport->SetFaceVolumeFlux([](DNDS::index, int, DNDS::real) { return 0.0; });
+        const auto meshData = solver.GetMesh();
+        const auto metrics = solver.GetReconstruction();
+        const ACM::TurbulenceState floor(1e-14, 1e-10);
+        std::vector<ACM::TurbulenceState> difference(meshData->NumCell());
+        for (DNDS::index cell = 0; cell < meshData->NumCell(); cell++)
+        {
+            transport->GetState()[cell] = floor * (1 + cell * 1e-13);
+            difference[cell] = transport->GetState()[cell] - floor;
+        }
+        ACM::ACMTurbulenceTransport<2>::TTurbulenceDof rhs;
+        metrics->BuildUDof(rhs, 2);
+        transport->EvaluateRHS(rhs, solver.GetState());
+        std::vector<Eigen::Matrix<DNDS::real, 2, 2>> diagonal;
+        ACM::ACMTurbulenceTransport<2>::FaceJacobianField blocks;
+        transport->EvaluateImplicitDiagonal(solver.GetState(), diagonal, 0, &blocks);
+        std::vector<ACM::TurbulenceState> product(meshData->NumCell());
+        for (DNDS::index cell = 0; cell < meshData->NumCell(); cell++)
+            product[cell] = diagonal[cell] * difference[cell];
+        for (DNDS::index face = 0; face < meshData->NumFaceProc(); face++)
+        {
+            const auto cells = meshData->face2cell[face];
+            REQUIRE(cells[1] != UnInitIndex);
+            if (cells[0] == cells[1]) continue;
+            CHECK(blocks[face][0](0, 0) >= 0);
+            CHECK(blocks[face][1](0, 0) <= 0);
+            product[cells[0]] += blocks[face][1] * difference[cells[1]] / metrics->GetCellVol(cells[0]);
+            product[cells[1]] -= blocks[face][0] * difference[cells[0]] / metrics->GetCellVol(cells[1]);
+        }
+        ACM::TurbulenceState balance = ACM::TurbulenceState::Zero();
+        DNDS::real scale = 0;
+        for (DNDS::index cell = 0; cell < meshData->NumCell(); cell++)
+        {
+            const DNDS::real norm = rhs[cell].norm();
+            CHECK((product[cell] + rhs[cell]).norm() <= 1e-10 * std::max(norm, DNDS::real(1e-300)));
+            balance += metrics->GetCellVol(cell) * rhs[cell];
+            scale += metrics->GetCellVol(cell) * norm;
+        }
+        CHECK(balance.norm() <= 1e-12 * scale);
+        CHECK((rhs[0].array() >= 0).all());
+
+        ACMVariable::KernelConfiguration variable;
+        variable.meshSettings.meshFile = mesh.path.string();
+        variable.meshSettings.periodicTranslation1 = {1, 0, 0};
+        variable.meshSettings.periodicTranslation2 = {0, 1, 0};
+        variable.initialState = {1, 0, 0, 0, 0};
+        variable.acmSettings.enableViscousFlux = true;
+        variable.acmSettings.dynamicViscosity = cfg.acmSettings.dynamicViscosity;
+        variable.reconstructionSettings.type = ACMVariable::ReconstructionType::FirstOrder;
+        variable.turbulenceSettings.model = ACMVariable::TurbulenceModel::KOmegaSST;
+        variable.turbulenceSettings.minimumValue = {1e-14, 1e-10};
+        variable.turbulenceSettings.enableSourceTerms = false;
+        variable.turbulenceSettings.maximumEddyViscosityRatio = 0;
+        variable.turbulenceSettings.secondOrderReconstruction = false;
+        variable.turbulenceSettings.boundedSSTDiffusion = bounded;
+        ACMVariable::ACMSolver<ACMVariable::ACMModel::VariableDensity2D> other(mpi, variable);
+        other.ReadMeshAndInitialize();
+        auto boundary = std::make_shared<ACMVariable::BoundaryHandler>(variable.defaultBoundaryType,
+            variable.InitialState(), variable.boundaryConditions);
+        ACMVariable::ACMTurbulenceTransport<2> otherTransport(other.GetMesh(), other.GetReconstruction(),
+            variable.acmSettings, variable.turbulenceSettings, boundary);
+        otherTransport.Initialize();
+        otherTransport.SetMassFluxProvider([](DNDS::index, int) { return 0.0; });
+        for (DNDS::index cell = 0; cell < other.GetMesh()->NumCell(); cell++)
+        {
+            other.GetState()[cell](0) = 1 + 0.2 * cell;
+            otherTransport.GetState()[cell] = transport->GetState()[cell];
+        }
+        ACMVariable::ACMTurbulenceTransport<2>::TTurbulenceDof variableRhs;
+        other.GetReconstruction()->BuildUDof(variableRhs, 2);
+        otherTransport.EvaluateRHS(variableRhs, other.GetState());
+        for (DNDS::index cell = 0; cell < other.GetMesh()->NumCell(); cell++)
+            CHECK((variableRhs[cell] - rhs[cell]).norm() <= 1e-10 * std::max(rhs[cell].norm(), DNDS::real(1e-300)));
+    }
+}

@@ -64,6 +64,7 @@ namespace DNDS::ACM
         real maximumEddyViscosityRatio = 1e5;                  ///< Upper bound `mu_t/mu`.
         real wallOmegaCoefficient = 800.0;                     ///< Wall value `omega=C*nu/d^2`, matching Euler's coefficient.
         bool includeIsotropicStress = true;                    ///< Store static p and add (2/3) rho*k I; false retains legacy modified pressure.
+        bool boundedSSTDiffusion = true;                       ///< Robust non-negative face conductance; false retains the extremum switch.
         bool enableSourceTerms = true;                         ///< Enable production/destruction source terms.
         bool secondOrderReconstruction = true;                 ///< Use limited Green--Gauss face reconstruction.
         int transportSubsteps = 4;                             ///< SSPRK3 turbulence substeps per flow step.
@@ -87,6 +88,7 @@ namespace DNDS::ACM
             DNDS_FIELD(wallOmegaCoefficient, "Wall omega coefficient in omega=C*nu/d^2",
                        DNDS::Config::range(0.0));
             DNDS_FIELD(includeIsotropicStress, "Add isotropic k stress and interpret pressure as static; false uses legacy modified pressure");
+            DNDS_FIELD(boundedSSTDiffusion, "Use bounded non-negative SST face conductance; false retains extremum-limited diffusion");
             DNDS_FIELD(enableSourceTerms, "Enable turbulence production and destruction sources");
             DNDS_FIELD(secondOrderReconstruction, "Use limited second-order turbulence reconstruction");
             DNDS_FIELD(transportSubsteps, "Turbulence SSPRK3 substeps per ACM flow step",

@@ -469,3 +469,52 @@ TEST_CASE("Scalar nonorthogonal diffusion cannot deepen a stencil extremum and s
     CHECK(CFV::BoundScalarNormalDerivative(2, 0, 0) == 2);
     CHECK(CFV::BoundScalarNormalDerivative(-3, 0, 0) == -3);
 }
+
+TEST_CASE("Bounded SST diffusion controls near-floor plateaus without exact-extremum flags")
+{
+    const real floor = 1e-10;
+    const real left = 1.0000000000005337e-10, right = 1.0000000000000247e-10;
+    const real jump = right - left;
+    REQUIRE(jump < 0);
+    for (const real derivative : {-1e30, -1.0, 0.0, 1.0, 1e30})
+        for (const real projection : {1e-18, 1e-5, 1.0, 10.0})
+        {
+            const real c = CFV::BoundedScalarConductance(derivative, jump, projection, 1);
+            const real flux = jump * c;
+            CHECK(std::isfinite(c));
+            CHECK(c >= 0);
+            CHECK(c <= 2 / projection);
+            CHECK(flux * jump >= 0);
+            CHECK(std::abs(flux) <= 2 * std::abs(jump) / projection);
+            CHECK(c == CFV::BoundedScalarConductance(-derivative, -jump, projection, 1));
+            // Independent two-volume forward Euler bounds, with the face CFL <= 1.
+            const real dt = c > 0 ? 0.5 / c : 1;
+            const real newLeft = left + dt * flux, newRight = right - dt * flux;
+            CHECK(newLeft >= floor);
+            CHECK(newRight >= floor);
+            CHECK(newLeft >= right);
+            CHECK(newRight <= left);
+            CHECK(newLeft + newRight == doctest::Approx(left + right).epsilon(1e-14));
+        }
+}
+
+TEST_CASE("Bounded SST equal-state flux is exactly zero and preserves admissible affine diffusion")
+{
+    for (const real derivative : {-1e30, -1.0, 0.0, 1.0, 1e30})
+    {
+        const real c = CFV::BoundedScalarConductance(derivative, 0, 1e-5, 1);
+        CHECK(c == doctest::Approx(1e5));
+        CHECK(0 * c == 0);
+    }
+    // A smooth skew affine field inside the admissible interval remains exact.
+    const Eigen::Vector3d normal(1, 0, 0), displacement(2, 1, 0), gradient(1, -0.5, 0);
+    const real jump = gradient.dot(displacement), derivative = gradient.dot(normal);
+    CHECK(jump * CFV::BoundedScalarConductance(derivative, jump, displacement.dot(normal), 1) == doctest::Approx(derivative));
+    // The tradeoff is explicit: unrestricted affine consistency is impossible
+    // for this pairwise non-negative transfer on arbitrary skew connections.
+    CHECK(CFV::BoundedScalarConductance(1, 0, 1, 1) * 0 == 0);
+    CHECK(CFV::BoundedScalarConductance(1, 1, -1, 1) == 0);
+    CHECK(CFV::BoundedScalarConductance(1, 1, 0, 1) == 0);
+    CHECK(CFV::BoundedScalarConductance(1e20, 1e-300, 1, 1) == 2);
+    CHECK(CFV::BoundedScalarConductance(-1e20, 1e-300, 1, 1) == 0);
+}

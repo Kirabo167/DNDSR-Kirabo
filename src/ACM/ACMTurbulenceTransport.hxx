@@ -1002,22 +1002,31 @@ namespace DNDS::ACM
                             boundaryType == BoundaryType::BCSym)
                             advectiveFlux.setZero();
                     }
-                    TurbulenceState diffusiveFlux =
-                        TurbulenceDiffusiveFlux(
-                            faceTurbulence,
-                            faceGradient,
-                            normal,
-                            _faceWallDistance[static_cast<std::size_t>(iFace)],
-                            _flowSettings.rho0,
-                            _flowSettings.dynamicViscosity,
-                            FaceEddyViscosity(iFace, iG),
-                            _turbulenceSettings);
-                    // Bound the flux after computing the model coefficients: clipping must
-                    // not alter SST F1 or the other equation's diffusivity.
+                    const TurbulenceState faceDiffusivity = TurbulenceDiffusivity(
+                        faceTurbulence, faceGradient, _faceWallDistance[static_cast<std::size_t>(iFace)],
+                        _flowSettings.rho0, _flowSettings.dynamicViscosity, FaceEddyViscosity(iFace, iG), _turbulenceSettings);
+                    TurbulenceState boundedNormalDerivative = faceGradient.transpose() * normal;
+                    TurbulenceState diffusiveFlux = faceDiffusivity.cwiseProduct(boundedNormalDerivative);
+                    // Limit the final face transfer, not F1 or the other equation's
+                    // diffusivity. Carry the small cell jump directly to the flux.
+                    const bool boundedSST = _turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                        _turbulenceSettings.boundedSSTDiffusion;
                     for (int variable = 0; variable < ActiveVariableCount(); variable++)
-                        diffusiveFlux(variable) = CFV::BoundScalarNormalDerivative(diffusiveFlux(variable),
-                            static_cast<int>(_extrema[faceToCell[0]](variable)),
-                            faceToCell[1] == UnInitIndex ? -1 : static_cast<int>(_extrema[faceToCell[1]](variable)));
+                    {
+                        if (boundedSST)
+                        {
+                            const real jump = rightCellTurbulence(variable) - _state[faceToCell[0]](variable);
+                            const real coefficient = CFV::BoundedScalarConductance(
+                                faceGradient.col(variable).dot(normal), jump, connectionProjection, normal.squaredNorm());
+                            boundedNormalDerivative(variable) = jump * coefficient;
+                        }
+                        else
+                            diffusiveFlux(variable) = CFV::BoundScalarNormalDerivative(diffusiveFlux(variable),
+                                static_cast<int>(_extrema[faceToCell[0]](variable)),
+                                faceToCell[1] == UnInitIndex ? -1 : static_cast<int>(_extrema[faceToCell[1]](variable)));
+                    }
+                    if (boundedSST)
+                        diffusiveFlux = faceDiffusivity.cwiseProduct(boundedNormalDerivative);
                     contribution = -(advectiveFlux - diffusiveFlux) *
                                    _vfv->GetFaceJacobiDet(iFace, iG);
                 });
@@ -1226,7 +1235,11 @@ namespace DNDS::ACM
                     const bool clipped = CFV::BoundScalarNormalDerivative(derivative,
                         static_cast<int>(_extrema[cells[0]](variable)),
                         cells[1] == UnInitIndex ? -1 : static_cast<int>(_extrema[cells[1]](variable))) != derivative;
-                    const real boundedDiff = clipped ? 0 : diff;
+                    const bool boundedSST = _turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                        _turbulenceSettings.boundedSSTDiffusion;
+                    const real coefficient = CFV::BoundedScalarConductance(derivative,
+                        qRightCell(variable) - _state[cells[0]](variable), projection, normal.squaredNorm());
+                    const real boundedDiff = boundedSST ? diffusion(variable) * coefficient : (clipped ? 0 : diff);
                     contribution(variable, variable) = advLeft + boundedDiff;
                     contribution(variable, variable + 2) = advRight - boundedDiff;
                     if (cells[1] == UnInitIndex)

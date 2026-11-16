@@ -1,7 +1,7 @@
 <!--
 File description: implementation status and integration boundary of the ACM module.
 Modifier: Runzhi Ma
-Last modified: 2026-11-13
+Last modified: 2026-11-16
 -->
 
 # ACM high-order solver
@@ -380,3 +380,12 @@ Logs expose `innerTarget`, `steadyResidual`, used/next CFL, and reconstruction s
 count/last equation defect. `converged` still refers to the inner target, not to the
 global steady solution. Steady-only controls reject explicit and BDF2 integrators;
 physical dual-time accuracy is unchanged. Both steady controls default to disabled.
+
+
+SST defaults to `turbulenceSettings.boundedSSTDiffusion=true`, a conservative
+non-negative face-conductance mode that controls near-floor plateaus without
+exact-extremum comparisons. The implicit operator uses the same frozen face
+coefficient. Setting it to `false` restores the previous extremum-limited mode.
+The bounded mode can clip even affine diffusion on skew meshes; it is a robustness
+choice, not a guarantee of the original spatial accuracy. See the
+[SST algorithm review](../../docs/solver-guide/acm_rans_zh.md) for its formula and limits.

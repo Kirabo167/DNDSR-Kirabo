@@ -72,3 +72,11 @@ See [the solver migration guide](../../docs/guides/solver_split_zh.md).
 
 The implementation derivation, source-document errata, method matrix and
 verification procedure are in `docs/reports/acm_variable_density_implementation.pdf`.
+
+
+SST defaults to `turbulenceSettings.boundedSSTDiffusion=true`, using a shared
+non-negative face coefficient for conservative diffusion of rho*q. It controls
+near-floor plateaus and directly forms the flux from the cell jump. Set it to
+`false` for the previous extremum-limited diffusion. The bounded mode trades
+unrestricted affine consistency on skew meshes for pairwise bounded transfer;
+see the [SST algorithm review](../../docs/solver-guide/acm_rans_zh.md).

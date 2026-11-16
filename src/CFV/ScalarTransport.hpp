@@ -4,9 +4,28 @@
 #include "DNDS/Errors.hpp"
 #include <Eigen/Dense>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 
 namespace DNDS::CFV
 {
+    /** SST robust diffusion: a non-negative shared coefficient in [0,2/dn].
+     * This is a frozen-coefficient Picard operator, not the exact derivative
+     * of the nonlinear limiter. Some affine normal derivatives on skew meshes
+     * lie outside this interval; boundedness takes precedence in this mode.
+     * projection must be oriented from the left centre towards the right.
+     */
+    inline real BoundedScalarConductance(real derivative, real jump, real projection, real normalSquared)
+    {
+        // Do not turn a reversed/degenerate connection into valid geometry via abs().
+        if (!(projection > 0) || !(normalSquared > 0))
+            return 0;
+        const real twoPoint = normalSquared / projection;
+        if (jump == 0)
+            return twoPoint;
+        return std::clamp(derivative / jump, real(0), 2 * twoPoint);
+    }
+
     /** Geometry-only, coordinate-scaled weighted least-squares coefficients.
      * Each displacement connects the cell centre to a neighbour (including a
      * periodic image), or to a ghost reflected through a prescribed face point.
