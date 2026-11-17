@@ -39,6 +39,21 @@ def executable_for(document):
         raise ValueError('Non-NCFV solver requires CFV')
     return MODELS[selector['model']]
 
+def case_paths(tracked_only=False):
+    """CTest validates shipped cases, without parsing local simulation output."""
+    if tracked_only:
+        try:
+            listing = subprocess.run(
+                ['git', 'ls-files', '-z', '--', 'cases'], cwd=ROOT,
+                capture_output=True, text=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            # Source archives have no Git metadata and contain only shipped cases.
+            pass
+        else:
+            return sorted(ROOT / name for name in listing.stdout.split('\0')
+                          if name.endswith('.json'))
+    return sorted((ROOT / 'cases').rglob('*.json'))
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build')
@@ -46,12 +61,14 @@ def main():
     parser.add_argument('--jobs', type=int, default=4)
     parser.add_argument('--layout-only', action='store_true')
     parser.add_argument('--negative-only', action='store_true')
+    parser.add_argument('--tracked-only', action='store_true',
+                        help='Validate Git-tracked cases; ignore local generated JSON output')
     parser.add_argument('--reactive-build-dir', type=Path,
                         help='Cantera-enabled build for cases with reactiveFlow.enabled=true')
     args = parser.parse_args()
     build = args.build_dir.resolve()
     cases = []
-    for path in sorted((ROOT / 'cases').rglob('*.json')):
+    for path in case_paths(args.tracked_only):
         document = read_jsonc(path)
         if isinstance(document, dict) and 'solver' in document:
             cases.append((path, document))

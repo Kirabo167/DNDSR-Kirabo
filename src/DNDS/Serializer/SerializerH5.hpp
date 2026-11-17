@@ -39,7 +39,8 @@
 /// - WriteIndexVectorPerRank
 /// - ArrayGlobalOffset_One semantics (rank-0-only write)
 /// - ArrayGlobalOffset_Parts auto-offset
-#include "SerializerBase.hpp"
+#include "DNDS/MPI/Failure.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
 
 #include <hdf5.h>
 #include <fstream>
@@ -66,7 +67,10 @@ namespace DNDS::Serializer
         bool collectiveMetadataRW = true;
         bool collectiveDataRW = false;
 
+        std::string ResolveSharedIndexPath(const std::string &name);
+
     public:
+        index IndexVectorSize(const std::string &name) override;
         SerializerH5(const MPIInfo &_mpi) : mpi(_mpi)
         {
             MPI_Comm_dup(mpi.comm, &commDup);
@@ -115,9 +119,24 @@ namespace DNDS::Serializer
         void WriteRealVector(const std::string &name, const std::vector<real> &v, ArrayGlobalOffset offset) override;
         void WriteSharedIndexVector(const std::string &name, const ssp<host_device_vector<index>> &v, ArrayGlobalOffset offset) override;
         void WriteSharedRowsizeVector(const std::string &name, const ssp<host_device_vector<rowsize>> &v, ArrayGlobalOffset offset) override;
+        void WriteSharedRowStartVector(const std::string &name, const ssp<const host_device_vector<index>> &v, ArrayGlobalOffset data) override;
+        ArrayGlobalOffset ReadSharedRowStartVector(const std::string &name, ssp<host_device_vector<index>> &v, ArrayGlobalOffset rows) override;
 
         void WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset) override;
+        void WriteByteSegments(const std::string &name, const uint8_t *data, index memoryBytes,
+                               const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset) override;
+        void ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
+                              const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset) override;
 
+        void ReadBytePattern(const std::string &name, uint8_t *data, index memoryBytes,
+                             const std::vector<ByteMemorySegment> &segments, const ByteFilePattern &pattern) override;
+
+    private:
+        void ReadByteSelection(const std::string &name, uint8_t *data, index memoryBytes,
+                               const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset,
+                               const ByteFilePattern *pattern);
+
+    public:
         void WriteIndexVectorPerRank(const std::string &name, const std::vector<index> &v) override
         {
             this->WriteIndexVector(name, v, ArrayGlobalOffset{index(mpi.size) * index(v.size()), index(mpi.rank) * index(v.size())});
@@ -138,6 +157,8 @@ namespace DNDS::Serializer
 
         ~SerializerH5() override
         {
+            if (std::uncaught_exceptions())
+                MPI::AbortIfSolverFailure("solver unwinding before parallel HDF5 close");
             CloseFileNonVirtual();
             MPI_Comm_free(&commDup);
         }

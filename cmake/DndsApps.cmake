@@ -138,6 +138,10 @@ ADD_EXE_APP("${DNDS_APPS_Solver}" "app/Solver" "dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Geom}" "app/Geom" "geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_CFV}" "app/CFV" "cfv;geom;dnds;" ON cpp)
 ADD_EXE_APP("${DNDS_APPS_Euler}" "app/Euler" "cfv;geom;dnds;" ON cpp)
+add_executable(cauchy_solver EXCLUDE_FROM_ALL app/Cauchy/cauchy.cpp)
+target_include_directories(cauchy_solver PRIVATE ${DNDS_EXTERNAL_INCLUDES} ${DNDS_INCLUDES})
+target_link_libraries(cauchy_solver PRIVATE cauchy_shared physics_shared native_cfv_shared native_geom_shared dnds_shared ${DNDS_EXTERNAL_LIBS})
+set_target_properties(cauchy_solver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/app RUNTIME_OUTPUT_NAME "cauchy${EXE_SUFFIX}")
 
 set(DNDS_APPS_Euler_Models)
 foreach(item IN LISTS DNDS_Euler_Models_List)
@@ -188,15 +192,15 @@ add_dependencies(all_acm ACM acm2D acm3D acmSA2D acmSA3D acm2EQ2D acm2EQ3D acmVa
 add_custom_target(all_ncfv_euler)
 add_dependencies(all_ncfv_euler ncfv_euler2D ncfv_euler3D)
 add_custom_target(all_solvers)
-add_dependencies(all_solvers all_euler all_acm all_ncfv_euler)
+add_dependencies(all_solvers all_euler all_acm all_ncfv_euler cauchy_solver)
 
 if(DNDS_BUILD_TESTS AND Python_EXECUTABLE)
     add_test(NAME solver_case_configurations
         COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_solver_cases.py
-            --build-dir ${CMAKE_BINARY_DIR})
+            --build-dir ${CMAKE_BINARY_DIR} --tracked-only)
     add_test(NAME solver_executable_selection
         COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check_solver_cases.py
-            --build-dir ${CMAKE_BINARY_DIR} --negative-only)
+            --build-dir ${CMAKE_BINARY_DIR} --negative-only --tracked-only)
     set_tests_properties(solver_case_configurations solver_executable_selection PROPERTIES
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         TIMEOUT 300 LABELS "solver_config" ENVIRONMENT "OMP_NUM_THREADS=1")

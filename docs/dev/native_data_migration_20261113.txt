@@ -1,0 +1,91 @@
+DNDSR-Kirabo native data structure migration (2026-11-13)
+
+Baseline: local cf046596251c2c44318ee5d069b5d029e5dd58f2, including the user's
+existing Geom/NCFV changes. Reference: harryzhou2000/DNDSR at
+611b0a0b7a6b3ac9a54be891919f9016a8756471. This imports the reference version's
+data infrastructure, rather than applying that individual commit's Cauchy diff.
+
+Implemented
+1. Runtime Buffer/Allocation, immutable RowLayout/metadata, Array and RowBuilder,
+   typed views, allocation diagnostics, explicit reads/writes and generations.
+2. RowTransferPlan/PayloadPlan/TransferBinding, element schemas, transient and
+   persistent transfers, controller-driven MPI progress and eager CPU/CUDA streams.
+3. DofSpace, DofField, DofBundle, component views, native algebra, halo and scratch.
+4. Existing host_device_vector/Array host allocations now use that same Buffer.
+   Legacy value copies remain deep copies. Retained allocation/row owners survive
+   resizing or destruction; uncompressed CSR rows detach before structural edits.
+5. ShareLegacyHost and ShareLegacyDofField explicitly share existing values without
+   copying/reordering them. Geom element and periodic-bit POD schemas preserve
+   their current physical layout and can be registered before MPI initialization.
+6. The local include tree, ArrayPair/ArrayDof APIs, existing solver equations,
+   sparse NodeHalo topology, configuration and legacy checkpoint formats remain.
+   OptionalRef retains its legacy spellings and gains checked/const-safe borrows.
+
+Required usage
+- Retain a single DofSpace descriptor for fields using the same prepared row order.
+  Equal dimensions alone do not imply compatible row identities.
+- Runtime copies alias. Clone explicitly copies values. Legacy copies still copy
+  values. ShareLegacyHost publishes a retained layout snapshot, not a live mirror.
+- Read()/Write() scopes or declared eager operands protect native accesses. Finish
+  them before legacy raw arithmetic or legacy ArrayTransformer MPI operations.
+  Raw legacy writes do not automatically advance native value generations.
+- Recreate field/layout-dependent bindings after replacing or redistributing legacy
+  arrays. An old alias safely retains the old allocation; it does not follow Resize.
+- Legacy device mirrors retain explicit to_host/to_device coherence. Native host
+  sharing requires no independent legacy device mirror. Native CUDA uses explicit
+  placement/copy and completion. No implicit cross-stream dependencies are inserted.
+- Matrix-valued legacy DOF rows retain their flat component order in the bridge.
+  The bridge performs no transpose, component remapping, or mean/point conversion.
+
+Scope boundary
+The following boundary records the first storage-layer stage. The subsequent
+native mesh/Cauchy migration supersedes its exclusions of Runtime Python,
+ArrayIO, native mesh and Cauchy; see native_framework_migration_20261113.txt.
+This is a compatible update of the common storage, communication and DOF layer.
+The Geom facade still uses the local tracked legacy mesh representation, and
+Euler/ACM/NCFV still own their established field types and outer execution loops.
+The reference's native mesh/entity registry and Cauchy EquationDofs/solver have
+not replaced those modules. New Runtime Python bindings, native ArrayIO archives,
+AmgX and an NCCL build dependency are not enabled by this change. The native NCCL
+provider remains unavailable unless its compile-time backend is explicitly built.
+
+Validation entry points
+  cmake --build build --target dnds_native_data_tests dnds_unit_tests -j 16
+  ctest --test-dir build -R '^dnds_' --output-on-failure
+  cmake --build build --target all_solvers all_unit_tests \
+      dnds_pybind11 geom_pybind11 cfv_pybind11 eulerP_pybind11 -j 24
+  cmake --build build-cuda --target dnds_test_runtime_cuda \
+      dnds_test_native_dof_algebra_cuda -j 8
+  ctest --test-dir build-cuda -R '^dnds_(runtime_cuda|native_dof_algebra_cuda)$' \
+      --output-on-failure
+  cmake --install build --component py
+
+The new legacy-DOF bridge test exchanges actual legacy field allocations with
+native MPI, applies queued native algebra, checks global reductions, retains old
+storage across resize, and checks uncompressed CSR row lifetime and deep copies.
+Both legacy and native data tests are registered at MPI np=1,2,4,8. Separate CUDA
+tests cover device copies, view metadata/lifetimes and float/double DOF arithmetic.
+
+Final validation (2026-11-13)
+- All solver executables, C++ unit tests and four existing Python extensions rebuilt.
+- Existing Python extensions installed into the local build/install and source package.
+- DNDS native/legacy storage, algebra and MPI CTests: 65/65 passed.
+- Other mesh/CFV/Euler/ACM/ACMVariable/NCFV/solver numerical CTests: 80/80 passed.
+- Solver configuration and executable-selection CTests: 2/2 passed after targeted
+  reruns. Initial full-tree scans timed out while reading 5.2 GB of generated JSON.
+  CTest now requests --tracked-only; ordinary script scanning remains available.
+  Five existing physical_single_thread cases had incorrect schema links; only those
+  relative links were corrected, preserving all numerical settings.
+- Native Runtime and DOF CUDA CTests on RTX A5000: 2/2 passed. Tests retain the
+  configured CUDA runtime via BUILD_RPATH, including toolkits outside ldconfig.
+- Final legacy-DOF bridge/CSR row-lifetime rerun: 4/4 passed (included above).
+- Four-rank Python DNDS tests: 9 passed, 1 skipped per rank (CPU Python build).
+- Case discovery regression: 2/2 passed (tracked cases, spaced paths, source archives).
+- git diff --check passed. No commit or push was performed.
+
+User-requested case-output cleanup
+Deleted 1,142 confirmed generated numerical snapshot/diagnostic/output JSON files,
+5,197,791,805 bytes total. Kept 689 configuration/schema/control/provenance/reference
+JSON files. Preserved-file checksums matched immediately after deletion; five schema
+link corrections above were made afterwards and recorded separately in the audit.
+No numerical case settings, mesh inputs, binary restarts, VTK, CSV or plots were deleted.

@@ -1,0 +1,102 @@
+本地湍流与 gs Suboff 的核对及修正
+日期：2026-11-17
+
+1. 可核实的参照与限制
+
+本地起点：main e23da0f7，包含 cf046596 的 SST 应力生成项修正及
+ e23da0f7 的共享有界扩散系数修正。此次未覆盖已有 ACM/NCFV 研究修改。
+
+用户确认以 GitHub 为参照（2026-11-17）。主要参照为下述
+origin/GPUACM 固定版本；Suboff 潜艇计算聊天记录作为补充证据：
+codex://threads/01a13db8-9a59-70d0-bdcf-0c5c9f7d9c95?hostId=remote-ssh-discovered%3Ags
+读取其中 11 月 15–16 日的源码输出、核查和续算记录。GPU 常驻路径为
+src/ACMGPU 和 src/GPU/ResidentACMSST.cuh；CPU 冻结快照为
+ACM_NCFV_CPU_20261113_dcf4662_sst_spatial。
+
+已 fetch origin/GPUACM，其已提交参照为
+13995be0f31fabab458f4c1bb26a0a1ba7ddedfc。
+该分支没有聊天中尚未提交的 11 月 16 日有界面传递修复，不能用分支
+代替 gs 当前工作区。cs 无可用 gs SSH 地址/转发认证，故此次不是
+两台机器当前源码逐字节核验，也未修改 gs 或干预其 GPU/MPI 计算。
+
+2. SST 闭合公式
+
+本地 ACM、ACMVariable、Euler 已统一原始 SST-1994：
+  mu_t = rho*a1*k / max(a1*omega, Omega*F2)，a1=0.31；
+  CD_komega 下限 1e-20；k 生成项只有 20*betaStar*k*omega 上界；
+  P 包含偏应力与 -(2/3)*k*div(u)，膨胀时允许 P<0；
+  omega 生成项 gamma*P/nu_t，使用未作 k 上界截断的 P。
+
+gs 聊天和 GPUACM 分支可见实现的 CD 下限、Omega 黏度限制及 20 倍
+上界相同；分支的 k 生成项仍有 max(P,0)，omega 使用 gamma*应变不变量，
+会遗漏非零 div(u) 的完整应力贡献。此次保留本地已经修正的公式，
+没有为追求文本相同而恢复旧公式。按照用户指定范围，此次以 GitHub 源项为准，不断言 gs 未提交工作区一致。
+
+迁入 Physics/Cauchy 的 RANSModels.hpp 却仍是另一套旧组合：
+  CD 下限 1e-10；omega 默认应变生成；nu_t 分母被钳至 1e-8。
+这与本地 SST-1994 的模型定义不一致。本次只修正这些项，保留可配置
+productionLimit、黏度比上界、DES 以及 implicitAdditionalSinks。
+nu_t=0 时 omega 生成项返回零，避免零除；未改变 k 的各向同性应力项。
+修正前新增的两项独立 CPU 回归有 28 条断言失败。
+
+3. 空间离散与边界
+
+gs 11 月 16 日补丁和本地 ACM 均以正的有界面传递系数限制 SST 扩散：
+  c = clamp((grad(q) dot n)/(qR-qL), 0, 2*(n dot n)/(dx dot n))；
+  通量直接使用 (qR-qL)*c，隐式使用同一个冻结 c。
+等值面通量严格为零，不依赖精确极值开关，避免梯度投影相消。
+入流对流使用指定面值，与扩散反射 ghost 区分。这些核心修正本地已有。
+
+保留的差异：
+  a) 本地只限制最终面传递；F1、扩散率使用原始物理梯度。
+     gs 可见 GPU 补丁先改梯度，再计算 F1/扩散率，会连带改变混合系数。
+  b) 本地对正投影不设置 1e-14 的绝对长度截断；已有 1e-18 回归。
+     gs 用 abs(projection)，并在距离 <=1e-14 时返回零。
+  c) 本地拒绝反向/零投影；gs 通过绝对值继续给出正系数。
+以上不照搬，避免关闭细网格扩散、掩盖几何方向问题或更改闭合梯度。
+有界模式仍可能截断任意倾斜网格上的仿射扩散，不是高阶精度保证。
+Cauchy 使用独立的原生有限体积离散；闭式公式一致不代表残差离散相同。
+
+4. CUDA 设备湍流缺陷
+
+移除 SA/k-omega 设备函数中 15 条未使用的非 static Eigen::seq 构造。
+本机 Eigen/NVCC 下，它们会使相应设备路径缺失数值写入，前期隔离
+复现已证明；此次应用到正式源码。仍被 CPU RealizableKE 使用的
+static 序列保留，未改公式或数值阈值。
+
+同时修正已明确的 CUDA 回归配置：positivity/gradient 设置正分子
+黏度 .002；RHS CPU worker 声明实际所需的 speciesEnthalpy 请求。
+没有放松 WithRANS 或 worker 请求能力校验，也未伪造 CUDA-aware MPI。
+CUDA 新增独立解析对照覆盖弱湍流、膨胀/压缩、两种密度；已有点核回归
+继续覆盖 SA、Wilcox、SST 的输运、扩散、源项和隐式对角。
+
+5. 验证
+
+CPU 正式重建后 16/16 定向 CTest 通过：
+  euler_rans、acm_variable_core、acm_turbulence、physics_rans_model、
+  cauchy_rans_state（5）；cauchy_rans_fv_np1/2/4/8（4）；
+  acm_rans_bdf2_kernel/physical_time（2）；两项 solver_config（2）；
+  cauchy_frontend_np1/2/4（3，含推进、checkpoint/restart）。
+physics_rans_model 本身为 7 个用例、415 条断言，全部通过。
+此前迁移阶段的完整 CPU/Python 验证是历史结果；此次没有宣称重跑
+全部 CTest 或 Python。未以旧的 Python 扩展进行新的 Python 验证。
+CUDA 13.1、sm86、RTX A5000 的正式 cauchy_cuda_tests 重建成功。
+逐项运行全部 9 个资格测试：8/9 通过，state 仍失败。
+通过：point_physics（含新增独立解析对照）、auxiliary、rhs、source、
+positivity、gradient、limited_vr、characteristics。
+state：9 个子用例中 4 通过、5 在 invalid transfer binding 处失败；
+已执行的 548 条断言均通过，不将未执行分支记为通过。根因仍为选用
+Direct 设备 halo，而本机 MPI 不支持 CUDA-aware 通信；前期独立两进程
+HostPacked 对照已证实主机中转可用，此次未更改默认 halo 策略。
+因此不再把本次剩余失败归为湍流闭式核数值不一致，也不据 8/9 通过
+宣称 Cauchy GPU 前端可用。CPU 支持边界不变。
+
+git diff --cached --check 通过。完整日志归档于本次聊天
+outputs/validation/turbulence-gs-20261117/。
+
+6. 算例与可复现性
+
+gs 最近的入口强度/omega 敏感性设置与本地算例不同；这是物理输入，
+未据此批量改写本地算例。CPU/GPU 求解调度、边界离散、网格、初值、
+时间步、重启历史等不同，不能据闭式公式一致宣称 Suboff 结果一致。
+本次主要消除迁移导致的闭合公式漂移和已证实的设备 RANS 数值缺陷。

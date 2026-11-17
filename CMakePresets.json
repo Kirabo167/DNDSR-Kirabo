@@ -152,7 +152,10 @@
                 "dnds_pybind11",
                 "geom_pybind11",
                 "cfv_pybind11",
-                "eulerP_pybind11"
+                "eulerP_pybind11",
+                "native_geom_pybind11",
+                "native_cfv_pybind11",
+                "cauchy_pybind11"
             ]
         },
         {

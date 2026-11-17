@@ -1,0 +1,35 @@
+#pragma once
+#include "NativeGeom/Transition/NativeMeshAssembler.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
+
+namespace DNDS::NativeGeom
+{
+    /// Owned-only schema selection/decoding; no intermediate readable mesh.
+    NativeOwnedMeshData ReadCompatibleNativeMeshArchiveOwned(
+        const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name,
+        Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown);
+    /// Decode native full archives or legacy primary archives after exact
+    /// collectively agreed schema selection. The serializer is already open.
+    /// Schema selection, codec acceptance and file-read recovery remain
+    /// coordinated even when compute-transfer preflight is disabled. The file
+    /// contains no execution-policy setting; new maps use default-on contexts.
+    std::shared_ptr<const UnstructuredMeshState> ReadCompatibleNativeMeshArchive(
+        const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer, const std::string &name,
+        Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown,
+        int ghostLayers = 1);
+
+    /// One-way legacy primary archive import. Decode owned legacy array wire
+    /// records directly into Runtime storage; saved ghosts/maps are ignored.
+    /// Original IDs survive; a fresh namespace is created once on import.
+    class NativeMeshLegacyArchive
+    {
+    public:
+        static NativeOwnedMeshData ReadOwned(const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer,
+                                             const std::string &name,
+                                             Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown);
+        static std::shared_ptr<const UnstructuredMeshState> Read(const MPIInfo &mpi, Serializer::SerializerBaseSSP serializer,
+                                                                 const std::string &name,
+                                                                 Serializer::ArrayGlobalOffset partition = Serializer::ArrayGlobalOffset_Unknown,
+                                                                 int ghostLayers = 1);
+    };
+}

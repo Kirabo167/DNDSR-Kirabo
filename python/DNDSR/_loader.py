@@ -117,6 +117,10 @@ _MODULE_LIBS: dict[str, Sequence[str]] = {
     "dnds":  ["libdnds_shared.so"],
     "geom":  ["libgeom_shared.so"],
     "cfv":   ["libcfv_shared.so"],
+    "native_geom": ["libdnds_shared.so", "libnative_geom_shared.so"],
+    "native_cfv": ["libdnds_shared.so", "libnative_geom_shared.so", "libnative_cfv_shared.so"],
+    "cauchy": ["libdnds_shared.so", "libnative_geom_shared.so", "libnative_cfv_shared.so",
+               "libphysics_shared.so", "libcauchy_shared.so"],
     "eulerP": ["libdnds_shared.so", "libgeom_shared.so",
                "libcfv_shared.so", "libeulerP_shared.so"],
 }

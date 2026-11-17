@@ -79,8 +79,15 @@
 #include <functional>
 #include <optional>
 #include <stdexcept>
+#include <mutex>
 
 #include <fmt/core.h>
+
+#if defined(__GNUC__) || defined(__clang__)
+#    define DNDS_CONFIG_LOCAL __attribute__((visibility("hidden")))
+#else
+#    define DNDS_CONFIG_LOCAL
+#endif
 
 namespace DNDS
 {
@@ -210,7 +217,7 @@ namespace DNDS
     /// and a ConfigContext carrying runtime values (nVars, dim, model, etc.).
     using ContextualCheck = std::function<CheckResult(const void *obj, const ConfigContext &ctx)>;
 
-    /// @brief Per-type singleton registry of config field metadata and validation checks.
+    /// @brief Module-local per-type registry of config metadata and validation checks.
     ///
     /// @tparam T The config section struct type (e.g. LimiterControl, VRSettings).
     ///
@@ -228,38 +235,108 @@ namespace DNDS
     /// execute inside the `_dnds_do_register()` body, which matches the source
     /// order.  This gives deterministic JSON key ordering and schema property
     /// ordering.
+    // Registration and its metadata are local to each linked module. Keep the
+    // callbacks local too: an interposed call_once trampoline can otherwise
+    // fill another module's descriptor while this one publishes an empty list.
+    // Config values and their JSON representation remain shared public types.
     template <typename T>
-    class ConfigRegistry
+    class DNDS_CONFIG_LOCAL ConfigRegistry
     {
+        struct Descriptor
+        {
+            std::vector<FieldMeta> fields;
+            std::vector<CrossFieldCheck> checks;
+            std::vector<ContextualCheck> contextualChecks;
+            std::function<void(T &)> postRead;
+        };
+
+        static Descriptor &descriptor()
+        {
+            static Descriptor value;
+            return value;
+        }
+
+        static Descriptor *&pendingDescriptor()
+        {
+            static thread_local Descriptor *value = nullptr;
+            return value;
+        }
+
+        static Descriptor &mutableDescriptor()
+        {
+            return pendingDescriptor() ? *pendingDescriptor() : descriptor();
+        }
+
+        static std::once_flag &registrationFlag()
+        {
+            static std::once_flag value;
+            return value;
+        }
+
+        template <class Request>
+        static void RegisterDescriptor(void *opaque)
+        {
+            auto &callback = static_cast<Request *>(opaque)->callback;
+            Descriptor pending;
+            pendingDescriptor() = &pending;
+            try
+            {
+                callback();
+                descriptor() = std::move(pending);
+                pendingDescriptor() = nullptr;
+            }
+            catch (...)
+            {
+                pendingDescriptor() = nullptr;
+                throw;
+            }
+        }
+
         /// @brief Mutable access to the field list (used only during static init).
         static std::vector<FieldMeta> &fieldsMut()
         {
-            static std::vector<FieldMeta> fs;
-            return fs;
+            return mutableDescriptor().fields;
         }
 
         /// @brief Mutable access to the context-free check list.
         static std::vector<CrossFieldCheck> &checksMut()
         {
-            static std::vector<CrossFieldCheck> cs;
-            return cs;
+            return mutableDescriptor().checks;
         }
 
         /// @brief Mutable access to the context-aware check list.
         static std::vector<ContextualCheck> &ctxChecksMut()
         {
-            static std::vector<ContextualCheck> cs;
-            return cs;
+            return mutableDescriptor().contextualChecks;
         }
 
         /// @brief Optional post-read hook called after readFromJson completes.
         static std::function<void(T &)> &postReadHookMut()
         {
-            static std::function<void(T &)> hook;
-            return hook;
+            return mutableDescriptor().postRead;
         }
 
     public:
+        /// Publish a complete descriptor once; failed registration is retryable.
+        /// Recursion into the same type is rejected instead of exposing a partial
+        /// registry or deadlocking. Ordinary nested sections use distinct types.
+        template <class F>
+        static void ensureRegistered(F &&registerFields)
+        {
+            DNDS_check_throw_info(!pendingDescriptor(), "Recursive config registration for the same type");
+            struct Request
+            {
+                F &callback;
+            } request{registerFields};
+            // libstdc++ exposes its call_once trampoline even for a hidden
+            // callable. Erase only its argument types: the shared trampoline
+            // invokes our actual local function pointer, never embeds T's
+            // module-local descriptor/TLS accesses. No heap allocation.
+            using Callback = void (*)(void *);
+            const Callback callback = &RegisterDescriptor<Request>;
+            std::call_once(registrationFlag(), callback, static_cast<void *>(&request));
+        }
+
         // ================================================================
         // Registration API (called by ConfigSectionBuilder during lazy init)
         // ================================================================
@@ -383,6 +460,7 @@ namespace DNDS
         {
             nlohmann::ordered_json schema;
             schema["type"] = "object";
+            schema["additionalProperties"] = false;
             if (!sectionDescription.empty())
                 schema["description"] = sectionDescription;
             auto &props = schema["properties"] = nlohmann::ordered_json::object();

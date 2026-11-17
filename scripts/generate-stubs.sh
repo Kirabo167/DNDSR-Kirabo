@@ -44,9 +44,14 @@ pybind11-stubgen DNDSR.CFV -o "${STUBS_DIR}" || exit 1
 echo "=== Generating stubs for DNDSR.EulerP ==="
 pybind11-stubgen DNDSR.EulerP -o "${STUBS_DIR}" || exit 1
 
+for MODULE in NativeGeom NativeCFV Cauchy; do
+    echo "=== Generating stubs for DNDSR.${MODULE} ==="
+    pybind11-stubgen "DNDSR.${MODULE}" -o "${STUBS_DIR}" || exit 1
+done
+
 # For each module, flatten the _ext/<binding>/*.pyi submodule stubs
 # into the package-level directory so that IDEs see them.
-for MODULE in DNDS Geom CFV EulerP; do
+for MODULE in DNDS Geom CFV EulerP NativeGeom NativeCFV Cauchy; do
     # Find the binding subdirectory (e.g. _ext/dnds_pybind11/)
     EXT_DIR=$(find "${STUBS_DIR}/DNDSR/${MODULE}/_ext" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
     if [ -n "${EXT_DIR}" ]; then
@@ -62,7 +67,7 @@ done
 
 # Copy stubs into the python package tree for PEP 561 compliance
 echo "=== Copying stubs into python/DNDSR/ ==="
-for MODULE in DNDS Geom CFV EulerP; do
+for MODULE in DNDS Geom CFV EulerP NativeGeom NativeCFV Cauchy; do
     SRC="${STUBS_DIR}/DNDSR/${MODULE}"
     DST="${PYTHON_DIR}/DNDSR/${MODULE}"
     if [ -d "${SRC}" ]; then

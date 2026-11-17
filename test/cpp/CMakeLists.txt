@@ -194,6 +194,36 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 # ===================================================================
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
 
+# Native storage and communication, shared with the existing solver arrays.
+dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")
+dnds_add_unit_test(runtime_array "DNDS/test_RuntimeArray.cpp" "dnds")
+dnds_add_unit_test(runtime_row_builder "DNDS/test_RuntimeRowBuilder.cpp" "dnds")
+dnds_add_unit_test(eager_engine "DNDS/test_EagerEngine.cpp" "dnds")
+dnds_add_mpi_test(runtime_element_schema "DNDS/test_RuntimeElementSchema.cpp" "dnds")
+dnds_add_mpi_test(runtime_exchange "DNDS/test_RuntimeExchange.cpp" "dnds")
+dnds_add_mpi_test(runtime_row_transfer "DNDS/test_RuntimeRowTransfer.cpp" "dnds")
+dnds_add_mpi_test(runtime_transient "DNDS/test_RuntimeTransient.cpp" "dnds")
+dnds_add_mpi_test(legacy_array_bridge "DNDS/test_LegacyArrayBridge.cpp" "dnds")
+dnds_add_mpi_test(legacy_dof_bridge "DNDS/test_LegacyDofBridge.cpp" "dnds")
+dnds_add_mpi_test(native_dof_algebra "DNDS/test_NativeDofAlgebra.cpp" "dnds")
+dnds_add_mpi_test(id_row_transfer "DNDS/test_IdRowTransfer.cpp" "dnds")
+add_custom_target(dnds_native_data_tests)
+add_dependencies(dnds_native_data_tests
+    dnds_test_runtime dnds_test_runtime_array dnds_test_runtime_row_builder
+    dnds_test_eager_engine dnds_test_runtime_element_schema dnds_test_runtime_exchange
+    dnds_test_runtime_row_transfer dnds_test_runtime_transient dnds_test_legacy_array_bridge
+    dnds_test_native_dof_algebra dnds_test_id_row_transfer)
+add_dependencies(dnds_native_data_tests dnds_test_legacy_dof_bridge)
+if(DNDS_USE_CUDA)
+    dnds_add_unit_test(runtime_cuda "DNDS/test_Runtime_CUDA.cu" "dnds")
+    dnds_add_unit_test(native_dof_algebra_cuda "DNDS/test_NativeDofAlgebra_CUDA.cu" "dnds")
+    # Keep the configured toolkit even when its runtime is outside ldconfig.
+    set_target_properties(dnds_test_runtime_cuda dnds_test_native_dof_algebra_cuda
+        PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:CUDA::cudart>")
+    add_dependencies(dnds_native_data_tests dnds_test_runtime_cuda dnds_test_native_dof_algebra_cuda)
+endif()
+add_dependencies(dnds_unit_tests dnds_native_data_tests)
+
 dnds_add_mpi_test(serializer "DNDS/test_Serializer.cpp" "dnds")
 dnds_add_mpi_test(mpi "DNDS/test_MPI.cpp" "dnds")
 dnds_add_mpi_test(array_transformer "DNDS/test_ArrayTransformer.cpp" "dnds")
@@ -640,10 +670,14 @@ add_custom_target(ncfv_unit_tests)
 add_dependencies(all_unit_tests ncfv_unit_tests)
 ncfv_add_unit_test(geometry "NCFV/test_NCFVGeometry.cpp" "ncfv;cfv;geom;dnds")
 ncfv_add_mpi_test(parallel "NCFV/test_NCFVParallel.cpp" "ncfv;cfv;geom;dnds")
+ncfv_add_mpi_test(linear_recovery "NCFV/test_NCFVLinearRecovery.cpp" "ncfv;cfv;geom;dnds" 1 2 4)
 ncfv_add_mpi_test(shared_gradient "NCFV/test_NCFVSharedGradient.cpp" "ncfv;cfv;geom;dnds")
 ncfv_add_mpi_test(io "NCFV/test_NCFVIO.cpp" "ncfv;cfv;geom;dnds" 1 2)
 add_dependencies(ncfv_unit_tests
     ncfv_test_geometry
     ncfv_test_parallel
+    ncfv_test_linear_recovery
     ncfv_test_shared_gradient
     ncfv_test_io)
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/NativeFramework.cmake)

@@ -3,9 +3,11 @@
 /// @brief Base types and abstract interface for array serialization.
 
 #include "DNDS/Defines.hpp"
+#include "DNDS/Core/CheckedSize.hpp"
 #include "DNDS/MPI.hpp"
 #include <limits>
 #include <set>
+#include <variant>
 #include "DNDS/Device/DeviceStorage.hpp"
 #include "DNDS/Vector.hpp"
 
@@ -123,6 +125,34 @@ namespace DNDS::Serializer
     /// starting at `rank * N_global / nRanks`). Used during repartitioned restarts.
     static const ArrayGlobalOffset ArrayGlobalOffset_EvenSplit = ArrayGlobalOffset{0, Offset_EvenSplit};
 
+    /// A logical byte interval in caller-owned host memory. Intervals are ordered,
+    /// nonoverlapping and may omit row padding; the file stores their concatenation.
+    struct ByteMemorySegment
+    {
+        index offset = 0;
+        index size = 0;
+    };
+
+    /// Regular file selection, in bytes. Selected blocks are traversed in
+    /// increasing file order and copied directly into the supplied memory
+    /// intervals. This lets old row-major checkpoints populate strided tables
+    /// without a payload-sized transpose buffer.
+    struct ByteFilePattern
+    {
+        index offset = 0, blockBytes = 0, strideBytes = 0, count = 0;
+        index SelectedBytes() const
+        {
+            DNDS_check_throw_info(offset >= 0 && blockBytes >= 0 && strideBytes >= blockBytes && count >= 0,
+                                  "invalid byte file pattern");
+            return CheckedSize::Multiply(blockBytes, count);
+        }
+        index End() const
+        {
+            SelectedBytes();
+            return count && blockBytes ? CheckedSize::Add(CheckedSize::Add(offset, CheckedSize::Multiply(count - 1, strideBytes)), blockBytes) : offset;
+        }
+    };
+
     /// @brief Abstract interface for reading/writing scalars, vectors, and byte arrays.
     ///
     /// ## Collective semantics (SerializerH5)
@@ -158,8 +188,93 @@ namespace DNDS::Serializer
         /// freed and its address reused, which would cause false dedup hits.
         std::map<void *, std::pair<std::shared_ptr<void>, std::string>> ptr_2_pth;
 
-        /// Reverse map for read-side dedup: path -> raw pointer to the ssp local variable.
-        std::map<std::string, void *> pth_2_ssp;
+        using SharedReadValue = std::variant<ssp<host_device_vector<index>>, ssp<host_device_vector<rowsize>>>;
+        struct SharedReadEntry
+        {
+            ArrayGlobalOffset region;
+            SharedReadValue value;
+        };
+        /// Session-owned, typed read results, indexed by resolved file region.
+        std::map<std::string, std::vector<SharedReadEntry>> pth_2_ssp;
+
+        using RowStartVector = host_device_vector<index>;
+        struct RowStartReadEntry
+        {
+            ArrayGlobalOffset rows;
+            ArrayGlobalOffset data;
+            ssp<RowStartVector> local;
+        };
+        struct RowStartWriteEntry
+        {
+            ssp<const RowStartVector> local; // retain source identity for the session
+            ArrayGlobalOffset data;
+            size_t size;
+            std::string path;
+        };
+        // Decoded CSR storage must never alias the raw-vector read cache.
+        std::map<std::string, RowStartReadEntry> rowStartReads;
+        std::map<const RowStartVector *, RowStartWriteEntry> rowStartWrites;
+
+        /// Collective agreement for H5; local check for JSON.
+        void RowStartCheck(bool valid, const std::string &message);
+        bool RowStartAll(bool value);
+        bool RowStartSamePath(const std::string &path);
+        void ValidateRowStartWrite(const ssp<const RowStartVector> &v, ArrayGlobalOffset data);
+        void ValidateRowStartRead(const std::string &path, ArrayGlobalOffset rows);
+        ArrayGlobalOffset NormalizeRowStarts(RowStartVector &v, bool distributed);
+
+        index ValidateByteSegments(const uint8_t *data, index memoryBytes,
+                                   const std::vector<ByteMemorySegment> &segments)
+        {
+            bool valid = memoryBytes >= 0;
+            index previous = 0, total = 0;
+            for (const auto &segment : segments)
+            {
+                const bool bounded = valid && segment.offset >= previous && segment.size >= 0 &&
+                                     segment.offset <= memoryBytes && segment.size <= memoryBytes - segment.offset &&
+                                     segment.size <= std::numeric_limits<index>::max() - total;
+                valid = valid && bounded;
+                if (bounded)
+                {
+                    previous = segment.offset + segment.size;
+                    total += segment.size;
+                }
+            }
+            RowStartCheck(valid && (!total || data), "Invalid caller byte segments or memory extent");
+            return total;
+        }
+
+        template <class T>
+        bool sharedReadLookup(const std::string &path, ArrayGlobalOffset region, ssp<T> &value)
+        {
+            auto found = pth_2_ssp.find(path);
+            if (found == pth_2_ssp.end())
+                return false;
+            for (const auto &entry : found->second)
+            {
+                auto typed = std::get_if<ssp<T>>(&entry.value);
+                DNDS_check_throw_info(typed, "Shared-vector read type differs from the cached type");
+                if (entry.region == region)
+                {
+                    value = *typed;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        template <class T>
+        void sharedReadRegister(const std::string &path, ArrayGlobalOffset region, const ssp<T> &value)
+        {
+            auto &entries = pth_2_ssp[path];
+            for (auto &entry : entries)
+                if (entry.region == region)
+                {
+                    entry.value = value;
+                    return;
+                }
+            entries.push_back({region, value});
+        }
 
         /// Check if a shared pointer was already written; if so return its path.
         template <class T>
@@ -186,6 +301,8 @@ namespace DNDS::Serializer
         {
             ptr_2_pth.clear();
             pth_2_ssp.clear();
+            rowStartReads.clear();
+            rowStartWrites.clear();
         }
 
     public:
@@ -242,10 +359,61 @@ namespace DNDS::Serializer
         virtual void WriteSharedIndexVector(const std::string &name, const ssp<host_device_vector<index>> &v, ArrayGlobalOffset offset) = 0;
         /// @brief Write a shared rowsize vector; deduplicated across multiple writes.
         virtual void WriteSharedRowsizeVector(const std::string &name, const ssp<host_device_vector<rowsize>> &v, ArrayGlobalOffset offset) = 0;
+
+        /// Write immutable local CSR offsets (nRows+1, first=0). Distributed data
+        /// is {local element count, global element start}; JSON uses Unknown.
+        /// Shared identity is the original vector, not its encoded temporary.
+        /// Do not mutate the source structure during this writer session.
+        virtual void WriteSharedRowStartVector(const std::string &name,
+                                               const ssp<const host_device_vector<index>> &v,
+                                               ArrayGlobalOffset data) = 0;
+
+        /// Read CSR structure for an explicit resolved {row count, row start}.
+        /// JSON requires row start zero and the complete local row count.
+        /// Returns the flat-data region (Unknown for JSON) and shared normalized
+        /// offsets. All aliases of one stored dataset must use the same row slice
+        /// per rank in this session. H5 calls are collective, including cache hits.
+        /// Returned vectors survive CloseFile; structural mutation must detach.
+        virtual ArrayGlobalOffset ReadSharedRowStartVector(const std::string &name,
+                                                           ssp<host_device_vector<index>> &v,
+                                                           ArrayGlobalOffset rows) = 0;
         /// @brief Write a raw byte buffer under `name`. `offset.isDist()` = true
         /// means the caller provides the exact per-rank slab; otherwise the
         /// buffer is treated according to the offset's sentinel.
         virtual void WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset) = 0;
+
+        /// Write concatenated logical intervals directly from caller memory.
+        /// H5 accepts Parts, One, or the legacy write descriptor {global bytes,
+        /// rank byte offset}; JSON accepts Unknown. No payload staging is required.
+        virtual void WriteByteSegments(const std::string &, const uint8_t *, index,
+                                       const std::vector<ByteMemorySegment> &, ArrayGlobalOffset)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support direct byte segments");
+        }
+
+        /// Fill caller intervals from a flat byte dataset. Query the byte window
+        /// first with ReadUint8Array(nullptr,...), then pass the resolved offset.
+        /// The segment byte count must match that window. Empty ranks still
+        /// participate; nullptr is permitted when the logical byte count is zero.
+        virtual void ReadByteSegments(const std::string &, uint8_t *, index,
+                                      const std::vector<ByteMemorySegment> &, ArrayGlobalOffset &)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support direct byte segments");
+        }
+        /// Direct strided file read. Counted selected bytes must equal memory
+        /// interval bytes; no hidden payload transpose or host staging.
+        virtual void ReadBytePattern(const std::string &, uint8_t *, index,
+                                     const std::vector<ByteMemorySegment> &, const ByteFilePattern &)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support strided byte file reads");
+        }
+        /// Physical metadata extent without materializing its values. Used to
+        /// reject malformed row windows before a legacy backend slice can abort.
+        virtual index IndexVectorSize(const std::string &)
+        {
+            DNDS_check_throw_info(false, "Serializer does not support index extent queries");
+            return 0;
+        }
 
         /**
          * @brief Write a per-rank index vector (replicated name, independent values).

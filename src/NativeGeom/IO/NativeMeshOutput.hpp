@@ -1,0 +1,23 @@
+#pragma once
+
+#include "NativeGeom/Unstructured/UnstructuredMeshState.hpp"
+
+namespace DNDS::NativeGeom
+{
+    /// Owned output-only buffers. Periodic node images stay with their node's
+    /// owner and pointSourceRows maps them to original local point-field rows.
+    /// This is not a mesh workspace: no topology or legacy arrays are cloned.
+    struct NativeMeshOutput
+    {
+        Runtime::Array<real> coordinates;
+        std::vector<index> pointSourceRows, connectivity, offsets;
+        std::vector<uint8_t> types;
+        index nodeOffset = 0, cellOffset = 0, globalNodes = 0, globalCells = 0, globalConnectivity = 0;
+        /// Collective setup on mpi.comm. Uses direct row exchange for periodic
+        /// masks and labels, with local node/ghost storage plus O(rank) offsets.
+        /// Inherits the source preflight policy on this communicator (which may
+        /// be congruent to the source communicator). Required output numbering
+        /// and periodic-image reductions remain; off-mode local failures abort.
+        static NativeMeshOutput Build(const UnstructuredMeshState &source, const MPIInfo &mpi);
+    };
+}

@@ -23,6 +23,11 @@ MPI and the C++ standard library are linked from the host and are deliberately
 not bundled. Consequently, a locally built wheel is tied to the MPI ABI used
 to build it even though that ABI is not represented in the wheel filename.
 
+Cauchy's operational logger uses header-only spdlog 1.15.3 with the project's
+external fmt configuration. `scripts/install_spdlog_deps.sh` pins its source
+archive and SHA256. The spdlog MIT notice is retained in
+`licenses/spdlog-MIT.txt` and included by the existing wheel license-file glob.
+
 ## Distribution Status
 
 The current wheel is a development/internal artifact, not an approved public

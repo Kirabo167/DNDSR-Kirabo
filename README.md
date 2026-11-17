@@ -12,6 +12,11 @@ upstream v0.3.1 code line and organizes CPU solvers into Euler/CFV, ACM
 third-order **Node Center Finite Volume Method (NCFV)**. Project target,
 namespace, and Python-package names remain `DNDSR`.
 
+The native mesh and Cauchy CPU framework are additionally migrated from
+[`611b0a0`](https://github.com/harryzhou2000/DNDSR/commit/611b0a0b7a6b3ac9a54be891919f9016a8756471).
+They share the Runtime/Algebra data layer with this fork and expose separate
+`NativeGeom`/`NativeCFV` interfaces alongside the established solver interfaces.
+
 See the [v0.3.1 feature and migration guide](docs/guides/v0.3.1_new_features_zh.md)
 for compatibility changes and the validation matrix. The upstream manuals and
 API reference remain available at
@@ -21,9 +26,13 @@ API reference remain available at
 
 | Module | Responsibility |
 |---|---|
-| `DNDS` | MPI arrays and mappings, configuration, profiling, serialization, HDF5, and host/device utilities |
+| `DNDS` | Runtime arrays, leased storage, DOF algebra, MPI plans, legacy array bridges, configuration, serialization, and host/device utilities |
 | `Geom` | CGNS/HDF5 mesh I/O, Metis/ParMetis partitioning, connectivity, periodic topology, and ghost construction |
 | `CFV` | Compact finite-volume geometry, variational reconstruction, limiters, and quadrature support |
+| `NativeGeom` | Native mesh/entity storage, adjacency registry, snapshots/edits, CGNS/OpenFOAM/archive I/O, partitioning, refinement, and ghost preparation |
+| `NativeCFV` | Native finite-volume, gradient, polynomial sampling, limited/variational reconstruction, and interface sampling plans |
+| `Physics` | Shared state input, thermodynamics, transport, RANS closures, and optional chemistry resources |
+| `Cauchy` | Native CPU Domain/Simulation framework, explicit/implicit stepping, linear/nonlinear solves, multidomain coupling, and restart/output |
 | `Euler` | Compressible Euler/Navier-Stokes, SA-IDDES, and k-omega RANS solvers |
 | `EulerP` | Alternative evaluator and optional CUDA/Python execution path |
 | `Solver` | Header-only ODE, Krylov, direct-solver, and nonlinear iteration utilities |
@@ -69,6 +78,8 @@ NCFV uses `solver.type="ncfv_euler"`, `discretization="NCFV"`,
 Cases and their schemas are grouped under `cases/euler/{2D,3D}`,
 `cases/acm/{2D,3D}` and `cases/ncfv_euler/{2D,3D}`. See
 [the case guide](cases/README.md) for variant subdirectories and configuration checks.
+Cauchy has its own layered configuration under `cases/cauchy/`; `cauchy_solver`
+builds `cauchy.exe`, with mesh dimension and physical model selected at runtime.
 
 ### Euler compatibility and validation scope
 
@@ -91,6 +102,91 @@ for the pinned upstream revision, test scope and reproduction commands.
 Supporting tools include `eulerState` for state conversion/inspection and,
 when Cantera is enabled, `canteraConstVolTrajectory` for constant-volume
 chemistry trajectories.
+
+## Native Mesh and Cauchy
+
+`DNDS::NativeGeom` and `DNDS::NativeCFV` retain the upstream native mesh and
+field implementation under separate namespaces. Existing Euler, ACM and NCFV
+continue to use their established `Geom`/`CFV` interfaces and case formats.
+Cauchy uses the native mesh, entity spaces and shared Runtime/Algebra fields
+throughout its numerical path.
+
+The mesh path includes persistent entity IDs, owner/ghost distribution,
+connectivity and periodic metadata, retained read scopes, transactional edits,
+partition/order changes, refinement, and native/legacy archive import. Cauchy
+adds equation-block fields, finite-volume and reconstruction operators, RANS,
+SSPRK and implicit time methods, Krylov/SGS/ILU solves, polynomial multigrid,
+multidomain interfaces, accepted-state checkpoints, CSV histories and VTKHDF.
+Cantera-dependent profiles require a separate Cantera-enabled build.
+
+```bash
+# Fresh dependency installs include Cauchy's pinned header-only logger.
+# Existing checkouts can add it without replacing other dependencies:
+bash scripts/install_spdlog_deps.sh
+
+CC=mpicc CXX=mpicxx cmake -S . -B build \
+    -DDNDS_BUILD_TESTS=ON -DDNDS_USE_CANTERA=OFF
+cmake --build build --target cauchy_solver native_framework_tests all_pybind11 -j16
+cmake --install build --component py
+
+# Run Cauchy from the source root: mesh/output paths are relative to CWD.
+build/app/cauchy.exe cases/cauchy/smoke.json --check-config
+mpirun -np 4 build/app/cauchy.exe cases/cauchy/smoke.json
+# Print the canonical layered-input schema.
+build/app/cauchy.exe --emit-schema
+```
+
+The smoke case performs two constant-reconstruction SSPRK3 steps on a periodic
+mesh. Its output goes to `data/cauchy-smoke/`, outside the maintained case
+configuration tree. The other [Cauchy templates](cases/cauchy/README.md) are
+numerical experiment inputs; a short smoke run does not qualify their accuracy
+or convergence.
+
+The Python API adds `DNDS.Runtime`, `DNDSR.NativeGeom`, `DNDSR.NativeCFV` and
+`DNDSR.Cauchy`. Runtime's Python layer supplies tracked array slicing and live
+debugging views; `numpy()` returns a snapshot. Mesh read scopes and field leases
+must be released before mutation or stepping. For example, after building and
+installing the extensions:
+
+```python
+import json
+from mpi4py import MPI
+from DNDSR import DNDS, NativeGeom, NativeCFV, Cauchy
+
+mpi = DNDS.MPIInfo()
+mpi.setWorld()
+mesh = NativeGeom.with_native_topology(
+    NativeGeom.read_native_cgns(mpi, "data/mesh/Uniform_3x3_wall.cgns", 2)
+)
+with mesh.acquire_read(faces=True) as read:
+    local_zones = {int(read.boundary_info(i).zone) for i in range(mesh.NumBnd())}
+zones = set().union(*MPI.COMM_WORLD.allgather(local_zones))
+config = {"defaults": {
+    "initialPrimitive": [1, 0, 0, 0, 1],
+    "boundaries": {str(zone): {"kind": "slipWall"} for zone in zones},
+}}
+domain = Cauchy.Domain(mesh, json.dumps(config))
+assert domain.advance(1e-5).accepted
+flow_snapshot = domain.fields["flow"].numpy()
+```
+
+```bash
+# Native CPU/MPI integration (default MPI sizes: 1, 2, 4, 8).
+ctest --test-dir build -L native --output-on-failure -j8
+# Include the separately built cross-extension test module for Python tests.
+PYTHONPATH="$PWD/python:$PWD/build/test/cpp" mpirun -np 2 \
+    venv/bin/python -m pytest test/DNDS test/NativeGeom test/Cauchy -q
+```
+
+The supported Cauchy frontend in this migration is CPU. After the shared RANS
+kernel and test-fixture corrections, CUDA operator qualification passes 8 of 9
+tests on the local RTX A5000/CUDA 13.1 build. The remaining `state` test rejects
+direct device halo binding with the non-CUDA-aware local MPI. This does not
+establish a working Cauchy GPU solver.
+Their tests are opt-in with `DNDS_BUILD_CAUCHY_CUDA_TESTS=ON` in a CUDA build,
+then target `cauchy_cuda_tests`. Existing Runtime/Algebra and EulerP CUDA paths
+remain separate. See the [migration and validation record](docs/dev/native_framework_migration_20261113.txt)
+for the precise tested scope and remaining limitations.
 
 ## NCFV: Third-Order Node Center Finite Volume
 
@@ -195,6 +291,15 @@ See the [constant-density ACM guide](src/ACM/README.md), the
 [variable-density ACM guide](src/ACMVariable/README.md), and the
 [incompressible-method comparison](docs/reports/DNDSR_incompressible_methods_zh.md)
 for the implemented method matrices and current limitations.
+
+ACM, variable-density ACM, Euler and migrated Physics/Cauchy use the original
+SST (1994) closure: the Omega viscosity limiter, `CD_komega >= 1e-20`, and a
+20-times production cap for k only. Omega production uses the signed full
+Reynolds-stress production divided by `nu_t`, including dilatation, with no
+dimensional `1e-8` viscosity floor. The Cauchy source and diffusion kernels have
+independent weak-turbulence and dilatation regressions. See the
+[gs Suboff comparison and corrections](docs/dev/turbulence_gs_comparison_20261117.txt)
+for source provenance, retained discretization differences and validation limits.
 
 ## Quick Start
 
@@ -437,12 +542,14 @@ ctest --test-dir build -R '^geom_' --output-on-failure
 # Python tests (always rebuild and install all bindings first)
 cmake --build --preset python -j32
 cmake --install build --component py
-PYTHONPATH="$PWD/python" venv/bin/python -m pytest test/
+PYTHONPATH="$PWD/python:$PWD/build/test/cpp" venv/bin/python -m pytest test/
 ```
 
 Available C++ category targets are `dnds_unit_tests`, `geom_unit_tests`,
 `cfv_unit_tests`, `euler_unit_tests`, `acm_unit_tests`,
-`acm_variable_unit_tests`, `solver_unit_tests`, and `ncfv_unit_tests`. MPI
+`acm_variable_unit_tests`, `solver_unit_tests`, `ncfv_unit_tests`,
+`native_geom_unit_tests`, `native_cfv_unit_tests`, and `cauchy_unit_tests`.
+`native_framework_tests` also builds native I/O and Python interop fixtures. MPI
 tests are registered for 1, 2, 4, and 8 ranks by default; set
 `DNDS_TEST_NP_LIST` when configuring to choose another list. Use
 `scripts/ctest_summary.py` when an aggregated doctest assertion summary is
@@ -470,13 +577,17 @@ DNDSR/
 │   ├── DNDS/            # Core MPI, arrays, config, serialization, device utilities
 │   ├── Geom/            # Mesh I/O, topology, partitioning, and ghost layers
 │   ├── CFV/             # Compact finite-volume reconstruction and quadrature
+│   ├── NativeGeom/      # Runtime mesh/entity storage and mesh preparation
+│   ├── NativeCFV/       # Native finite-volume/reconstruction plans
+│   ├── Physics/         # Shared material and closure resources
+│   ├── Cauchy/          # Native CPU Domain/Simulation framework
 │   ├── Euler/            # Compressible and reactive-flow solver kernels
 │   ├── EulerP/           # Alternative/CUDA-capable evaluator
 │   ├── Solver/           # Generic algebraic and time-integration utilities
 │   ├── ACM/              # Constant-density artificial compressibility
 │   ├── ACMVariable/      # Variable-density artificial compressibility
 │   └── NCFV/             # Node Center Finite Volume Method
-├── cases/               # euler/, acm/, ncfv_euler/; each has 2D/ and 3D/ cases
+├── cases/               # euler/, acm/, ncfv_euler/ (2D/3D), plus cauchy/
 ├── test/                # C++ doctest and Python pytest suites
 ├── python/DNDSR/        # Python package and installed native extensions
 ├── docs/                # Guides, architecture notes, theory, and research reports
@@ -532,7 +643,9 @@ Python autodoc, Breathe API pages, and full
 - Python 3.10+ is supported by package metadata; Python 3.12 is the current CI
   and development baseline.
 - Cantera/reactive-flow targets are CPU-only in the maintained presets. CUDA
-  currently applies to the EulerP/device path, not to NCFV or ACM.
+  applies to the Runtime/Algebra and EulerP/device paths. Cauchy CPU is the
+  supported frontend here; its CUDA operator qualification remains incomplete.
+  NCFV and ACM have no CUDA solver path.
 - NCFV currently accepts O1 primal meshes. O2 curved elements, rotational
   periodicity, NCFV turbulence models, and implicit NCFV time integration are
   not implemented.

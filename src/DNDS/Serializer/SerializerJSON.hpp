@@ -13,7 +13,7 @@
 /// - WriteIndexVectorPerRank
 /// - SetDeflateLevel impact verification
 /// - Error handling (nonexistent file, duplicate paths)
-#include "SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
 
 #include "DNDS/Serializer/JsonUtil.hpp"
 #include <fstream>
@@ -22,6 +22,9 @@
 namespace DNDS::Serializer
 {
     /// @brief Per-rank JSON file serializer; each MPI rank writes its own .json file.
+    /// It also supports an in-memory DOM through CreatePath without opening a
+    /// file; byte-segment operations follow file read/write mode only when a
+    /// backing file is open.
     class SerializerJSON : public SerializerBase
     {
         std::fstream fileStream;
@@ -36,7 +39,10 @@ namespace DNDS::Serializer
 
         MPIInfo mpi; // NULL
 
+        std::string ResolveSharedIndexPath(const std::string &name);
+
     public:
+        index IndexVectorSize(const std::string &name) override;
         // Rule-of-five closure. Owns `fstream` + JSON DOM; copy / move
         // are inherited-deleted from SerializerBase but must be re-declared
         // explicitly because the non-trivial dtor suppresses implicit defaults.
@@ -71,8 +77,17 @@ namespace DNDS::Serializer
         void WriteRealVector(const std::string &name, const std::vector<real> &v, ArrayGlobalOffset offset) override;
         void WriteSharedIndexVector(const std::string &name, const ssp<host_device_vector<index>> &v, ArrayGlobalOffset offset) override;
         void WriteSharedRowsizeVector(const std::string &name, const ssp<host_device_vector<rowsize>> &v, ArrayGlobalOffset offset) override;
+        void WriteSharedRowStartVector(const std::string &name, const ssp<const host_device_vector<index>> &v, ArrayGlobalOffset data) override;
+        ArrayGlobalOffset ReadSharedRowStartVector(const std::string &name, ssp<host_device_vector<index>> &v, ArrayGlobalOffset rows) override;
 
         void WriteUint8Array(const std::string &name, const uint8_t *data, index size, ArrayGlobalOffset offset) override;
+        void WriteByteSegments(const std::string &name, const uint8_t *data, index memoryBytes,
+                               const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset offset) override;
+        void ReadByteSegments(const std::string &name, uint8_t *data, index memoryBytes,
+                              const std::vector<ByteMemorySegment> &segments, ArrayGlobalOffset &offset) override;
+
+        void ReadBytePattern(const std::string &name, uint8_t *data, index memoryBytes,
+                             const std::vector<ByteMemorySegment> &segments, const ByteFilePattern &pattern) override;
 
         void WriteIndexVectorPerRank(const std::string &name, const std::vector<index> &v) override
         {

@@ -1,4 +1,5 @@
 #pragma once
+#include "DNDS/Memory/RowStorage.hpp"
 /// @file ArrayBasic.hpp
 /// @brief Array layout descriptors, non-owning views, row views, and iterator base.
 
@@ -272,7 +273,7 @@ namespace DNDS
         std::conditional_t<_dataLayout == TABLE_Max || _dataLayout == TABLE_Fixed, rowsize, EmptyNoDefault>
             _row_size_dynamic = 0;
 
-        using t_dataUncompressed = std::vector<std::vector<T>>;
+        using t_dataUncompressed = std::vector<RowStorage<T>>;
         std::conditional_t<_dataLayout == CSR, t_dataUncompressed *, EmptyNoDefault> _p_dataUncompressed = nullptr;
 
     public:

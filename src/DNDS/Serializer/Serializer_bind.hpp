@@ -8,11 +8,11 @@
 #include "pybind11_json/pybind11_json.hpp"
 namespace py = pybind11;
 
-#include "SerializerBase.hpp"
-#include "SerializerH5.hpp"
-#include "SerializerJSON.hpp"
+#include "DNDS/Serializer/SerializerBase.hpp"
+#include "DNDS/Serializer/SerializerH5.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
 
-#include "SerializerFactory.hpp"
+#include "DNDS/Serializer/SerializerFactory.hpp"
 #include <pybind11/stl.h>
 
 #include <utility>

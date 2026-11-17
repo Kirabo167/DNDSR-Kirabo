@@ -123,6 +123,9 @@ build.targets = [
     "geom_pybind11",
     "cfv_pybind11",
     "eulerP_pybind11",
+    "native_geom_pybind11",
+    "native_cfv_pybind11",
+    "cauchy_pybind11",
 ]
 build.verbose = true
 build-dir = "build_py/{wheel_tag}"

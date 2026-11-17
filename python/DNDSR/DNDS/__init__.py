@@ -270,3 +270,8 @@ def ArrayTransformerFromParArray(arr, init_args: tuple = ()):
 
 
 __all__ = ["MPI", "Debug"]
+
+
+# Install native row indexing/views over the shared C++ Array type.
+from importlib import import_module as _import_module
+Runtime = _import_module(".Runtime", __name__)

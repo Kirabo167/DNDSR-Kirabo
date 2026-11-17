@@ -1,5 +1,5 @@
 {
-    "$schema": "../ncfv_euler3D_schema.json",
+    "$schema": "../../ncfv_euler3D_schema.json",
     "solver": {
         "type": "ncfv_euler",
         "discretization": "NCFV",

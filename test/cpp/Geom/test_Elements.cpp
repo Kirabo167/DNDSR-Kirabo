@@ -35,6 +35,13 @@
 using namespace DNDS::Geom;
 using namespace DNDS::Geom::Elem;
 
+// Keep every integer-power branch usable during C++17 constant evaluation.
+static_assert(_iipow(2., 0) == 1.);
+static_assert(_iipow(2., 1) == 2.);
+static_assert(_iipow(2., 3) == 8.);
+static_assert(_iipow(2., -1) == 0.5);
+static_assert(_iipow(2., -3) == 0.125);
+
 // Convenience: 3D point from 1–3 coords, rest zeroed.
 static tPoint MakePoint(t_real x, t_real y = 0, t_real z = 0)
 {

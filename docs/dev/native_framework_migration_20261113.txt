@@ -1,0 +1,148 @@
+DNDSR-Kirabo 原生网格与 Cauchy 框架迁移记录
+日期：2026-11-13
+
+1. 版本与迁移范围
+
+目标：/home/mrz/projects/DNDSR-Kirabo，原 HEAD：
+cf046596251c2c44318ee5d069b5d029e5dd58f2。
+参照：harryzhou2000/DNDSR 的完整版本
+611b0a0b7a6b3ac9a54be891919f9016a8756471。
+使用该版本的数据结构和框架，不是只应用该次提交的增量差异。
+变更留在工作区，未 commit、未 push。
+
+本阶段延续 native_data_migration_20261113.txt 中的 Runtime/Algebra
+共享存储迁移，接入原生网格、有限体积算子、Physics 和 Cauchy CPU 前端。
+README 已更新模块、构建、依赖、Python API、算例、测试和 CUDA 边界。
+
+2. 与本地原有架构的关系
+
+本地 Geom/CFV 的 tracked legacy mesh、ArrayPair/ArrayDof 和求解器循环
+仍为 Euler、ACM、NCFV 的兼容接口，保留既有方程和用户研究修改。
+新路径使用原生 EntitySpace、持久实体 ID、Runtime 数组和 Algebra DOF：
+
+  src/NativeGeom (DNDS::NativeGeom)
+      -> src/NativeCFV (DNDS::NativeCFV)
+      -> src/Physics (DNDS::Physics) / src/Cauchy (DNDS::Cauchy)
+      -> Cauchy Domain / Simulation / cauchy.exe
+
+参照版本的 Geom/CFV 迁入独立命名空间，避免覆盖本地研究实现。
+Cauchy 的数值路径实际使用新网格和原生字段；旧求解器仍使用原接口。
+因此，共享数据层已经更新，但旧求解器不会自动获得 Cauchy 的外层调度。
+旧字段可通过显式共享桥接接入；布局变化后必须重新建立依赖该布局的绑定。
+
+原生网格包括实体分布/owner/ghost、邻接注册表、拓扑和几何状态、周期信息、
+保留读取作用域、事务编辑、快照、重排/重新分区、细化、边界提取和网格归档。
+输入支持 CGNS、OpenFOAM、原生及兼容归档，提供有限体积几何与重构准备。
+Cauchy 包括方程块字段、热物性/RANS、有限体积残差和重构、显式/隐式推进、
+Krylov/SGS/ILU、非线性迭代、多项式多重网格、多域接口、检查点和结果输出。
+导入这些能力不代表所有工程算例精度或收敛性均已验证。
+
+3. 构建与 Python 接入
+
+新增 native_geom[_shared]、native_cfv[_shared]、physics[_shared]、
+cauchy[_shared] 和 cauchy_solver，后者生成 build/app/cauchy.exe。
+all_solvers 包含 cauchy_solver；all_unit_tests 包含 native_framework_tests。
+七个 Python 扩展为 DNDS、Geom、CFV、EulerP、NativeGeom、NativeCFV、Cauchy。
+Runtime.py 提供原生数组切片、ArrayPair 和诊断视图，必须与 C++ 绑定一起使用。
+原有四个 Python 包保持，加载器补齐新共享库的依赖顺序。
+
+新增固定版本 spdlog 1.15.3（header-only，复用项目 fmt 11）：
+  bash scripts/install_spdlog_deps.sh
+SHA256：15a04e69c222eb6c01094b5c7ff8a249b36bb22788d72519646fb85feb267e67。
+安装脚本和许可证已加入，现有 external 依赖未整体替换。
+
+4. 迁移时修复的问题
+
+1) 新旧 CSR 归档统一使用 serializer 的 row-start codec/cache 接口，
+   移除旧 transformer 的第二次手工 row-start 写入，避免共享缓存/offset 错误。
+2) 原生 JSON 归档逐 rank 打开失败先协调，再进入后续通信，避免单 rank
+   解析错误导致其他 rank 等待；HDF5 的 collective open 路径保留。
+3) 网格 transition 在启动保留 MPI transfer 前统一获取并检查输入关系。
+4) 旧数组 Python buffer 保留 allocation owner；CSR row-start 元数据只读。
+5) Runtime Python 包装层、跨扩展测试模块及安装链补齐。
+6) ConfigRegistry、ConfigParam、JsonSchema 和 serializer 补齐新框架所需接口；
+   Direct solver 增加分阶段 LU/generation，数学工具补齐 SVD/惯性方向能力。
+7) 修复上游 Cauchy 的 const 指针推导、输出字段 const 和 RANS 头文件问题；
+   无 RANS 时不再请求不存在的 closure。
+8) 原生和旧 Geom 的相同 EigenTensor 工具共用一个头文件，避免重复定义。
+9) 新导入的两个 C++ 测试改用本地已有 IV10_10.cgns，保留性质和算法对照。
+   LimitedVR 保留固定参照实现，作为独立测试 oracle。
+10) 墙距 C++ 和 mixed-authority Python 故障测试使用同一个原生私有通信器，
+    并保留通信器 owner，避免测试构造本身造成 MPI 等待或悬空。
+11) Python 混合气算子用例按实际 Cantera 构建能力跳过；其他异常仍正常失败。
+
+5. CPU 验证结果
+
+CPU 配置：DNDS_USE_CUDA=OFF、DNDS_USE_CANTERA=OFF。
+all_solvers、all_unit_tests 和 all_pybind11 已构建；七扩展已安装到源码包。
+
+1) 完整 CPU CTest：393 项覆盖全部通过，包含修复后定向复测。
+   初轮 388/393；其中 3 个 serializer 用例曾使用漏构建的旧二进制，
+   2 个墙距用例存在上述测试通信器 owner 问题。补齐 aggregate 依赖并修复
+   测试后，对相关 serializer/wall_dist 的全部 MPI sizes 复测 8/8 通过。
+   该结果不是另一次完整 393 项重跑，原始日志和定向复测日志分别保留。
+2) 新旧原生 I/O 回归：12/12 通过；墙距 np=1/2/4/8：4/4 通过。
+3) Cauchy CLI 前端 np=1/2/4：3/3 通过，覆盖配置、显/隐式推进、输出、
+   分段历史、checkpoint/restart（包含在 393 项中，不重复累计）。
+4) Python test/DNDS、test/NativeGeom、test/Cauchy：
+   单进程 241 passed / 78 skipped；双进程每 rank 243 passed / 76 skipped。
+   跳过取决于 MPI size、CPU 构建及可选依赖；跳过不计为通过。
+5) README Python 示例直接从文档提取执行，np=2 均成功推进一步并取得字段快照。
+6) README 的 smoke.json 命令 np=4 成功：2 步 SSPRK3，dt=1e-5，time=2e-5，
+   status=target-reached，均匀场残差约 3.28308139034e-15。
+   输出写到 data/cauchy-smoke/，不污染 cases 配置目录。
+7) git diff --check 通过。四个预先修改的 Geom/NCFV/Elements 测试文件的
+   git blob hash 与迁移前记录一致；用户研究 cases、docs 和未跟踪实现保留。
+
+6. CUDA 与可选依赖边界
+
+本阶段支持的 Cauchy Domain/Simulation 前端是 CPU。
+CUDA 13.1、sm86、RTX A5000 下，迁入的 CUDA 库及 9 个算子测试可构建。
+实际运行 2/9 通过（limited_vr、characteristics），7/9 失败：
+point_physics、auxiliary、rhs、source、positivity、gradient、state。
+RANS 点核存在 CPU/GPU 数值不一致；state 的 managed/direct halo 路径要求
+CUDA-aware MPI，而本机 MPI 不具备该能力；其他失败也不能据此统一归因。
+未放宽数值阈值，不能据编译成功宣称 Cauchy GPU 求解器可用。
+这些日志保留；DNDS_BUILD_CAUCHY_CUDA_TESTS 默认 OFF，build-cuda 已恢复 OFF。
+显式开启该选项可继续诊断；现有 Runtime/Algebra、EulerP CUDA 路径独立。
+
+Cantera 反应流、AmgX、NCCL 不在本阶段已通过的验证范围内。
+已有机理文件不等于本次构建启用了 Cantera。CPU 验证不能替代反应流验证。
+
+7. 复现命令（项目根目录，选择与构建匹配的 Python 解释器）
+
+  CC=mpicc CXX=mpicxx cmake -S . -B build \
+      -DDNDS_BUILD_TESTS=ON -DDNDS_USE_CANTERA=OFF
+  cmake --build build -t all_solvers all_unit_tests all_pybind11 -j16
+  cmake --install build --component py
+  ctest --test-dir build -LE python --output-on-failure -j8
+  ctest --test-dir build -L native --output-on-failure -j8
+  PYTHONPATH=python:build/test/cpp mpirun -np 2 \
+      /home/mrz/.venvs/DNDSR-Kirabo/bin/python -m pytest \
+      test/DNDS test/NativeGeom test/Cauchy -q
+  build/app/cauchy.exe cases/cauchy/smoke.json --check-config
+  mpirun -np 4 build/app/cauchy.exe cases/cauchy/smoke.json
+
+每次修改相关 C++ 源码，必须重建并安装 Python 扩展后再运行 Python 测试。
+新旧接口不能混用网格对象类型；Runtime lease/read scope 必须在修改或推进前释放。
+
+8. 先前授权的 JSON 清理
+
+已删除 1,142 个确认生成的诊断/输出 JSON，5,197,791,805 bytes。
+保留算例配置、schema、控制和参考记录；本阶段未重复清理。
+新增加的 cases/cauchy/*.json 为维护配置，不属于待清理的计算输出。
+详细审计保存在本次聊天 outputs/case-json-cleanup.json。
+
+
+9. 2026-11-17 湍流核修正与正式 CUDA 复核
+
+上述 2/9 是迁入时的历史结果。此次按用户指定的 GitHub GPUACM
+参照，修正 Physics/Cauchy 的 SST-1994 混合下限和完整应力生成项，
+移除共享 RANS 设备函数的 15 条无用 Eigen::seq 构造，补齐已定位的
+positivity/gradient 分子黏度及 RHS worker 请求配置；未改数值阈值。
+新增独立 CPU/CUDA 弱湍流、膨胀/压缩对照，并注册 Physics RANS 回归。
+正式重建后 16/16 定向 CPU CTest 通过，CUDA 8/9 通过；剩余 state
+在不支持 CUDA-aware 的本机 MPI 上拒绝 Direct 设备 halo。
+本次没有重跑全部 CPU/Python 测试，也未验证 Cauchy GPU 求解前端。
+参照版本、保留的离散差异和验证清单见
+  docs/dev/turbulence_gs_comparison_20261117.txt。

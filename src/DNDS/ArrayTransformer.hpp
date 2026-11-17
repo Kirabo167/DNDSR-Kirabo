@@ -118,7 +118,7 @@ namespace DNDS
             }
 
             // For collective CSR, compute global data offset and pass to Array
-            // so it skips its own pRowStart write.
+            // so the shared CSR codec can write global coordinates once.
             Serializer::ArrayGlobalOffset dataOffset = Serializer::ArrayGlobalOffset_Unknown;
             if constexpr (_dataLayout == CSR)
             {
@@ -145,23 +145,6 @@ namespace DNDS
                 index sizeGlobal = 0;
                 MPI::Allreduce(&this->_size, &sizeGlobal, 1, DNDS_MPI_INDEX, MPI_SUM, mpi.comm);
                 serializerP->WriteIndex("sizeGlobal", sizeGlobal);
-
-                // For CSR, write pRowStart in global data coordinates.
-                // Non-last ranks write nRows entries; last rank writes nRows+1.
-                // Total = nRowsGlobal + 1 (no overlap, contiguous).
-                if constexpr (_dataLayout == CSR)
-                {
-                    if (dataOffset.isDist())
-                    {
-                        index globalDataStart = dataOffset.offset();
-                        index nWrite = (mpi.rank == mpi.size - 1) ? (this->_size + 1) : this->_size;
-                        auto prsGlobal = std::make_shared<host_device_vector<index>>(nWrite);
-                        for (index i = 0; i < nWrite; i++)
-                            prsGlobal->at(i) = this->_pRowStart->at(i) + globalDataStart;
-                        serializerP->WriteSharedIndexVector("pRowStart", prsGlobal,
-                                                            Serializer::ArrayGlobalOffset_Parts);
-                    }
-                }
 
                 serializerP->GoToPath(cwd);
             }

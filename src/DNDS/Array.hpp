@@ -122,7 +122,7 @@ namespace DNDS
         //* compressed data
         using t_Data = host_device_vector<value_type>;
         //* uncompressed data (only for CSR)
-        using t_DataUncompressed = std::vector<std::vector<value_type>>;
+        using t_DataUncompressed = std::vector<RowStorage<value_type>>;
 
         //* non uniform data: CSR
         using t_RowStart = host_device_vector<index>;
@@ -147,9 +147,43 @@ namespace DNDS
         /// @details `_pRowStart->at(i)` gives the flat-buffer offset of row `i`.
         /// Size is `Size()+1`; the sentinel at the end equals `DataSize()`.
         t_pRowStart getRowStart() { return _pRowStart; }
+        ssp<const t_RowStart> getRowStart() const { return _pRowStart; }
         /// @brief Shared pointer to the per-row size vector (TABLE_Max / TABLE_StaticMax).
         /// @details For padded layouts, records the number of "used" columns in each row.
         t_pRowSizes getRowSizes() { return _pRowSizes; }
+        ssp<const t_RowSizes> getRowSizes() const { return _pRowSizes; }
+
+        /// Retain a particular allocation; structural replacement never retargets it.
+        std::shared_ptr<const void> rowLease(index iRow) const
+        {
+            DNDS_check_throw(iRow >= 0 && iRow < _size);
+            if constexpr (isCSR)
+                if (!IfCompressed())
+                    return _dataUncompressed.at(iRow).lease();
+            return _data.hostLease();
+        }
+        std::shared_ptr<const void> dataLease() const { return _data.hostLease(); }
+        Runtime::ReadAccess HostReadData() const
+        {
+            if constexpr (isCSR)
+                DNDS_check_throw_info(IfCompressed(), "compress CSR before native flat access");
+            return _data.HostRead();
+        }
+        Runtime::WriteAccess HostWriteData()
+        {
+            if constexpr (isCSR)
+                DNDS_check_throw_info(IfCompressed(), "compress CSR before native flat access");
+            return _data.HostWrite();
+        }
+        uint64_t HostDataVersion() const { return _data.HostVersion(); }
+        uint64_t HostDataIdentity() const { return _data.HostIdentity(); }
+        /// Setup boundary: legacy raw writes must not race managed accesses.
+        Runtime::Buffer HostBufferSnapshot() const
+        {
+            if constexpr (isCSR)
+                DNDS_check_throw_info(IfCompressed(), "publish compressed CSR before host sharing");
+            return _data.HostBufferSnapshot();
+        }
 
     public:
         /// @brief Default-constructed array: empty, no storage.
@@ -305,6 +339,7 @@ namespace DNDS
         {
             if (!IfCompressed())
                 return;
+            auto read = _data.HostReadForLegacyCopy();
             _dataUncompressed.resize(_size);
             for (index i = 0; i < _size; i++)
             {
@@ -753,7 +788,9 @@ namespace DNDS
                 if (IfCompressed())
                     hashData = vector_hash<T>()(_data.begin(), _data.end());
                 else
-                    hashData = vector_hash<std::vector<T>>()(_dataUncompressed);
+                    for (const auto &row : _dataUncompressed)
+                        if (row.size())
+                            hashData ^= vector_hash<T>()(row.data(), row.data() + row.size());
             }
             else
                 hashData = vector_hash<T>()(_data.begin(), _data.end());
@@ -761,7 +798,7 @@ namespace DNDS
             if (_pRowSizes)
                 hashSize = vector_hash<rowsize>()(_pRowSizes->begin(), _pRowSizes->end());
             if (_pRowStart)
-                hashSize = vector_hash<index>()(_pRowSizes->begin(), _pRowSizes->end());
+                hashSize = vector_hash<index>()(_pRowStart->begin(), _pRowStart->end());
             return array_hash<std::size_t, 3>()(std::array<std::size_t, 3>{std::size_t(_size), hashSize, hashData});
         }
 
@@ -972,14 +1009,7 @@ namespace DNDS
                 // ParArray writes pRowStart in global coordinates; Array only writes for per-rank.
                 DNDS_assert_info(serializerP->IsPerRank() || dataOffset.isDist(),
                                  "CSR collective write requires isDist dataOffset from ParArray");
-                if (dataOffset.isDist())
-                {
-                    // ParArray handles pRowStart write in global coords
-                }
-                else
-                {
-                    serializerP->WriteSharedIndexVector("pRowStart", _pRowStart, offset);
-                }
+                serializerP->WriteSharedRowStartVector("pRowStart", _pRowStart, dataOffset);
             }
             else if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
             {
@@ -1143,19 +1173,8 @@ namespace DNDS
             {
                 DNDS_assert_info(serializerP->IsPerRank() || offset.isDist(),
                                  "CSR collective read requires isDist offset from ParArray");
-                if (offset.isDist())
-                {
-                    auto prsOffset = Serializer::ArrayGlobalOffset{_size + 1, offset.offset()};
-                    serializerP->ReadSharedIndexVector("pRowStart", _pRowStart, prsOffset);
-                    index globalDataStart = _pRowStart->at(0);
-                    for (index i = _size; i >= 0; i--)
-                        _pRowStart->at(i) -= globalDataStart;
-                    dataOffset = Serializer::ArrayGlobalOffset{_pRowStart->at(_size), globalDataStart};
-                }
-                else
-                {
-                    serializerP->ReadSharedIndexVector("pRowStart", _pRowStart, offset);
-                }
+                auto rows = Serializer::ArrayGlobalOffset{_size, offset.isDist() ? offset.offset() : 0};
+                dataOffset = serializerP->ReadSharedRowStartVector("pRowStart", _pRowStart, rows);
             }
             else if constexpr (_dataLayout == TABLE_Max || _dataLayout == TABLE_StaticMax)
             {

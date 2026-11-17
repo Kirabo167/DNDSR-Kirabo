@@ -1056,6 +1056,7 @@ namespace DNDS::NCFV
                 _settings.method == ReconstructionMethod::Variational,
             "NCFV reconstruction selected an unsupported method/mode");
         BuildNodeGraph();
+        _linearLimiter.Initialize(_geometry, _settings.enableLimiter);
         _operators.clear();
         _operators.resize(static_cast<std::size_t>(_mesh->NumNode()));
         real localMaximumCondition = 0;
@@ -1376,6 +1377,21 @@ namespace DNDS::NCFV
                 pointValues[iNode] -= coefficients[iNode].transpose() * op.targetBasisMean;
             }
         }
+    }
+
+    void Reconstruction::RecoverLinearPointValues(
+        const NodeStatePair &means,
+        const NodeMatrixPair &gradients,
+        NodeStatePair &pointValues,
+        const std::vector<real> &factors) const
+    {
+        DNDS_check_throw_info(factors.empty() || factors.size() == static_cast<std::size_t>(_mesh->NumNode()),
+                              "NCFV linear point recovery needs one factor per owned node");
+        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+            pointValues[iNode] = RecoverLinearPointValue(
+                means[iNode], gradients[iNode],
+                _linearLimiter.Weight(iNode),
+                factors.empty() ? real(1) : factors[static_cast<std::size_t>(iNode)]);
     }
 
     std::vector<real> Reconstruction::ComputeLimiterFactors(

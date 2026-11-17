@@ -163,9 +163,8 @@ namespace DNDS::Geom::Elem
             return x * _iipow(x, y - 1);
         if (y == -1)
             return 1. / x;
-        if (y < -1)
-            return 1. / x * _iipow(x, y + 1);
-        return UnInitReal;
+        // All remaining integer exponents are below -1.
+        return 1. / x * _iipow(x, y + 1);
     }
 
     /// Primary template for per-element shape function implementations.

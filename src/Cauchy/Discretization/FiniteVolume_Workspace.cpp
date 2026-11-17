@@ -1,0 +1,294 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "Cauchy/Discretization/FiniteVolumeWorkspaceInternal.hpp"
+#include "Cauchy/State/EquationDofAlgebra.hpp"
+#include "Cauchy/State/EquationDofCommunication.hpp"
+
+namespace DNDS::Cauchy
+{
+    namespace R = Runtime;
+
+    std::vector<FiniteVolume::Workspace::Field> FiniteVolume::Workspace::BuildFields(const Data &data, const EquationDofs &state, bool meanOnly)
+    {
+        std::vector<Field> result;
+        result.reserve(size_t(state.PhysicalFieldNumber()));
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+        {
+            const auto &physical = state.PhysicalField(iField);
+            std::vector<index> vectors;
+            for (index iBlock = 0; iBlock < state.BlockNumber(); ++iBlock)
+            {
+                const auto location = state.LocateBlock(iBlock);
+                if (location.physicalField == iField)
+                    for (const auto first : state.Schema().blocks[iBlock].vectorStarts)
+                        vectors.push_back(location.firstComponent + first);
+            }
+            std::sort(vectors.begin(), vectors.end());
+            Field field;
+            field.vectorStarts = vectors;
+            field.boundaryValues = R::Array<real>(R::RowLayout::Dense(
+                                                      data.stencil.boundaryEntries.RowCount(), index(physical.Width())),
+                                                  data.metrics.Device());
+            if (data.reconstruction)
+            {
+                field.reconstruction.emplace(data.reconstruction->BuildWorkspace(
+                    index(physical.Width()),
+                    FiniteVolumeDetail::FieldLayout(
+                        physical.Owned().Layout(), data.metrics.NumCell(),
+                        index(physical.Width()) * data.reconstruction->NRecDOF()),
+                    vectors));
+                field.reconstructionBoundary.emplace(
+                    data.reconstruction->BuildBoundaryValues(index(physical.Width())));
+                field.boundaryValues = field.reconstructionBoundary->values;
+                Algebra::Fill(field.reconstruction->temporary, 0.);
+            }
+            // A mean-only forecast suppresses face reconstruction, not the
+            // physical derivatives in the RANS source. Keep those gradients
+            // and their frozen boundary values in the P0 workspace as well.
+            if ((!meanOnly && data.settings.numerics.reconstruction == "gradient") ||
+                (data.equation.HasRANS() &&
+                 (data.settings.numerics.reconstruction == "constant" ||
+                  (meanOnly && data.settings.numerics.reconstruction == "gradient"))))
+            {
+                field.gradient.emplace(data.metrics.BuildField(index(physical.Width()) * data.metrics.Dimension()));
+                field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
+            }
+            else if (!meanOnly && data.limitedVRGeometry)
+                field.gradientBoundary.emplace(data.gradient.BuildBoundaryValues(index(physical.Width())));
+            if (field.gradient)
+                field.gradientExecution.emplace(data.gradient.BuildWorkspace(index(physical.Width()), vectors,
+                                                                             !meanOnly && data.settings.numerics.limiter == "WBAP"));
+            result.push_back(std::move(field));
+        }
+        return result;
+    }
+    void FiniteVolume::Workspace::BuildSourceSampling(const EquationDofs &state)
+    {
+        if (!owner->sourceQuadrature)
+            return;
+        // Geometry is frozen once by the plan before placement; workspaces
+        // share it and own only mutable values/gradients. No host mesh access
+        // or reconstruction setup is required for a CUDA workspace.
+        const auto &prepared = *owner->sourceQuadrature;
+        sourceOffsets = prepared.offsets;
+        sourceWeights = prepared.weights;
+        sourceSampling = prepared.sampling;
+        sourceJacobianSampling = prepared.jacobianSampling;
+        sourceValuesAreMeans = prepared.valuesAreMeans;
+        const index count = sourceWeights.RowCount();
+        const auto device = owner->metrics.Device();
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+        {
+            // Keep source sampling scratch independent of any particular
+            // mean allocation so serialized stage states can reuse it.
+            sourceValues.emplace_back(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), count,
+                                                                      index(state.PhysicalField(iField).Width())),
+                                      device);
+            if (owner->equation.HasRANS())
+            {
+                sourceGradients.emplace_back();
+                // One-point direct FV can read its ready physical gradient
+                // field directly; polynomial/multi-point paths own samples.
+                if (!sourceValuesAreMeans)
+                    for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                        sourceGradients.back()[d] = R::Array<real>(sourceValues.back().Layout(), device);
+            }
+        }
+        if (owner->equation.HasRANS())
+        {
+            const index owned = owner->metrics.NumCell();
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            {
+                sourceJacobianGradients.emplace_back();
+                for (int d = 0; d < owner->metrics.Dimension(); ++d)
+                    sourceJacobianGradients.back()[d] = R::Array<real>(FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owned, state.PhysicalField(iField).Width()), device);
+            }
+        }
+    }
+    EquationDofs FiniteVolume::Workspace::BindBoundary(const EquationDofs &state, const std::vector<Field> &fields, index rows)
+    {
+        const Algebra::DofSpace space(size_t(rows), 0, "equation boundary quadrature");
+        Algebra::DofBundle bundle(space);
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            bundle.Add(state.Fields().Name(iField), NativeCFV::FVField(space, fields[iField].boundaryValues,
+                                                                 R::Array<real>(R::RowLayout::Dense(0, state.PhysicalField(iField).Width()), state.Device())));
+        return FiniteVolumeDetail::BindFieldSchema(state, std::move(bundle), 1);
+    }
+    FiniteVolume::Workspace::Workspace(std::shared_ptr<const Data> data, EquationDofs &state,
+                                       std::optional<Physics::Chemistry::ChemicalWorkerPool> pool, bool meanTrial)
+        : owner(std::move(data)), meanOnly(meanTrial), componentNumber(state.ComponentNumber()), physicalFieldNumber(state.PhysicalFieldNumber()),
+          fields(BuildFields(*owner, state, meanOnly)),
+          boundary(BindBoundary(state, fields, owner->stencil.boundaryEntries.RowCount())),
+          thermal(owner->equation, owner->settings.numerics.densityFloor, owner->settings.numerics.temperatureFloor,
+                  owner->settings.numerics.sensibleEnergyFloor, owner->settings.numerics.pressureFloor,
+                  pool ? pool->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}),
+          diagnostics(owner->forceZones),
+          workers(std::move(pool)),
+          boundaryMomentumFlux(R::RowLayout::Dense(owner->stencil.boundaryEntries.RowCount(), 3), owner->metrics.Device()),
+          faceFlux(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber()), owner->metrics.Device()),
+          chemical(owner->settings.equation.source == "chemical")
+    {
+        index first = 0;
+        std::vector<index> blockOffsets, vectorOffsets;
+        std::vector<index> physicalFields(size_t(state.ComponentNumber()), -1),
+            physicalComponents(size_t(state.ComponentNumber()), -1);
+        for (const auto &block : state.Schema().blocks)
+        {
+            blockOffsets.push_back(first);
+            const auto location = state.LocateBlock(index(blockOffsets.size() - 1));
+            for (index j = 0; j < location.componentNumber; ++j)
+            {
+                physicalFields[size_t(first + j)] = location.physicalField;
+                physicalComponents[size_t(first + j)] = location.firstComponent + j;
+            }
+            if (block.name == "flow")
+                flowFirst = first;
+            if (block.name == "species")
+                speciesFirst = first;
+            if (block.name == "rans")
+                ransFirst = first;
+            for (const auto vector : block.vectorStarts)
+                vectorOffsets.push_back(first + vector);
+            first += index(block.components.size());
+        }
+        logicalFirst = R::MetadataBuffer<index>(blockOffsets);
+        vectorStarts = R::MetadataBuffer<index>(vectorOffsets);
+        logicalField = R::MetadataBuffer<index>(physicalFields);
+        logicalComponent = R::MetadataBuffer<index>(physicalComponents);
+        if (!meanOnly && owner->settings.numerics.positivity)
+        {
+            if (owner->settings.numerics.reconstruction == "variational")
+            {
+                // Polynomial positivity retains only its own reference and
+                // sample buffers. Direct P0/P1 policies do not manufacture
+                // a modal prototype merely to reuse this implementation.
+                auto coefficientPrototype = ReconstructionState::BuildCoefficients(*owner, state);
+                positivity = std::make_shared<PositivityWorkspace>(owner, state, coefficientPrototype, workers);
+            }
+            // Conservative explicit flux blending is currently the
+            // established pure-flow policy. Extended RANS/species stages
+            // reject and retry their raw update instead of constructing a
+            // false independently blended scalar system.
+            if (!owner->equation.HasMixture() && !owner->equation.HasRANS() &&
+                state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1)
+            {
+                lowOrderResidual.emplace(EquationDofOperations::NewVector(state));
+                lowOrderFaceFlux.emplace(R::RowLayout::Dense(owner->stencil.stencilFaces.RowCount(), state.ComponentNumber()), owner->metrics.Device());
+            }
+        }
+        if (!meanOnly && owner->limitedVRGeometry)
+        {
+            DNDS_check_throw_info(!owner->equation.HasMixture() && !owner->equation.HasRANS() &&
+                                      state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
+                                  "LVR requires one coupled perfect-gas flow5 field");
+            DNDS_check_throw_info(fields.front().reconstruction,
+                                  "LVR requires a variational reconstruction workspace");
+            limitedVR = std::make_unique<LimitedVRWorkspace>(*owner, *fields.front().reconstruction);
+        }
+        nativeDirectGradient = !meanOnly && owner->settings.numerics.reconstruction == "gradient" &&
+                               (owner->settings.numerics.limiter == "none" ||
+                                owner->settings.numerics.limiter == "Barth" ||
+                                owner->settings.numerics.limiter == "WBAP");
+        if (nativeDirectGradient)
+        {
+            // These are CPU row-local temporaries. CUDA leaves use local
+            // fixed-width values and per-cell result/status arrays instead.
+            if (owner->metrics.Device() == R::Device::Host())
+            {
+                directLimiterScratch = R::Array<real>(R::RowLayout::Dense(6, componentNumber));
+                if (owner->settings.numerics.positivity)
+                    directPPSamples = R::Array<real>(R::RowLayout::Dense(owner->maximumPositivityPoints, componentNumber));
+            }
+        }
+        if (!meanOnly && (owner->settings.numerics.limiter == "WBAP" || limitedVR) && owner->settings.numerics.characteristicLimiter)
+        {
+            const auto flow = state.LocateBlock("flow");
+            DNDS_check_throw_info(flow.componentNumber == 5, "characteristic limiter requires one five-component flow block");
+            flowCharacteristicField = flow.physicalField;
+            if (nativeDirectGradient)
+                gradientFlowCharacteristic.emplace(owner->metrics.Device() == R::Device::Host()
+                                                       ? owner->gradient.BuildFaceTransform(flow.firstComponent, 5)
+                                                       : owner->gradient.BuildQueuedFaceTransform(flow.firstComponent, 5));
+            else if (owner->reconstruction)
+                flowCharacteristic.emplace(owner->metrics.Device() == R::Device::Host()
+                                               ? owner->reconstruction->BuildFaceTransform(flow.firstComponent, 5)
+                                               : owner->reconstruction->BuildQueuedFaceTransform(flow.firstComponent, 5));
+        }
+        if (owner->settings.numerics.reconstruction != "variational")
+        {
+            for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            {
+                if (owner->settings.numerics.reconstruction == "constant" &&
+                    !fields[iField].gradient)
+                    continue;
+                if (nativeDirectGradient)
+                {
+                    DNDS_check_throw_info(fields[iField].gradient,
+                                          "explicit P1 has no prepared physical-gradient publication");
+                    if (owner->settings.numerics.limiter == "none" &&
+                        !owner->settings.numerics.positivity)
+                        directGradients.push_back(*fields[iField].gradient);
+                    else
+                    {
+                        directGradients.push_back(owner->metrics.BuildField(
+                            FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(),
+                                                            owner->metrics.NumCell(),
+                                                            state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
+                            owner->metrics.Device()));
+                        if (owner->settings.numerics.limiter == "WBAP")
+                            directGradientInputHalo.push_back(owner->BindHalo(
+                                *fields[iField].gradient, "cauchy-direct-gradient-input"));
+                    }
+                    directGradientHalo.push_back(owner->BindHalo(
+                        directGradients.back(), "cauchy-direct-gradient"));
+                    if (owner->equation.Viscous() &&
+                        owner->settings.numerics.viscousGradient == "polynomial" &&
+                        !owner->settings.numerics.viscousLimited &&
+                        (owner->settings.numerics.limiter != "none" ||
+                         owner->settings.numerics.positivity))
+                    {
+                        directViscousGradients.push_back(*fields[iField].gradient);
+                        directViscousGradientHalo.push_back(owner->BindHalo(
+                            directViscousGradients.back(),
+                            "cauchy-direct-unlimited-viscous-gradient"));
+                    }
+                }
+                else if ((meanOnly || owner->settings.numerics.reconstruction == "constant") && fields[iField].gradient)
+                    // P0/mean-only RANS sources use this same unlimited
+                    // physical gradient. No limiter writes a second version,
+                    // so retain the field instead of allocating/copying it.
+                    directGradients.push_back(*fields[iField].gradient);
+                else
+                    directGradients.push_back(owner->metrics.BuildField(
+                        FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
+                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
+                        owner->metrics.Device()));
+                if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "polynomial" &&
+                    !owner->settings.numerics.viscousLimited && !nativeDirectGradient && owner->reconstruction)
+                    directViscousGradients.push_back(owner->metrics.BuildField(
+                        FiniteVolumeDetail::FieldLayout(state.PhysicalField(iField).Owned().Layout(), owner->metrics.NumCell(),
+                                                        state.PhysicalField(iField).Width() * owner->metrics.Dimension()),
+                        owner->metrics.Device()));
+            }
+        }
+        if (!meanOnly && owner->equation.Viscous() && owner->settings.numerics.viscousGradient == "primitive")
+        {
+            DNDS_check_throw_info(!owner->equation.HasMixture() && !owner->equation.HasRANS() &&
+                                      state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
+                                  "primitive viscosity requires one perfect-gas flow5 field");
+            primitive.emplace(owner->metrics.BuildField(5));
+            primitiveGradient.emplace(owner->metrics.BuildField(5 * owner->metrics.Dimension()));
+            primitiveBoundary.emplace(owner->gradient.BuildBoundaryValues(5));
+            primitiveGradientExecution.emplace(owner->gradient.BuildWorkspace(5, {1}));
+            primitiveGradientHalo.emplace(owner->BindHalo(*primitiveGradient, "cauchy-primitive-gradient"));
+        }
+        BuildSourceSampling(state);
+        BuildPreparationStatus();
+        BuildDeviceFlux();
+        if (nativeDirectGradient || ransFirst >= 0)
+            directGradientPublications.resize(directGradients.size());
+    }
+    void FiniteVolume::Workspace::BindHalos(EquationDofs &state)
+    {
+        (void)state;
+    }
+}

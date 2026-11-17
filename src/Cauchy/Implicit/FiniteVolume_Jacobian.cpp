@@ -1,0 +1,283 @@
+#include "Cauchy/Discretization/FiniteVolume.hpp"
+#include "DNDS/MPI/Failure.hpp"
+#include "Cauchy/Core/NumericalFailure.hpp"
+#include "Cauchy/Implicit/JacobianGeometry.hpp"
+#include "Cauchy/Discretization/CPU/FiniteVolumePointKernels.hpp"
+#include "Cauchy/Physics/PointProperties.hpp"
+#include "Cauchy/Physics/PhysicalFlux.hpp"
+#include "Cauchy/Implicit/CPU/FiniteVolumeJacobianKernels.hpp"
+#include "Cauchy/Discretization/FiniteVolumeInternal.hpp"
+
+namespace DNDS::Cauchy
+{
+    namespace R = Runtime;
+    /// Immutable physical snapshot. Evaluated blocks own no MPI, worker, live
+    /// input or FV owner. Geometry is retained only for evaluated storage;
+    /// assembled filling traverses the existing FV samples directly.
+    /// TODO(large-species Jacobian): an explicit approximation may omit
+    /// flow5<->scalar derivatives and diagonalize extended diagonal blocks.
+    /// Its off-diagonal storage can then be flow5 dense plus scalar entries;
+    /// no EOS/source coupling may be discarded merely to fit that format.
+    /// Keep coupled diagonals as an option, but compressed ILU factors then
+    /// generally need projection (not algebraically equivalent). See the
+    /// large-species TODO in docs/architecture/CauchyImplicit.md.
+    struct FiniteVolume::JacobianData final : OffDiagonalEvaluator, CPU::EquationJacobianView
+    {
+        struct Geometry
+        {
+            std::weak_ptr<const Data> owner;
+            std::shared_ptr<const Algebra::DofSpace::Partition> partition;
+            std::shared_ptr<const JacobianGeometryStorage> storage;
+            std::optional<JacobianGeometryStorage::ReadAccess> read;
+        };
+        std::shared_ptr<const Geometry> geometryOwner;
+        R::MetadataBuffer<uint8_t> selection;
+        R::Array<real> meanStorage, derivativeStorage, pressureStorage, radiusStorage;
+        int independent;
+        /// Read scopes pin the frozen publication, not live equation inputs.
+        std::optional<R::Array<real>::ReadLease> meanRead, derivativeRead, pressureRead, radiusRead;
+        struct WriteAccess
+        {
+            R::Array<real>::WriteLease means, derivative, pressure, radius;
+            explicit WriteAccess(JacobianData &data)
+                : means(data.meanStorage.Write()), derivative(data.derivativeStorage.Write()),
+                  pressure(data.pressureStorage.Write()), radius(data.radiusStorage.Write())
+            {
+                data.means = means.View<R::TableRows>().ConstView();
+                data.pressureDerivative = derivative.View<R::TableRows>().ConstView();
+                data.pressure = pressure.View<R::TableRows>().ConstView();
+                data.radius = radius.View<R::TableRows>().ConstView();
+            }
+        };
+        JacobianData(const FiniteVolume &fv, const EquationDofs &state,
+                     LinearProblemContext &output, JacobianPreparation controls, real time)
+            : meanStorage(R::RowLayout::Dense(output.HasAssembledOffDiagonal() ? 0 : fv.Metrics().NumCellProc(), state.ComponentNumber())),
+              derivativeStorage(R::RowLayout::Dense(fv.Metrics().NumCellProc() + fv._data->stencil.jacobianSamples.RowCount(), state.ComponentNumber())),
+              pressureStorage(R::RowLayout::Dense(fv.Metrics().NumCellProc() + fv._data->stencil.jacobianSamples.RowCount(), 1)),
+              radiusStorage(R::RowLayout::Dense(fv._data->stencil.stencilFaces.RowCount(), 2)),
+              independent(fv._data->equation.HasMixture() ? fv._data->equation.Mixture().SpeciesNumber() - 1 : 0)
+        {
+            components = state.ComponentNumber();
+            frame = fv._data->motion.At(time);
+            scale = controls.residualScale;
+            const Algebra::ComponentSelection selected(components, controls.updateComponents);
+            std::vector<uint8_t> flags(components);
+            for (index j = 0; j < components; ++j)
+            {
+                flags[j] = selected.Includes(j);
+                allComponents = allComponents && flags[j];
+            }
+            selection = R::MetadataBuffer<uint8_t>(std::move(flags));
+            active = selection.HostView();
+            index first = 0;
+            for (const auto &block : state.Schema().blocks)
+            {
+                if (block.name == "flow")
+                    flowFirst = first;
+                if (block.name == "species")
+                    speciesFirst = first;
+                if (block.name == "rans" && fv._data->equation.RANS().ComponentNumber() == 2)
+                    kineticFirst = first;
+                first += index(block.components.size());
+            }
+            sixComponentProduct = components == 6 && flowFirst == 0 && kineticFirst < 0 && allComponents;
+            if (output.HasAssembledOffDiagonal())
+                return;
+            const auto old = std::dynamic_pointer_cast<const JacobianData>(output.PreparedOffDiagonalEvaluator());
+            if (old && old->geometryOwner->owner.lock() == fv._data)
+                geometryOwner = old->geometryOwner;
+            else
+            {
+                auto prepared = std::make_shared<Geometry>();
+                prepared->owner = fv._data;
+                prepared->partition = output.Space().Pin();
+                const auto metric = fv.Metrics().AcquireRead();
+                const auto stencil = fv._data->stencil.Read();
+                prepared->storage = std::make_shared<JacobianGeometryStorage>(stencil.View(), metric.HostView(), output.Columns());
+                prepared->read.emplace(prepared->storage->Read());
+                geometryOwner = std::move(prepared);
+            }
+            geometry = geometryOwner->read->View();
+            sameComponentFrames = geometryOwner->storage->sameComponentFrames;
+        }
+        void Publish()
+        {
+            meanRead.emplace(meanStorage.Read());
+            derivativeRead.emplace(derivativeStorage.Read());
+            pressureRead.emplace(pressureStorage.Read());
+            radiusRead.emplace(radiusStorage.Read());
+            means = meanRead->View<R::TableRows>();
+            pressureDerivative = derivativeRead->View<R::TableRows>();
+            pressure = pressureRead->View<R::TableRows>();
+            radius = radiusRead->View<R::TableRows>();
+        }
+        index Components() const override { return components; }
+        auto RowSpaceIdentity() const -> std::shared_ptr<const Algebra::DofSpace::Partition> override { return geometryOwner->partition; }
+        std::vector<std::vector<index>> Columns() const override { return geometryOwner->storage->CopyColumns(); }
+        index RowNumber() const override { return geometry.columns.RowCount(); }
+        index BlockNumber(index iRow) const override { return geometry.columns.RowSize(iRow); }
+        SpanView<const index> ColumnRow(index iRow) const override
+        {
+            const auto row = geometry.columns[iRow];
+            return {row.data(), row.size()};
+        }
+        void EvaluateBlock(index iRow, index iBlock, Eigen::Ref<Eigen::MatrixXd> output) const override
+        {
+            CPU::EvaluateEquationJacobianBlock(*this, iRow, iBlock, output);
+        }
+        void ApplyBlock(index iRow, index iBlock, InputVector input, Eigen::Ref<Eigen::VectorXd> output) const override
+        {
+            CPU::ApplyEquationJacobianBlock(*this, iRow, iBlock, input, output);
+        }
+    };
+
+    std::shared_ptr<LinearProblemContext> FiniteVolume::BuildLinearProblem(const EquationDofs &prototype, DiagonalStorage diagonal, OffDiagonalStorage offDiagonal) const
+    {
+        Metrics().Validate();
+        _data->partition.Validate();
+        prototype.RequireSchema(_data->equation.Schema());
+        _data->equation.ResolveKernelProfile(prototype.Device());
+        DNDS_check_throw_info(prototype.Space().Same(Metrics().Space()), "equation linear prototype row space differs");
+        return std::make_shared<LinearProblemContext>(prototype.Space(), prototype.ComponentNumber(),
+                                                      _data->jacobianColumns->CopyColumns(), _data->partition.Core(), diagonal, offDiagonal);
+    }
+    void FiniteVolume::PrepareJacobian(const EquationDofs &state, const AuxiliaryValues &auxiliary, const R::Array<real> &inversePseudoTime,
+                                       LinearProblemContext &output, JacobianPreparation controls, real time, std::optional<Physics::Chemistry::ChemicalWorkerPool> workers,
+                                       std::optional<JacobianContext> context) const
+    {
+        const auto *sourceWorkspace = context ? &context->workspace.get() : nullptr;
+        ValidateAuxValues(state, auxiliary, time);
+        if (controls.roeDissipation && sourceWorkspace && HasRoeJacobianKernel(*sourceWorkspace))
+        {
+            DNDS_check_throw_info(!workers && state.ComponentNumber() == 5 && state.PhysicalFieldNumber() == 1,
+                                  "flow5 Roe Jacobian specialization received an extended physical state");
+            PrepareFlow5Jacobian(state.CoupledField(), auxiliary, inversePseudoTime, output, controls, time);
+            return;
+        }
+        output.Validate();
+        const index nv = state.ComponentNumber(), owned = Metrics().NumCell(), all = Metrics().NumCellProc();
+        DNDS_check_throw_info(output.Space().Same(state.Space()) && output.Components() == nv && !controls.roeDissipation,
+                              "equation Jacobian space/components differ or Roe profile is unavailable");
+        DNDS_check_throw_info(std::isfinite(controls.physicalMass) && controls.physicalMass >= 0 && std::isfinite(controls.residualScale) && controls.residualScale >= 0, "invalid integrated equation Jacobian controls");
+        DNDS_check_throw_info(inversePseudoTime.GetDevice() == R::Device::Host() && inversePseudoTime.RowCount() == owned && !inversePseudoTime.Layout().IsVariable() && inversePseudoTime.Layout().Width() == 1, "equation inverse pseudo-time shape/backend differs");
+        DNDS_check_throw_info(auxiliary.faceSpectralRadius && _data->equation.HasMixture() == bool(workers), "equation Jacobian requires face signals and a matching worker backend");
+        output.ValidateColumns(_data->jacobianColumns);
+        const auto checkAlias = [&](const R::Array<real> &input)
+        {
+            DNDS_check_throw_info(!Algebra::Detail::Overlaps(input.Storage(), output.Diagonal().Storage()) &&
+                                      (!output.HasAssembledOffDiagonal() || !Algebra::Detail::Overlaps(input.Storage(), output.OffDiagonal().Values().Storage())),
+                                  "equation Jacobian output aliases input");
+        };
+        checkAlias(inversePseudoTime);
+        for (index iField = 0; iField < state.PhysicalFieldNumber(); ++iField)
+            for (const auto *input : {&state.PhysicalField(iField).Owned(), &state.PhysicalField(iField).Ghost()})
+                checkAlias(*input);
+        for (const auto *input : {auxiliary.meanThermodynamics ? &*auxiliary.meanThermodynamics : nullptr,
+                                  auxiliary.faceSpectralRadius ? &*auxiliary.faceSpectralRadius : nullptr, auxiliary.faceWaveJump ? &*auxiliary.faceWaveJump : nullptr,
+                                  auxiliary.facePressureMinimum ? &*auxiliary.facePressureMinimum : nullptr,
+                                  auxiliary.cellSpectralSum ? &auxiliary.cellSpectralSum->Owned() : nullptr, auxiliary.cellWaveJump ? &auxiliary.cellWaveJump->Owned() : nullptr,
+                                  auxiliary.cellPressureMinimum ? &auxiliary.cellPressureMinimum->Owned() : nullptr,
+                                  auxiliary.derivedOwned ? &auxiliary.derivedOwned->Values() : nullptr, auxiliary.derivedGhost ? &auxiliary.derivedGhost->Values() : nullptr})
+            if (input)
+                checkAlias(*input);
+        const bool chemical = _data->settings.equation.source == "chemical";
+        const bool rans = _data->equation.HasRANS();
+        DNDS_check_throw_info(_data->settings.equation.source == "none" || (chemical && _data->equation.HasMixture()), "unsupported equation Jacobian source");
+        if (chemical || rans)
+        {
+            DNDS_check_throw_info(sourceWorkspace || (!rans && (_data->settings.numerics.reconstruction == "constant" || _data->equation.Mixture().SpeciesNumber() == 1)),
+                                  "RANS or nonconstant chemical Jacobian requires current RHS source reconstruction");
+            if (sourceWorkspace)
+                ValidateEquationSourceJacobian(state, *context, time);
+        }
+        auto evaluator = _data->equation.MakePointEvaluator(workers ? workers->Acquire() : Physics::Chemistry::ChemicalWorkerPool::Lease{}, {rans, false, true, chemical, chemical});
+        auto snapshot = std::make_shared<JacobianData>(*this, state, output, controls, time);
+        std::optional<JacobianData::WriteAccess> snapshotWrite(std::in_place, *snapshot);
+        const auto input = state.ReadWithGhost();
+        const auto blocks = EquationFVDetail::BlockViews(state, input);
+        const auto inputLayout = input.ComponentLayout();
+        const auto inputValues = inputLayout.View();
+        std::optional<R::Array<real>::ReadLease> incomingFaceRead;
+        std::optional<BoundaryInputs> boundaryInputs;
+        InterfaceBoundaryRows incomingFace;
+        if (HasInterfaces())
+        {
+            if (sourceWorkspace)
+                boundaryInputs = PreparedBoundaryInputs(*sourceWorkspace);
+            DNDS_check_throw_info(
+                boundaryInputs,
+                "equation interface Jacobian needs the current boundary publication");
+            ValidateBoundaryInputs(*boundaryInputs, time);
+            incomingFaceRead.emplace(
+                boundaryInputs->FaceCenterValues()
+                    .CoupledField()
+                    .Owned()
+                    .Read());
+            incomingFace =
+                incomingFaceRead->View<R::UniformTableRows>();
+        }
+        auto geometry = Metrics().AcquireRead();
+        const auto metric = geometry.HostView();
+        const auto faceRead = auxiliary.faceSpectralRadius->Read(), pseudo = inversePseudoTime.Read();
+        const auto radius = faceRead.View<R::UniformTableRows>(), tau = pseudo.View<R::UniformTableRows>();
+        std::optional<R::Array<real>::WriteLease> diagonal(output.Diagonal().Write());
+        std::optional<Algebra::BlockMatrixStorage::WriteAccess> off;
+        try
+        {
+            if (output.HasAssembledOffDiagonal())
+                off.emplace(output.OffDiagonal().Write());
+        }
+        catch (...)
+        {
+            MPI::AbortIfSolverFailure("Cauchy equation Jacobian failed");
+            diagonal->CancelUnmodified();
+            throw;
+        }
+        const auto d = diagonal->View<R::TableRows>();
+        std::optional<Algebra::BlockMatrixView<real>> b;
+        if (off)
+            b.emplace(off->View());
+        R::Array<real> boundaryMeans(R::RowLayout::Dense(_data->stencil.jacobianSamples.RowCount(), nv));
+        auto boundaryMeansWrite = boundaryMeans.Write();
+        const auto stencilRead = _data->stencil.Read();
+        const R::MetadataBuffer<EquationBlockReadView> blockMetadata(blocks);
+        std::optional<WallDistanceRead> wallRead;
+        if (rans && _data->equation.RANS().ComponentNumber() == 2)
+        {
+            DNDS_check_throw_info(
+                _data->wallDistance,
+                "two-equation boundary Jacobian needs wall-distance samples");
+            wallRead.emplace(_data->wallDistance->AcquireRead());
+        }
+        const auto wallValues = wallRead ? wallRead->HostView()
+                                         : WallDistanceView{};
+        CPU::EquationJacobianPreparation request{
+            *snapshot, stencilRead.View(), metric, {_data->boundaryConditions.data(), index(_data->boundaryConditions.size())}, blockMetadata.HostView(), inputValues, radius, tau, incomingFace, d, snapshotWrite->radius.View<R::TableRows>(), boundaryMeansWrite.View<R::TableRows>(), b, {snapshot->flowFirst, snapshot->speciesFirst, snapshotWrite->derivative.View<R::TableRows>(), snapshotWrite->pressure.View<R::TableRows>(), output.HasAssembledOffDiagonal() ? std::nullopt : std::optional(snapshotWrite->means.View<R::TableRows>())}, wallValues, time, controls.residualScale, controls.physicalMass, owned, all, snapshot->independent, output.DiagonalMode() == DiagonalStorage::Block, chemical && !sourceWorkspace, bool(wallRead)};
+        request.linearizeBoundary = controls.scalarBoundaryDerivative;
+        try
+        {
+            RequireNumericalSuccess(CPU::InitializeEquationJacobian(request), "initialize equation Jacobian");
+            bool ownedPropertiesPrepared = false;
+            if ((chemical || rans) && sourceWorkspace)
+                ownedPropertiesPrepared = AddEquationSourceJacobian(state, *context, *diagonal,
+                                                                    output.DiagonalMode(), controls.residualScale, evaluator, std::cref(request.linearization));
+            RequireNumericalSuccess(CPU::CompleteEquationJacobian(request, _data->boundaryPoint, evaluator, ownedPropertiesPrepared), "complete equation Jacobian");
+        }
+        catch (...)
+        {
+            MPI::AbortIfSolverFailure("Cauchy equation Jacobian failed");
+            diagonal->Fail();
+            if (off)
+                off->Fail();
+            throw;
+        }
+        diagonal.reset();
+        off.reset();
+        snapshotWrite.reset();
+        if (!output.HasAssembledOffDiagonal())
+        {
+            snapshot->Publish();
+            output.PublishOffDiagonalEvaluator(std::move(snapshot));
+        }
+    }
+}

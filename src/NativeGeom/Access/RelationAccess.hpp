@@ -1,0 +1,420 @@
+#pragma once
+
+#include "DNDS/MPI/Failure.hpp"
+#include "NativeGeom/Access/EntitySpace.hpp"
+#include "NativeGeom/Access/MeshAccess.hpp"
+#include "DNDS/Runtime/Array/RowBuilder.hpp"
+#include <atomic>
+#include <limits>
+#include <optional>
+
+namespace DNDS::NativeGeom
+{
+    template <class Pair>
+    struct AdjPairTracked;
+    /// Retained host setup scope. Values and row metadata share their original
+    /// controllers; source/target version leases pin the numbering. Global
+    /// sparse relations need not have local target closure.
+    class MeshAdjacencyRead
+    {
+        friend struct MeshConnectivity;
+        friend class MeshAdjacency;
+        friend class AdjacencyRegistry;
+        friend class RelationPeriodicBits;
+        EntitySpace _source, _target;
+        Runtime::VersionTracker::ReadLease _sourceLease, _targetLease;
+        struct Hold
+        {
+            virtual ~Hold() = default;
+            virtual void ValidateScope() const {}
+        };
+        struct MeshHold final : Hold
+        {
+            std::shared_ptr<MeshReadAccess> read;
+            // Physical metadata cannot be recovered from empty view pointers.
+            Runtime::RowLayout ownedLayout, ghostLayout;
+            explicit MeshHold(std::shared_ptr<MeshReadAccess> owner) : read(std::move(owner)) {}
+            void ValidateScope() const override
+            {
+                // Construction acquired the host view and pinned its epoch.
+                // Entry bounds still validate every query; checking a retained
+                // scope must not copy the entire mesh view or relock its epoch.
+                DNDS_check_throw_info(read && read->_active && !read->_completed, "mesh read access was moved or sealed");
+            }
+        };
+        struct ArrayHold final : Hold
+        {
+            Runtime::Array<index> array;
+            Runtime::Array<index>::ReadLease read;
+            explicit ArrayHold(Runtime::Array<index> values)
+                : array(std::move(values)), read(array.Read()) {}
+        };
+        std::unique_ptr<Hold> _owned, _ghost;
+        Runtime::PairReadView<index> _view;
+        AdjacencyDescriptor _kind;
+        MeshAdjState _state;
+        bool _active = true;
+        // Set only by construction, before this scope escapes. Retained Array
+        // and entity-order leases keep every validated entry immutable until
+        // release; association/stamp checks still run on later validations.
+        mutable bool _contentsValidated = false;
+
+        void CheckActive() const
+        {
+            DNDS_check_throw_info(_active, "relation read access was moved");
+            if (_owned)
+                _owned->ValidateScope();
+        }
+
+        Runtime::ArrayView<const index> Capture(Runtime::Array<index> array, std::unique_ptr<Hold> &destination)
+        {
+            DNDS_check_throw_info(array.GetDevice() == Runtime::Device::Host(), "relation setup requires explicit host placement");
+            auto hold = std::make_unique<ArrayHold>(std::move(array));
+            auto view = hold->read.View();
+            destination = std::move(hold);
+            return view;
+        }
+        void Validate() const;
+        // These are the content constraints enforced by Validate, independent
+        // of descriptor identity/provenance. Never infer adjacency equivalence
+        // or derivation semantics from this mask.
+        static unsigned ContentChecks(const AdjacencyDescriptor &kind)
+        {
+            return unsigned(!kind.IsLegacy() && kind.order == RelationOrder::SortedUnique) |
+                   (unsigned(kind.removeSelf) << 1);
+        }
+        const ssp<GlobalOffsetsMapping> &TargetMapping() const { return _target._global; }
+        const MPIInfo &MPI() const { return _source._mpi; }
+        static MPIInfo SourceMPI(const EntitySpace &source) { return source._mpi; }
+        void CheckCommunicator(MPI_Comm communicator) const { EntitySpace::CheckCommunicator(_source._mpi.comm, communicator); }
+
+    public:
+        struct Entry
+        {
+            bool absent = false;
+            bool unavailable = false;
+            index global = UnInitIndex;
+        };
+        MeshAdjacencyRead(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                          MeshAdjState state, const Runtime::Array<index> &owned,
+                          const Runtime::Array<index> *ghost = nullptr)
+            : _source(std::move(source)), _target(std::move(target)),
+              _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
+              _kind(kind), _state(state)
+        {
+            _view.owned = Capture(owned, _owned);
+            if (ghost)
+                _view.ghost = Capture(*ghost, _ghost);
+            Validate();
+        }
+
+        /// Legacy adapter definition is provided by RelationAccessLegacy.hpp.
+        template <class Pair>
+        MeshAdjacencyRead(AdjacencyDescriptor kind, const AdjPairTracked<Pair> &pair, EntitySpace source, EntitySpace target);
+
+    private:
+        /// Used only with a scope acquired from the same mesh by Current/RegisterMesh.
+        MeshAdjacencyRead(AdjacencyDescriptor kind, std::shared_ptr<MeshReadAccess> meshRead, EntitySpace source, EntitySpace target);
+        MeshAdjacencyRead(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                          MeshAdjState state, const Runtime::Array<index> &owned,
+                          const Runtime::Array<index> *ghost, bool contentsValidated)
+            : _source(std::move(source)), _target(std::move(target)),
+              _sourceLease(_source._versions.Read()), _targetLease(_target._versions.Read()),
+              _kind(kind), _state(state), _contentsValidated(contentsValidated)
+        {
+            _view.owned = Capture(owned, _owned);
+            if (ghost)
+                _view.ghost = Capture(*ghost, _ghost);
+            Validate();
+        }
+
+    public:
+        static MeshAdjacencyRead Current(UnstructuredMesh &mesh, AdjacencyDescriptor kind, MeshReadRequirements requirements);
+        /// Acquire distinct descriptors over exactly the supplied value/shape
+        /// storage, index state and entity spaces. Every descriptor and
+        /// association is checked. A pinned content scan may prove weaker
+        /// aliases; unproved sorted/self constraints still require a scan.
+        /// Returned scopes independently retain normal read/order leases.
+        /// This is local setup work; callers coordinate failures before MPI.
+        static std::vector<MeshAdjacencyRead> AcquireAliases(const std::vector<AdjacencyDescriptor> &kinds,
+                                                             EntitySpace source, EntitySpace target, MeshAdjState state,
+                                                             const Runtime::Array<index> &owned,
+                                                             const Runtime::Array<index> *ghost = nullptr);
+        MeshAdjacencyRead(const MeshAdjacencyRead &) = delete;
+        MeshAdjacencyRead &operator=(const MeshAdjacencyRead &) = delete;
+        MeshAdjacencyRead(MeshAdjacencyRead &&other) noexcept
+            : _source(std::move(other._source)), _target(std::move(other._target)),
+              _sourceLease(std::move(other._sourceLease)), _targetLease(std::move(other._targetLease)),
+              _owned(std::move(other._owned)), _ghost(std::move(other._ghost)),
+              _view(other._view), _kind(other._kind), _state(other._state), _active(other._active),
+              _contentsValidated(other._contentsValidated)
+        {
+            other._active = false;
+            other._view = {};
+        }
+        MeshAdjacencyRead &operator=(MeshAdjacencyRead &&) = delete;
+        const EntitySpace &Source() const
+        {
+            CheckActive();
+            return _source;
+        }
+        const EntitySpace &Target() const
+        {
+            CheckActive();
+            return _target;
+        }
+        AdjacencyDescriptor Kind() const
+        {
+            CheckActive();
+            return _kind;
+        }
+        MeshAdjState State() const
+        {
+            CheckActive();
+            return _state;
+        }
+        index NumOwned() const
+        {
+            CheckActive();
+            return index(_view.owned.RowCount());
+        }
+        index RowCount() const
+        {
+            CheckActive();
+            return index(_view.owned.RowCount() + _view.ghost.RowCount());
+        }
+        index Rows() const { return RowCount(); }
+        index RowSize(index row) const
+        {
+            DNDS_check_throw_info(row >= 0 && row < RowCount(), "relation row is not present locally");
+            return _view.RowSize(row);
+        }
+        index Raw(index row, size_t slot) const
+        {
+            DNDS_check_throw_info(slot < RowSize(row), "relation slot is out of range");
+            return _view(row, index(slot));
+        }
+        /// Row-wise setup view for builders that already retain this relation
+        /// and perform their own family/state checks. Element access here has
+        /// no per-slot public-API validation; do not expose it as solver access.
+        Runtime::PairReadView<index> View() const
+        {
+            CheckActive();
+            return _view;
+        }
+        Entry ReadEntry(index row, size_t slot) const;
+        /// Setup-only conversion against this exact target order. Global means
+        /// current distributed rank-offset numbering, never a persistent ID.
+        /// Missing targets encode as -1-global in local state; UnInitIndex
+        /// remains an absent incidence. Strict local conversion rejects missing
+        /// closure. No mapping/storage mutation or communication is performed.
+        index ConvertedIndex(index row, size_t slot, MeshAdjState targetState,
+                             bool allowUnavailable = true) const;
+        /// Convert one complete row under one retained-scope check. Setup
+        /// builders use this when they already allocated the destination row
+        /// from RowSize(); random debugging access remains item-wise.
+        void ConvertRowTo(index row, MeshAdjState targetState, index *output,
+                          bool allowUnavailable = true) const;
+        std::vector<index> GlobalRow(index row) const
+        {
+            std::vector<index> result;
+            result.reserve(RowSize(row));
+            result.resize(RowSize(row));
+            ConvertRowTo(row, Adj_PointToGlobal, result.data());
+            return result;
+        }
+    };
+
+    using RelationReadAccess = MeshAdjacencyRead; // compatibility name
+
+    /// Typed collectively created halo route. Copies share its native route;
+    /// the retained entity identity/order prevents same-sized route confusion.
+    class EntityGhostMapping
+    {
+        friend class MeshAdjacency;
+        std::shared_ptr<const uint8_t> _identity = std::make_shared<const uint8_t>(0);
+        EntitySpace _source;
+        Runtime::RowTransferPlan _route;
+
+        template <class T>
+        Runtime::ArrayStorage::Shared CaptureSource(const EntitySpace &source, const Runtime::Array<T> &owned) const
+        {
+            Runtime::ArrayStorage::Shared storage;
+            int valid = 0;
+            try
+            {
+                // Sharing pins the published shape through payload binding.
+                // Active/abandoned edits and consumed handles must reach the
+                // same rejection collective as their healthy peers.
+                storage = owned.SharedStorage();
+                valid = storage && Valid() && _source.SameOrder(source) &&
+                        storage->Layout().RowCount() == _source.NumOwned();
+            }
+            catch (...)
+            {
+                MPI::AbortIfSolverFailure("mesh relation access failed");
+            }
+            _route.Context()->Preflight(valid, "companion halo route has stale/wrong source order, row extent or unpublished Array shape");
+            return storage;
+        }
+
+    public:
+        template <class T>
+        struct PendingRows
+        {
+            Runtime::Array<T> ghost;
+            Runtime::TransferOperation operation;
+            PendingRows(Runtime::Array<T> values, Runtime::TransferOperation pending)
+                : ghost(std::move(values)), operation(std::move(pending)) {}
+            PendingRows(PendingRows &&) noexcept = default;
+            PendingRows &operator=(PendingRows &&) noexcept = default;
+            PendingRows(const PendingRows &) = delete;
+            PendingRows &operator=(const PendingRows &) = delete;
+        };
+
+        explicit EntityGhostMapping(EntitySpace source)
+            : _source(std::move(source)), _route(_source.BuildRowTransferPlan()) {}
+        const EntitySpace &Source() const { return _source; }
+        /// Stable identity shared by copies of this exact mapping. It is valid
+        /// only in-process and may be used as an O(1) payload-cache key.
+        uint64_t Identity() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_identity.get())); }
+        bool Valid() const { return _source.Valid() && _route.Valid(); }
+        /// Transfer an ordered companion with the same route. The caller names
+        /// its source entity order and explicit wire schema; no map escapes.
+        /// Invalid/unpublished shapes follow the mapping's preflight policy:
+        /// coordinated rejection when enabled, communicator abort otherwise.
+        /// The published shape is retained through binding, preventing edits.
+        template <class T>
+        Runtime::Array<T> TransferRows(const EntitySpace &source, const Runtime::Array<T> &owned,
+                                       const Runtime::ElementSchema &schema, Runtime::TransferLayout layout = {}) const
+        {
+            const auto storage = CaptureSource(source, owned);
+            Runtime::PayloadPlan payload(_route, storage->Layout(), schema, layout);
+            Runtime::Array<T> ghost(payload.DestinationLayout());
+            Runtime::TransferOptions options;
+            options.mode = Runtime::TransferMode::Transient;
+            // This blocking call retires its binding before returning. Reuse
+            // the route namespace; BeginRows keeps independent namespaces for
+            // callers overlapping several payloads on the same mapping.
+            options.context = _route.Context();
+            payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options).Begin().Wait();
+            return ghost;
+        }
+        /// Start a companion transfer without waiting. Keep PendingRows alive
+        /// until its operation completes; callers may start several transfers
+        /// over one route to overlap transport before observing completion.
+        /// Uses the same shape policy as TransferRows. Its isolated message
+        /// namespace inherits that policy; it never re-enables optional checks.
+        template <class T>
+        PendingRows<T> BeginRows(const EntitySpace &source, const Runtime::Array<T> &owned,
+                                 const Runtime::ElementSchema &schema, Runtime::TransferLayout layout = {}) const
+        {
+            const auto storage = CaptureSource(source, owned);
+            Runtime::PayloadPlan payload(_route, storage->Layout(), schema, layout);
+            Runtime::Array<T> ghost(payload.DestinationLayout());
+            Runtime::TransferOptions options;
+            options.mode = Runtime::TransferMode::Transient;
+            options.context = std::make_shared<Runtime::CommunicationContext>(
+                _route.Communicator(), _route.Context()->ChecksCollectivePreflight());
+            auto binding = payload.Bind(owned, ghost, Runtime::TransferTransport::Direct, options);
+            return PendingRows<T>(std::move(ghost), binding.Begin());
+        }
+    };
+
+    using RelationGhostRoute = EntityGhostMapping; // compatibility name
+
+    /// Mesh adjacency backed by a table, padded array or CSR. Owned output is
+    /// published first; explicit WithGhostRows transfers missing source rows
+    /// while preserving the owned storage family and stride/capacity by default.
+    class MeshAdjacency
+    {
+        friend class AdjacencyRegistry;
+        AdjacencyDescriptor _kind;
+        EntitySpace _source, _target;
+        Runtime::Array<index> _owned;
+        std::optional<Runtime::Array<index>> _ghost;
+        MeshAdjState _state;
+        // Setup relations are immutable between explicit Array writes. The
+        // value version changes at write completion, so a fresh scope can reuse
+        // a prior successful scan while still detecting alias mutation.
+        struct ValidatedVersions
+        {
+            std::atomic<uint64_t> owned = std::numeric_limits<uint64_t>::max();
+            std::atomic<uint64_t> ghost = std::numeric_limits<uint64_t>::max();
+        };
+        mutable std::shared_ptr<ValidatedVersions> _validatedVersions = std::make_shared<ValidatedVersions>();
+
+    public:
+        MeshAdjacency(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                      Runtime::Array<index> owned, MeshAdjState state = Adj_PointToGlobal)
+            : _kind(kind), _source(std::move(source)), _target(std::move(target)),
+              _owned(std::move(owned)), _state(state)
+        {
+            auto check = Read();
+        }
+        const Runtime::Array<index> &Owned() const { return _owned; }
+        const std::optional<Runtime::Array<index>> &Ghost() const { return _ghost; }
+        AdjacencyDescriptor Kind() const
+        {
+            _source.Validate();
+            _target.Validate();
+            return _kind;
+        }
+        const EntitySpace &Source() const { return _source; }
+        const EntitySpace &Target() const { return _target; }
+        MeshAdjacencyRead Read() const
+        {
+            // Acquire the actual value leases before observing generations.
+            // Otherwise an alias writer could finish between the version read
+            // and lease acquisition, making a stale scan look current.
+            MeshAdjacencyRead result(_kind, _source, _target, _state, _owned,
+                                     _ghost ? &*_ghost : nullptr, true);
+            const auto ownedVersion = _owned.Version();
+            const auto ghostVersion = _ghost ? _ghost->Version() : 0;
+            const bool current = _validatedVersions->owned.load(std::memory_order_acquire) == ownedVersion &&
+                                 (!_ghost || _validatedVersions->ghost.load(std::memory_order_acquire) == ghostVersion);
+            if (!current)
+            {
+                result._contentsValidated = false;
+                result.Validate();
+                _validatedVersions->owned.store(ownedVersion, std::memory_order_release);
+                if (_ghost)
+                    _validatedVersions->ghost.store(ghostVersion, std::memory_order_release);
+            }
+            return result;
+        }
+        /// Detached host conversion of every owned and present ghost row.
+        /// Retains source/target identity, slot order and logical row shape.
+        /// Both directions validate explicit state; even same-state conversion
+        /// returns independent values. Live compute mesh publications stay local.
+        /// No MPI is issued; wrap in the caller's collective failure boundary
+        /// before a subsequent collective setup operation.
+        static MeshAdjacency Convert(const MeshAdjacencyRead &source, MeshAdjState targetState,
+                                     bool allowUnavailable = true);
+        /// Attach already materialized source-ordered ghost rows. Used when a
+        /// setup traversal needed those rows for discovery and must not fetch
+        /// the same payload a second time during publication.
+        static MeshAdjacency WithGhostValues(AdjacencyDescriptor kind, EntitySpace source, EntitySpace target,
+                                             Runtime::Array<index> owned,
+                                             Runtime::Array<index> ghost)
+        {
+            MeshAdjacency result(kind, std::move(source), std::move(target), std::move(owned));
+            result._ghost.emplace(std::move(ghost));
+            auto validated = result.Read();
+            return result;
+        }
+        /// Collective transient direct transfer using a route explicitly bound
+        /// to this source identity/order. The original owned relation is retained.
+        /// Local-index payloads require target-map translation across ranks;
+        /// publish global entries before invoking this setup transfer.
+        MeshAdjacency WithGhostRows(const EntityGhostMapping &route, Runtime::TransferLayout layout = {}) const;
+        MeshAdjacencyRead Read(const EntitySpace &source, const EntitySpace &target) const
+        {
+            DNDS_check_throw_info(_source.SameOrder(source) && _target.SameOrder(target),
+                                  "native relation does not belong to the requested entity orders");
+            return Read();
+        }
+    };
+
+    using NativeRelation = MeshAdjacency; // compatibility name
+}

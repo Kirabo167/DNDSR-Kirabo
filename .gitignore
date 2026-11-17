@@ -162,6 +162,11 @@ workspace
 !/cases/acm/**/*.hpp
 !/cases/acm/**/*.yaml
 !/cases/acm/**/*.md
+!/cases/cauchy/
+/cases/cauchy/**
+!/cases/cauchy/**/
+!/cases/cauchy/**/*.json
+!/cases/cauchy/**/*.md
 !/cases/ncfv_euler/
 /cases/ncfv_euler/**
 !/cases/ncfv_euler/**/

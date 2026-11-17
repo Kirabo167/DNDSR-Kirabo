@@ -1,0 +1,150 @@
+NCFV：零均值一次基的格点值恢复（对应论文式 3-59）
+2026-11-13
+
+依据：《马润之硕士学位论文》3.2.4 节，印刷页 32—34，PDF 页 46—48。
+本说明给出点值恢复、直接求限制系数，以及独立实验版本中的混合界面 Roe 回退。
+只做代数测试和已有状态的重构/通量检查，不启动时间推进。
+
+1. R1、R2 的含义及原恢复式的适用范围
+
+令 r=x-x_i，V_i=|Omega_i|，mu_i=<r>_i。
+零均值二次重构可写成
+  p_i^(2)(x)=ubar_i+g_i·(r-mu_i)+q_i(r)-<q_i>_i。
+其中 g_i 是物理坐标的一阶导数，q_i 是只含二次单项式的部分。
+在格点 r=0：
+  u_i^(2)=ubar_i+R1_i+R2_i，
+  R1_i=-g_i·mu_i，R2_i=-<q_i>_i。
+
+舍弃的是整个“二次零均值基”，其中的常数补偿也必须舍弃：
+  p_i^(1)=ubar_i+g_i·(r-mu_i)，
+  u_i^(1)=ubar_i+R1_i。
+限制后：
+  p_i^lim=ubar_i+theta_i*g_i·(r-mu_i)，
+  u_i^lim=ubar_i+theta_i*R1_i。
+
+用户指出的不可辨识性成立：仅知道 u_i^(2)、ubar_i 和 theta_i，不能从
+R1_i+R2_i 唯一确定 R1_i。直接用 ubar_i+theta_i*(u_i^(2)-ubar_i)，再配
+theta_i*g_i 的一次项，会使重构均值偏离 ubar_i，误差正好为 theta_i*R2_i。
+原二次恢复式本身适用于其二次重构；问题在于把它直接用于删掉二次基后的 P1。
+高效算法已经保存 g_i，所以无需重新恢复二阶导数，也不需要由旧点值反演 R1。
+
+2. 按 3.2.4 节推导 P1 权重
+
+单元内 p_i^(1)(x)=u_i^(1)+(x-x_i)·g_i，且 <p_i^(1)>_i=ubar_i，因此
+  u_i^(1)=ubar_i-[1/V_i * integral_Omega_i (x-x_i) dV]·g_i。
+
+将 Omega_i 划分为微四面体 T_ik，实际体积为 V_ik，顶点 x_ik,l（l=0..3）。
+一次函数在四面体上的精确积分满足
+  integral_T_ik (x-x_i) dV = V_ik/4 * sum_(l=0..3) (x_ik,l-x_i)。
+由于 x_ik,0=x_i，仅 l=0 的贡献为零，其余一次项不能删除。
+于是
+  w_i^(1)=1/(4*V_i) * sum_k V_ik * sum_(l=1..3) (x_ik,l-x_i)
+         =c_i-x_i，
+其中 c_i 为真实体积形心，不是任意多面体顶点的算术平均。
+
+写成与论文式（3-59）完全相同的形式：
+  u_i^(1)(x_i)=ubar_i-sum_(m in M_i) omega_im^(1)·grad(u_m)，
+  omega_im^(1)=delta_im*w_i^(1)。
+即只有本格点 m=i 的权重非零，P1 的实际支持集可缩为 {i}。
+
+限制后有两种等价调用，二者只能选择一种：
+  u_i^lim=ubar_i-theta_i*w_i^(1)·g_i；
+  或先令 g_i^lim=theta_i*g_i，再令 u_i^lim=ubar_i-w_i^(1)·g_i^lim。
+不要在已限制的梯度上再次乘 theta_i。
+
+二维微三角形对应 1/(3*V_i) 的顶点求和；任意维度 d 的单纯形对应
+1/((d+1)*V_i)。因此现有几何一阶矩 first/V_i 统一覆盖二维和三维；额外缓存由限制器拥有。
+
+3. 与完整 P2 梯度权重的关系
+
+式（3-55）中 grad(u_k,n)-grad(u_i) 含有本格点梯度的负贡献。
+把（3-57）代入并合并后，原 omega_ii^(2) 同样含二阶恢复贡献。
+所以不能删除 m!=i 的旧权重、只保留旧 omega_ii^(2) 来得到 P1。
+
+完整 P2 权重应满足线性一致性恒等式：
+  sum_m omega_im^(2)=w_i^(1)。
+将所有支持点的梯度都视为同一个 g_i 时，二阶梯度差项才会消失。
+实现采用独立几何一阶矩计算 w_i^(1)，不依赖大权重相消，也不读取邻居梯度。
+
+4. 量纲、坐标与论文记号
+
+若 V_ik 表示实际微四面体体积，必须除以 V_i；若已经用 V_ik/V_i 归一化，
+则不重复除以 V_i。论文（3-54）至（3-58）的右端需要结合该约定理解；
+本实现采用实际体积并显式除以 V_i，权重具有长度量纲。
+权重由网格几何和拓扑共同决定；固定网格初始化一次，移动网格需要更新。
+周期单元的 r 必须在同一展开坐标系内求取，不能直接减全局包裹坐标。
+代码 RawMoments.first 已按 anchor-relative 周期局部坐标累积。
+归一化零均值基使用 a_d=h_d*g_d 时，R1=-sum_d a_d*<r_d/h_d>
+仍与 -g_i·mu_i 完全相同；本接口直接使用物理梯度。
+
+5. 实现
+
+src/NCFV/NCFVLinearLimiter.hpp：
+  LinearBarthLimiter::Initialize 在初始化阶段由 moments.first/moments.measure
+  缓存每个拥有单元的 w_i^(1)。不在通用几何结构中增加这一字段。
+  关闭限制器时不分配该数组；关闭已初始化的模块时也释放数组容量。
+  每个开启缓存的拥有单元增加三个 double，不增加梯度通信。
+  LimitCell/LimitWithWeight 使用 R1+G_raw^T*(x_f-x_i) 求一个公共 theta。
+  同一次调用返回 R1、theta、point=mean+theta*R1、gradient=theta*G_raw。
+src/NCFV/NCFVReconstruction.hpp：
+  RecoverLinearPointValue(mean, gradient, weight, factor=1)，单元局部接口。
+src/NCFV/NCFVReconstruction.cpp：
+  RecoverLinearPointValues(means, gradients, points, factors={})，批量 owned-node 接口。
+  factors 为空表示全部 theta=1；否则每个本地拥有节点提供一个系数。
+  Build 按 enableLimiter 初始化限制器中的可选权重缓存。
+
+局部回退调用示意（G 为“空间方向行、守恒分量列”）：
+  result = limiter.LimitCell(i, mean, G_raw, midpointOffsets, lower, upper);
+  U_face = result.point + result.gradient.transpose() * (x_face - x_i);
+这里 result.point 与 result.gradient 定义同一个保均值 P1 多项式。共享 G_raw 不变。
+完整 P2 恢复接口及原有计算配置不自动切换为 P1。
+
+限制系数的分母必须是完整增量 Delta_if=R1_i+G_raw^T*(x_f-x_i)。
+只根据梯度项或包含 R2 的旧点值求 theta，然后再恢复新的 P1 点值，会改变
+求系数时使用的参考增量，可能导致实际 U_L/U_R 越界。先后赋值的顺序本身
+不影响数学结果；必须冻结原始量并使用同一完整增量与同一个 theta。
+
+6. 已实现的完整界面切换
+
+独立版本：cases/ncfv_euler/3D/RP1_Barth_P1_edge_midpoint_20261113。
+方法名称：BARTH_P1_EDGE_MIDPOINT。默认 iterations=0，不自动推进时间。
+
+先检查原高阶界面均值是否超出本单元及直接邻居均值的逐分量界限；如需要
+限制（或原高阶重构不满足正性），本单元回退为 P1。使用所有关联界面的
+原始棱中点 x_f=(x_i+x_j)/2 求 Delta_if 和公共 theta，周期方向使用同一
+展开坐标系。外边界没有对侧格点，沿用各边界子面形心作为检查位置。
+额外正性保护只统一缩小全部零均值模式，保持同一 R1/梯度缩放关系。
+
+若 i 侧触发，j 侧未触发：
+  U_L=ubar_i+theta_i*[R1_i+G_i^T*(x_f-x_i)]；
+  U_R=j 侧已经计算的原高阶界面平均值。
+两侧都触发时，两侧均用各自受限 P1 棱中点值。
+只要任一侧触发，整个界面通量切换为
+  Phi_f=|S_vec|*F_Roe(U_L,U_R,S_vec/|S_vec|)。
+该分支不叠加原高阶物理通量积分，未触发的 j 侧分布不被修改。
+两侧都未触发时保留原高效高阶通量。单个界面由 owner 计算一份完整通量，
+两个控制体按相反符号使用。回退标志随原有面侧交换一起传递。
+S_vec 是等效面矢量；非共面子面的总面积不能代替 |S_vec|。
+本轮依用户要求使用“原始棱中点”，不改为对偶面的面积形心。
+
+7. 核对范围
+
+新增 test/cpp/NCFV/test_NCFVLinearRecovery.cpp：
+  - R1+R2 不能直接缩放的反例，theta=0/1/中间值及非法参数。
+  - 二维非零一阶矩和与“预先限制梯度”写法的等价性。
+  - 剪切、拉伸、平移后的三维六面体控制体，包括边界截断控制体。
+  - 使用保留微四面体的独立四点积分核对均值；运行时几何已丢弃微体。
+  - 高效与传统几何路径，原 P2 恢复精确性、P2 权重和与 P1 权重恒等式。
+  - 把 ghost 梯度设为 NaN 仍能正确恢复 P1，检查仅改变本单元 theta 的局部性。
+  - 周期坐标展开及 MPI 1/2/4 进程。
+  - 使用完整增量求 theta 后，检查实际界面状态，避免恢复后发生越界。
+  - 启用与关闭缓存的内存分配检查。
+
+C++ 几何及 MPI 1/2/4 测试已通过。独立微四面体求积最大均值误差约
+2.12e-14；P1 权重误差不超过 3.85e-16。错误地沿用旧 P2 点值缩放的反例
+中出现约 2.90e-3 的恢复误差。
+实验程序的快照检查记录位于上述独立版本的 validation/validation.json，
+覆盖单侧回退、双侧回退、关闭限制器、非正交网格和非零 R1 的已有状态。
+
+这验证的是恢复公式和代码，不是完整流场的稳定性或间断分辨率。
+中点状态有界、全界面有界、压力有界和时间更新正性是不同的后续约束。

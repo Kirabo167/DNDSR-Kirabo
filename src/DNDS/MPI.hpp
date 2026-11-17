@@ -14,12 +14,14 @@
 /// - MPI::ResourceRecycler, MPISerialDo, InsertCheck
 /// - Sub-communicators, CommStrategy functional impact on ArrayTransformer
 
+#include <array>
 #include <vector>
 #include <fstream>
+#include <optional>
 
 #include <mutex>
 
-#include "Defines.hpp"
+#include "DNDS/Defines.hpp"
 
 // Prevent deprecated MPI C++ bindings (removed in MPI-3.0) from being included.
 // These macros must be defined BEFORE including mpi.h.
@@ -691,6 +693,196 @@ namespace DNDS::MPI
     MPI_int Allreduce(const void *sendbuf, void *recvbuf, MPI_int count,
                       MPI_Datatype datatype, MPI_Op op, MPI_Comm comm);
 
+    /// Supported reduction semantics for the bounded typed collective API.
+    /// The operation remains explicit at every call site; unsupported
+    /// operation/scalar combinations are rejected during template
+    /// instantiation rather than delegated to MPI at runtime.
+    enum class Reduction
+    {
+        Sum,
+        Min,
+        Max,
+        LogicalAnd,
+        LogicalOr,
+        BitAnd,
+        BitOr,
+        BitXor
+    };
+
+    /// Non-owning contiguous host view accepted by typed collectives.
+    /// The caller retains the storage until the blocking collective returns.
+    template <class T>
+    struct ContiguousView
+    {
+        T *data = nullptr;
+        size_t size = 0;
+    };
+
+    namespace Detail
+    {
+        template <class T>
+        inline constexpr bool IsMpiScalar =
+            std::is_same_v<std::remove_cv_t<T>, bool> ||
+            (std::is_arithmetic_v<std::remove_cv_t<T>> &&
+             !std::is_same_v<std::remove_cv_t<T>, wchar_t> &&
+             !std::is_same_v<std::remove_cv_t<T>, char16_t> &&
+             !std::is_same_v<std::remove_cv_t<T>, char32_t>);
+
+        template <class T>
+        MPI_Datatype MpiScalarType()
+        {
+            using U = std::remove_cv_t<T>;
+            static_assert(IsMpiScalar<U>, "typed MPI collectives require a supported fundamental scalar");
+            if constexpr (std::is_same_v<U, bool>)
+                return MPI_C_BOOL;
+            else if constexpr (std::is_same_v<U, char>)
+                return MPI_CHAR;
+            else if constexpr (std::is_same_v<U, signed char>)
+                return MPI_SIGNED_CHAR;
+            else if constexpr (std::is_same_v<U, unsigned char>)
+                return MPI_UNSIGNED_CHAR;
+            else if constexpr (std::is_same_v<U, short>)
+                return MPI_SHORT;
+            else if constexpr (std::is_same_v<U, unsigned short>)
+                return MPI_UNSIGNED_SHORT;
+            else if constexpr (std::is_same_v<U, int>)
+                return MPI_INT;
+            else if constexpr (std::is_same_v<U, unsigned int>)
+                return MPI_UNSIGNED;
+            else if constexpr (std::is_same_v<U, long>)
+                return MPI_LONG;
+            else if constexpr (std::is_same_v<U, unsigned long>)
+                return MPI_UNSIGNED_LONG;
+            else if constexpr (std::is_same_v<U, long long>)
+                return MPI_LONG_LONG_INT;
+            else if constexpr (std::is_same_v<U, unsigned long long>)
+                return MPI_UNSIGNED_LONG_LONG;
+            else if constexpr (std::is_same_v<U, float>)
+                return MPI_FLOAT;
+            else if constexpr (std::is_same_v<U, double>)
+                return MPI_DOUBLE;
+            else if constexpr (std::is_same_v<U, long double>)
+                return MPI_LONG_DOUBLE;
+        }
+
+        template <Reduction Op, class T>
+        MPI_Op MpiReductionOperation()
+        {
+            using U = std::remove_cv_t<T>;
+            static_assert(IsMpiScalar<U>, "typed MPI collectives require a supported fundamental scalar");
+            constexpr bool arithmetic = std::is_arithmetic_v<U> && !std::is_same_v<U, bool>;
+            constexpr bool integral = std::is_integral_v<U> && !std::is_same_v<U, bool>;
+            if constexpr (Op == Reduction::Sum)
+            {
+                static_assert(arithmetic, "MPI sum requires a non-bool arithmetic scalar");
+                return MPI_SUM;
+            }
+            else if constexpr (Op == Reduction::Min)
+            {
+                static_assert(arithmetic, "MPI minimum requires a non-bool arithmetic scalar");
+                return MPI_MIN;
+            }
+            else if constexpr (Op == Reduction::Max)
+            {
+                static_assert(arithmetic, "MPI maximum requires a non-bool arithmetic scalar");
+                return MPI_MAX;
+            }
+            else if constexpr (Op == Reduction::LogicalAnd)
+            {
+                static_assert(std::is_same_v<U, bool>, "MPI logical-and requires bool");
+                return MPI_LAND;
+            }
+            else if constexpr (Op == Reduction::LogicalOr)
+            {
+                static_assert(std::is_same_v<U, bool>, "MPI logical-or requires bool");
+                return MPI_LOR;
+            }
+            else if constexpr (Op == Reduction::BitAnd)
+            {
+                static_assert(integral, "MPI bit-and requires a non-bool integral scalar");
+                return MPI_BAND;
+            }
+            else if constexpr (Op == Reduction::BitOr)
+            {
+                static_assert(integral, "MPI bit-or requires a non-bool integral scalar");
+                return MPI_BOR;
+            }
+            else
+            {
+                static_assert(Op == Reduction::BitXor && integral,
+                              "MPI bit-xor requires a non-bool integral scalar");
+                return MPI_BXOR;
+            }
+        }
+
+        inline MPI_int CheckedCollectiveCount(size_t size)
+        {
+            DNDS_check_throw_info(size <= size_t(MAX_MPI_int),
+                                  "typed MPI collective count exceeds MPI_int");
+            return MPI_int(size);
+        }
+    }
+
+    /// @brief Reduce one fundamental scalar and return the all-rank result.
+    /// @tparam Op Explicit reduction semantics, checked against `T`.
+    /// @param local Calling rank's value.
+    /// @param comm Communicator entered collectively by every participating rank.
+    /// @throws std::runtime_error for an MPI error.
+    template <Reduction Op, class T>
+    [[nodiscard]] T AllreduceValue(T local, MPI_Comm comm)
+    {
+        static_assert(Detail::IsMpiScalar<T>, "unsupported typed MPI scalar");
+        T result{};
+        const auto status = Allreduce(&local, &result, 1, Detail::MpiScalarType<T>(),
+                                      Detail::MpiReductionOperation<Op, T>(), comm);
+        DNDS_check_throw_info(status == MPI_SUCCESS, "typed MPI scalar Allreduce failed");
+        return result;
+    }
+
+    /// @brief Reduce a contiguous mutable buffer in place.
+    /// @pre `values.data` is valid for `values.size` host elements until return.
+    /// @throws std::runtime_error for an oversized count or MPI error.
+    template <Reduction Op, class T>
+    void AllreduceInPlace(ContiguousView<T> values, MPI_Comm comm)
+    {
+        static_assert(Detail::IsMpiScalar<T>, "unsupported typed MPI scalar");
+        const auto count = Detail::CheckedCollectiveCount(values.size);
+        DNDS_check_throw_info(values.data || !count, "typed MPI Allreduce received a null nonempty view");
+        // MPI_IN_PLACE is a library-defined sentinel macro whose internal
+        // C-style cast is outside project control.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+        const auto status = Allreduce(MPI_IN_PLACE, values.data, count,
+                                      Detail::MpiScalarType<T>(),
+                                      Detail::MpiReductionOperation<Op, T>(), comm);
+        DNDS_check_throw_info(status == MPI_SUCCESS, "typed MPI in-place Allreduce failed");
+    }
+
+    /// @brief Reduce a fixed-size array in place without spelling a pointer/count.
+    template <Reduction Op, class T, size_t N>
+    void AllreduceInPlace(std::array<T, N> &values, MPI_Comm comm)
+    {
+        static_assert(N <= size_t(MAX_MPI_int), "fixed typed MPI collective exceeds MPI_int");
+        AllreduceInPlace<Op>(ContiguousView<T>{values.data(), values.size()}, comm);
+    }
+
+    /// @brief Reduce one contiguous input buffer into a distinct output buffer.
+    /// @pre Input and output have equal sizes and remain valid until return.
+    template <Reduction Op, class T>
+    void AllreduceInto(ContiguousView<const T> local, ContiguousView<T> result,
+                       MPI_Comm comm)
+    {
+        static_assert(Detail::IsMpiScalar<T>, "unsupported typed MPI scalar");
+        DNDS_check_throw_info(local.size == result.size,
+                              "typed MPI Allreduce input/output sizes differ");
+        const auto count = Detail::CheckedCollectiveCount(local.size);
+        DNDS_check_throw_info((local.data && result.data) || !count,
+                              "typed MPI Allreduce received a null nonempty view");
+        const auto status = Allreduce(local.data, result.data, count,
+                                      Detail::MpiScalarType<T>(),
+                                      Detail::MpiReductionOperation<Op, T>(), comm);
+        DNDS_check_throw_info(status == MPI_SUCCESS, "typed MPI output Allreduce failed");
+    }
+
     /// @brief Wrapper over `MPI_Scan` (inclusive prefix reduction).
     MPI_int Scan(const void *sendbuf, void *recvbuf, MPI_int count,
                  MPI_Datatype datatype, MPI_Op op, MPI_Comm comm);
@@ -730,6 +922,58 @@ namespace DNDS::MPI
         // whose internal C-style cast is outside project control.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
         Allreduce(MPI_IN_PLACE, &v, 1, DNDS_MPI_INDEX, op, mpi.comm);
+    }
+
+    enum class IntegerAgreementPolicy : uint8_t
+    {
+        Automatic,
+        Bitmask,
+        MinMax
+    };
+
+    /// Exact all-rank agreement for an optional bounded integer. Every rank
+    /// must pass the same bound and policy. Values must lie in
+    /// [0, exclusiveUpperBound).
+    inline std::optional<int> AgreeOptionalInteger(
+        const MPIInfo &mpi, std::optional<int> localValue, int exclusiveUpperBound,
+        IntegerAgreementPolicy policy = IntegerAgreementPolicy::Automatic)
+    {
+        DNDS_check_throw_info(mpi.comm != MPI_COMM_NULL, "integer agreement needs a communicator");
+        DNDS_check_throw_info(exclusiveUpperBound >= 0 && exclusiveUpperBound <= INT_MAX - 2,
+                              "integer agreement bound is outside MPI range");
+        DNDS_check_throw_info(!localValue || (*localValue >= 0 && *localValue < exclusiveUpperBound),
+                              "integer agreement value is outside its bound");
+        constexpr int bitmaskCrossover = 128;
+        if (policy == IntegerAgreementPolicy::Automatic)
+            policy = exclusiveUpperBound <= bitmaskCrossover ? IntegerAgreementPolicy::Bitmask
+                                                             : IntegerAgreementPolicy::MinMax;
+        const int encoded = localValue ? *localValue + 1 : 0;
+        if (policy == IntegerAgreementPolicy::Bitmask)
+        {
+            const size_t bits = size_t(exclusiveUpperBound) + 2;
+            const size_t words = (bits + 63) / 64;
+            DNDS_check_throw_info(words <= size_t(INT_MAX), "integer agreement mask exceeds MPI count range");
+            std::vector<uint64_t> mask(words, 0);
+            const auto slot = size_t(encoded);
+            mask[slot / 64] |= uint64_t(1) << (slot % 64);
+            MPI_Allreduce(MPI_IN_PLACE, mask.data(), int(words), MPI_UINT64_T, MPI_BOR, mpi.comm);
+            int agreed = -1;
+            size_t occurrences = 0;
+            for (size_t word = 0; word < words; ++word)
+                while (mask[word])
+                {
+                    const auto bit = size_t(__builtin_ctzll(mask[word]));
+                    agreed = int(word * 64 + bit) - 1;
+                    ++occurrences;
+                    mask[word] &= mask[word] - 1;
+                }
+            return occurrences == 1 && agreed >= 0 ? std::optional<int>(agreed) : std::nullopt;
+        }
+        DNDS_check_throw_info(policy == IntegerAgreementPolicy::MinMax, "unknown integer agreement policy");
+        int minimum = encoded, maximum = encoded;
+        MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_INT, MPI_MIN, mpi.comm);
+        MPI_Allreduce(MPI_IN_PLACE, &maximum, 1, MPI_INT, MPI_MAX, mpi.comm);
+        return minimum == maximum && minimum > 0 ? std::optional<int>(minimum - 1) : std::nullopt;
     }
 
 }

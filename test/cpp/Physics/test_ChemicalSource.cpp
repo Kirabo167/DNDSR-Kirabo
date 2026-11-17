@@ -1,0 +1,293 @@
+#define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
+#include "doctest.h"
+
+#include "Physics/Chemistry/ChemicalSource.hpp"
+
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+#include <string>
+
+using namespace DNDS::Physics::Chemistry;
+
+static std::string mechFile()
+{
+    const char *env = std::getenv("DNDS_MECH_PATH");
+    if (env)
+        return std::string(env) + "/h2o2.yaml";
+    return "h2o2.yaml"; // Cantera data dirs or CWD
+}
+
+TEST_CASE("ChemicalSource::productionRates — RHS signs at active T")
+{
+    ChemicalSource chem(mechFile(), "", 379.0, 1.0);
+    int Ns = chem.nSpecies();
+    int Ns1 = Ns - 1;
+    auto names = chem.speciesNames();
+    auto MW = chem.molecularWeights();
+
+    std::vector<double> Y(Ns, 0.0);
+    Y[0] = 0.028;
+    Y[3] = 0.222;
+    Y[9] = 0.75;
+    double ysum = 0;
+    for (auto y : Y)
+        ysum += y;
+    for (auto &y : Y)
+        y /= ysum;
+
+    double Rmix = chem.mixtureR(ConstSpeciesBufferView{Y.data(), Ns});
+
+    for (double T : {416.0, 870.0, 1200.0, 1400.0, 1800.0, 2500.0})
+    {
+        double p = 1.0 * Rmix * T;
+        ConstSpeciesBufferView Yv{Y.data(), Ns};
+        std::vector<double> w(Ns);
+        SpeciesBufferView ov{w.data(), Ns};
+        chem.productionRates(T, p, Yv, ov);
+
+        double maxAbsW = 0;
+        for (int k = 0; k < Ns; ++k)
+            maxAbsW = std::max(maxAbsW, std::abs(w[k]));
+
+        INFO("T=" << T << "K p=" << p / 1e5 << "bar max|omega|=" << maxAbsW);
+
+        if (maxAbsW > 1e-10)
+        {
+            double rhs_H2 = w[0] * MW[0];
+            CHECK(rhs_H2 < 0);
+        }
+
+        if (T >= 1400)
+        {
+            double rhs_H = w[1] * MW[1];
+            double rhs_O = w[2] * MW[2];
+            INFO("T=" << T << " H:" << rhs_H << " O:" << rhs_O);
+            CHECK(rhs_H > 0);
+        }
+    }
+}
+
+TEST_CASE("ChemicalSource::productionRatesAndJacobian — Jacobian sign convention")
+{
+    ChemicalSource chem(mechFile(), "", 379.0, 1.0);
+    int Ns = chem.nSpecies();
+    int Ns1 = Ns - 1;
+    int nVars = 5 + Ns1;
+    auto names = chem.speciesNames();
+    auto MW = chem.molecularWeights();
+
+    std::vector<double> Y(Ns, 0.0);
+    Y[0] = 0.028;
+    Y[3] = 0.222;
+    Y[9] = 0.75;
+    double ysum = 0;
+    for (auto y : Y)
+        ysum += y;
+    for (auto &y : Y)
+        y /= ysum;
+    double Rmix = chem.mixtureR(ConstSpeciesBufferView{Y.data(), Ns});
+
+    double T = 1800, p = 1.0 * Rmix * T, rho = 1.0, rhoE = 1.0, velScale = 1.0;
+    int I4 = 4;
+    ConstSpeciesBufferView Yv{Y.data(), Ns};
+
+    std::vector<double> w(Ns), jbuf(Ns * nVars, 0.0);
+    SpeciesBufferView ov{w.data(), Ns};
+    JacobianBufferView Jv{jbuf.data(), Ns, nVars, Ns};
+    chem.productionRatesAndJacobian(T, p, rho, rhoE, 0., 0., 0., I4, Yv, ov, Jv);
+
+    int Isp = 5;
+
+    SUBCASE("consumer species (H2) diagonal: T-coupling dominates direct species term")
+    {
+        double dW0_dU0 = Jv(0, Isp + 0) * MW[0]; // d(RHS_H2)/d(rhoY_H2)
+        MESSAGE("d(RHS_H2)/d(rhoY_H2) = ", dW0_dU0, " 1/s");
+        // At fixed total energy (ρE), adding H2 drops T (H2 has higher u_k than N2),
+        // slowing all reactions.  The T-coupling dominates the direct species consumption.
+        // Expect positive diagonal: more H2 → lower T → slower consumption → RHS less negative.
+        CHECK(dW0_dU0 > 0);
+    }
+
+    SUBCASE("JSource sign: T-coupling gives positive dR/dU for H2")
+    {
+        // body-force: jac(I4,Seq123) -= massForce, where dR/dU = +massForce → JSource = -dR/dU
+        double dR_dU_H2 = Jv(0, Isp + 0) * MW[0];
+        double JSource_H2 = -dR_dU_H2;
+        MESSAGE("dR/dU(H2) = ", dR_dU_H2, "  JSource = ", JSource_H2);
+        // T-coupling: positive dR/dU (less consumption), so JSource < 0 (destabilising offset).
+        // The system stabilises through SGS iteration and cross-species coupling.
+        CHECK(dR_dU_H2 > 0);
+        CHECK(JSource_H2 < 0);
+    }
+
+    SUBCASE("fuel self-coupling: T-sensitivity reverses sign vs old direct-only formula")
+    {
+        // Jv(0, Isp+0) = dω_H2/d(ρY_H2) includes T coupling through dT/d(ρY_H2).
+        // At fixed ρE, increasing H2 lowers T (H2 cp ≫ N2 cp) → ω_H2 slower → dω/d(ρY_H2) > 0.
+        double dw0_dc0_raw = Jv(0, Isp + 0) * MW[0];
+        MESSAGE("d(omega_H2)/d(rhoY_H2) (with T coupling) = ", Jv(0, Isp + 0));
+        CHECK(dw0_dc0_raw > 0);
+    }
+}
+
+TEST_CASE("ChemicalSource::maxChemicalStiffnessRate — matches fixed-density mass-fraction diagonal")
+{
+    ChemicalSource chem(mechFile(), "", 379.0, 1.0);
+    int Ns = chem.nSpecies();
+    auto MW = chem.molecularWeights();
+
+    std::vector<double> Y(Ns, 0.0);
+    Y[0] = 0.028;
+    Y[3] = 0.222;
+    Y[9] = 0.75;
+    const double T = 1800.0;
+    const double rho = 1.0;
+    const double p = rho * chem.mixtureR({Y.data(), Ns}) * T;
+    const double stiffness = chem.maxChemicalStiffnessRate(T, p, {Y.data(), Ns});
+
+    double finiteDifferenceMaximum = 0.0;
+    std::vector<double> omegaBase(Ns);
+    chem.productionRates(T, p, {Y.data(), Ns}, {omegaBase.data(), Ns});
+    for (int k = 0; k < Ns; ++k)
+    {
+        const double epsilon = std::max(1.0e-10, std::abs(Y[k]) * 1.0e-6);
+        auto YPlus = Y;
+        YPlus[k] += epsilon;
+        const double pPlus = rho * chem.mixtureR({YPlus.data(), Ns}) * T;
+        std::vector<double> omegaPlus(Ns);
+        chem.productionRates(T, pPlus, {YPlus.data(), Ns}, {omegaPlus.data(), Ns});
+
+        double derivative = 0.0;
+        if (Y[k] > epsilon)
+        {
+            auto YMinus = Y;
+            YMinus[k] -= epsilon;
+            const double pMinus = rho * chem.mixtureR({YMinus.data(), Ns}) * T;
+            std::vector<double> omegaMinus(Ns);
+            chem.productionRates(T, pMinus, {YMinus.data(), Ns}, {omegaMinus.data(), Ns});
+            derivative = (omegaPlus[k] - omegaMinus[k]) * MW[k] / (2.0 * epsilon * rho);
+        }
+        else
+            derivative = (omegaPlus[k] - omegaBase[k]) * MW[k] / (epsilon * rho);
+        finiteDifferenceMaximum = std::max(finiteDifferenceMaximum, std::abs(derivative));
+    }
+
+    INFO("analytic diagonal maximum=" << stiffness << " finite-difference maximum=" << finiteDifferenceMaximum);
+    CHECK(stiffness == doctest::Approx(finiteDifferenceMaximum).epsilon(2.0e-3));
+}
+
+TEST_CASE("Constant-volume chemical response agrees with directional differences and source scaling")
+{
+    ChemicalSource chemistry(mechFile(), "", 379., 1.);
+    const int speciesCount = chemistry.nSpecies();
+    const double temperature = 1100., pressure = 3e5;
+    std::vector<double> fractions(speciesCount, .001);
+    fractions[0] = .03;
+    fractions[3] = .22;
+    fractions[9] = .75;
+    double sum = 0;
+    for (double value : fractions)
+        sum += value;
+    for (double &value : fractions)
+        value /= sum;
+    ConstSpeciesBufferView fractionView{fractions.data(), speciesCount};
+    const double density = pressure / (chemistry.mixtureR(fractionView) * temperature);
+    auto source = [&](const std::vector<double> &stateFractions, double stateTemperature)
+    {
+        ConstSpeciesBufferView view{stateFractions.data(), speciesCount};
+        const double statePressure = density * chemistry.mixtureR(view) * stateTemperature;
+        const double capacity = chemistry.mixtureCv(stateTemperature, view, statePressure);
+        std::vector<double> values(speciesCount + 1), enthalpy(speciesCount);
+        chemistry.productionRates(stateTemperature, statePressure, view, {values.data(), speciesCount});
+        chemistry.speciesEnthalpies(stateTemperature, statePressure, view, {enthalpy.data(), speciesCount});
+        for (int species = 0; species < speciesCount; ++species)
+        {
+            values[species] *= chemistry.molecularWeights()[species] / density;
+            values.back() -= (enthalpy[species] - chemistry.speciesGasConstants()[species] * stateTemperature) * values[species];
+        }
+        values.back() /= capacity * stateTemperature;
+        return values;
+    };
+    auto autonomous = source(fractions, temperature);
+    std::vector<double> diffusion(speciesCount, 0.);
+    diffusion[0] = 1;
+    diffusion[3] = -1;
+    const double thermalDiffusion = .25;
+    double autonomousNorm = 0, forcedNorm = 0;
+    chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                {diffusion.data(), speciesCount}, thermalDiffusion, 1,
+                                                autonomousNorm, forcedNorm);
+    auto finiteDifferenceNorm = [&](std::vector<double> direction)
+    {
+        double scale = 0;
+        for (double value : direction)
+            scale = std::max(scale, std::abs(value));
+        const double increment = 1e-7 / scale;
+        auto plusFractions = fractions, minusFractions = fractions;
+        for (int species = 0; species < speciesCount; ++species)
+        {
+            plusFractions[species] += increment * direction[species];
+            minusFractions[species] -= increment * direction[species];
+        }
+        auto plus = source(plusFractions, temperature * std::exp(increment * direction.back()));
+        auto minus = source(minusFractions, temperature * std::exp(-increment * direction.back()));
+        double norm = 0;
+        for (int component = 0; component <= speciesCount; ++component)
+            norm = std::hypot(norm, (plus[component] - minus[component]) / (2 * increment));
+        return norm;
+    };
+    auto forced = diffusion;
+    forced.push_back(thermalDiffusion);
+    CHECK(autonomousNorm == doctest::Approx(finiteDifferenceNorm(autonomous)).epsilon(2e-5));
+    CHECK(forcedNorm == doctest::Approx(finiteDifferenceNorm(forced)).epsilon(2e-5));
+    double scaledAutonomous = 0, scaledForced = 0;
+    chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                {diffusion.data(), speciesCount}, thermalDiffusion, .5,
+                                                scaledAutonomous, scaledForced);
+    CHECK(scaledAutonomous == doctest::Approx(.25 * autonomousNorm));
+    CHECK(scaledForced == doctest::Approx(.5 * forcedNorm));
+    chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                {diffusion.data(), speciesCount}, thermalDiffusion, 0,
+                                                scaledAutonomous, scaledForced);
+    CHECK(scaledAutonomous == 0);
+    CHECK(scaledForced == 0);
+    CHECK_THROWS(chemistry.constantVolumeSourceResponseNorms(temperature, pressure, fractionView,
+                                                             {diffusion.data(), speciesCount - 1}, thermalDiffusion, 1,
+                                                             scaledAutonomous, scaledForced));
+}
+
+TEST_CASE("ChemicalSource::mixtureR — gas constant correctness")
+{
+    ChemicalSource chem(mechFile(), "", 379.0, 1.0);
+    int Ns = chem.nSpecies();
+    auto MW = chem.molecularWeights();
+
+    // Pure N2
+    {
+        std::vector<double> Y(Ns, 0.0);
+        Y[9] = 1.0; // N2 at index 9
+        double R = chem.mixtureR(ConstSpeciesBufferView{Y.data(), Ns});
+        double R_N2_expected = 8314.462618 / MW[9];
+        MESSAGE("R_N2 = ", R, " expected ", R_N2_expected);
+        CHECK(std::abs(R - R_N2_expected) / R_N2_expected < 1e-6);
+    }
+
+    // Fuel-air mixture
+    {
+        std::vector<double> Y(Ns, 0.0);
+        Y[0] = 0.028;
+        Y[3] = 0.222;
+        Y[9] = 0.75;
+        double ysum = 0;
+        for (auto y : Y)
+            ysum += y;
+        for (auto &y : Y)
+            y /= ysum;
+        double R = chem.mixtureR(ConstSpeciesBufferView{Y.data(), Ns});
+        double expected = 0.028 * 8314.462618 / MW[0] + 0.222 * 8314.462618 / MW[3] + 0.750 * 8314.462618 / MW[9];
+        MESSAGE("R_mix = ", R, " expected ", expected);
+        CHECK(std::abs(R - expected) / expected < 1e-4);
+    }
+}

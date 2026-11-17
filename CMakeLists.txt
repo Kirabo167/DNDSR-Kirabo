@@ -114,6 +114,13 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/src/EulerP)
 # NCFV: independent third-order Node Center Finite Volume Method module.
 add_subdirectory(${CMAKE_SOURCE_DIR}/src/NCFV)
 
+# Native mesh and Cauchy share Runtime/Algebra while legacy solvers retain
+# their established Geom/CFV interfaces.
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/NativeGeom)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/NativeCFV)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/Physics)
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/Cauchy)
+
 # ===================================================================
 #       TESTS, APPS, DOCS, TOOLING
 # ===================================================================

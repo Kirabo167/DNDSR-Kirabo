@@ -6,9 +6,11 @@
 
 #include "NCFVDualGeometry.hpp"
 #include "NCFVNodeHalo.hpp"
+#include "NCFVLinearLimiter.hpp"
 
 #include "DNDS/ArrayDOF.hpp"
 
+#include <cmath>
 #include <vector>
 
 namespace DNDS::NCFV
@@ -81,6 +83,7 @@ namespace DNDS::NCFV
         std::vector<std::vector<index>> _nodeGraphGlobals;
         std::vector<ReconstructionOperator> _operators;
         std::vector<std::vector<VariationalNeighborOperator>> _variationalOperators;
+        LinearBarthLimiter _linearLimiter;
 
         /**
          * @brief Copy complete first-ring graph adjacency into local/global lists for owned-node stencils and
@@ -131,6 +134,7 @@ namespace DNDS::NCFV
          * @note Collective because stencil quality diagnostics use MPI reductions.
          */
         void Build();
+        [[nodiscard]] const LinearBarthLimiter &LinearLimiter() const { return _linearLimiter; }
         /**
          * @brief Collect the final reconstruction and limiter node dependencies.
          * @return Sorted unique global node IDs referenced by selected stencils and any enabled first-ring limiter
@@ -264,6 +268,43 @@ namespace DNDS::NCFV
             const NodeMatrixPair &gradients,
             const NodeMatrixPair &coefficients,
             NodeStatePair &pointValues) const;
+
+        /**
+         * @brief Recover an anchor value for a mean-preserving, possibly limited P1 polynomial.
+         * @param mean Unchanged control-volume mean (conserved-component column vector).
+         * @param gradient Own frozen physical gradient: direction rows, component columns.
+         * @param linearWeight Precomputed centroid-minus-anchor offset; never the P2 self weight.
+         * @param factor Common contraction in [0,1], also applied to the gradient when evaluating P1.
+         * @return mean - factor * gradient.transpose() * linearWeight.
+         * @note With an already contracted gradient, pass factor=1 to avoid double limiting.
+         * This discards all quadratic zero-mean modes; it cannot be obtained by scaling
+         * the old P2 point-minus-mean difference. It performs no neighbor access or integration.
+         */
+        template <class TMean, class TGradient>
+        [[nodiscard]] static auto RecoverLinearPointValue(
+            const Eigen::MatrixBase<TMean> &mean,
+            const Eigen::MatrixBase<TGradient> &gradient,
+            const Vector3 &linearWeight,
+            real factor = 1)
+        {
+            return LinearBarthLimiter::RecoverPointValue(mean, gradient, linearWeight, factor);
+        }
+
+        /**
+         * @brief Recover only the linear zero-mean part, with optional own-cell contraction factors.
+         * @param means Unchanged dual means. Owned entries suffice; ghosts need not be synchronized.
+         * @param gradients Own frozen physical gradients; no neighboring gradients are read or changed.
+         * @param [out] pointValues Owned P1 anchor values; caller synchronizes output ghosts if needed.
+         * @param factors Empty for factor=1, otherwise exactly one factor per owned node.
+         * @pre The limiter was enabled when Build() initialized the optional recovery weights.
+         * @note The corresponding P1 polynomial uses factors[i] * gradients[i]. This method
+         * does not select fallback cells, constrain face states, or alter the P2 recovery path.
+         */
+        void RecoverLinearPointValues(
+            const NodeStatePair &means,
+            const NodeMatrixPair &gradients,
+            NodeStatePair &pointValues,
+            const std::vector<real> &factors = {}) const;
 
         /**
          * @brief One scalar limiter coefficient per owned node.

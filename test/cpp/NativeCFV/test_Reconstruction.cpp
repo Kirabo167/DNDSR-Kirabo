@@ -1,0 +1,1682 @@
+/**
+ * @file test_Reconstruction.cpp
+ * @brief Phase-0 regression tests for CFV Variational Reconstruction.
+ *
+ * Parameterized over [mesh+function, reconstruction_method].
+ *
+ * All iterative VR uses Jacobi iteration (SORInstead=false) so that
+ * golden values are deterministic across MPI partitionings (np=1,2,4).
+ *
+ * Error metric: L1 pointwise error at 6th-degree quadrature points,
+ * divided by domain volume (so the dimension matches the field function).
+ *
+ * Meshes:
+ *   - Uniform_3x3_wall (9 quads, wall BC)  -- polynomial exactness tests
+ *   - IV10_10 (100 quads, periodic) + bisections -> 400, 1600 cells
+ *   - IV10U_10 (322 tris, periodic) + bisections -> ~1288, ~5152 cells
+ *
+ * Golden values captured from commit c774b89 on dev/harry_refac1.
+ */
+
+#define DOCTEST_CONFIG_IMPLEMENT
+#include "doctest.h"
+
+#include "NativeCFV/Legacy/VariationalReconstruction.hpp"
+#include "NativeGeom/IO/NativeMeshCGNS.hpp"
+#include "NativeGeom/Unstructured/UnstructuredMeshHelpers.hpp"
+#include "NativeGeom/Transition/NativeMeshAssembler.hpp"
+#include "NativeGeom/Connectivity/NativeMeshTopology.hpp"
+#include "DNDS/Serializer/SerializerJSON.hpp"
+#include "Solver/Direct.hpp"
+
+#include <array>
+#include <cmath>
+#include <iostream>
+#include <iomanip>
+#include <functional>
+#include <nlohmann/json.hpp>
+#include <map>
+#include <string>
+#include <vector>
+
+using namespace DNDS;
+using namespace DNDS::NativeGeom;
+
+static constexpr int g_dim = 2;
+static constexpr int g_nv = 1;
+using tVR = NativeCFV::VariationalReconstruction<g_dim>;
+
+static MPIInfo g_mpi;
+
+// ===================================================================
+// Mesh builder
+// ===================================================================
+static std::string meshPath(const std::string &name)
+{
+    std::string f(__FILE__);
+    for (int i = 0; i < 4; i++)
+    {
+        auto pos = f.rfind('/');
+        if (pos == std::string::npos)
+            pos = f.rfind('\\');
+        if (pos != std::string::npos)
+            f = f.substr(0, pos);
+    }
+    return f + "/data/mesh/" + name;
+}
+
+static ssp<UnstructuredMesh> buildMeshUpToGhost(
+    const std::string &file, bool periodic,
+    DNDS::real Lx, DNDS::real Ly, int nBisect = 0)
+{
+    NativePeriodicImportOptions frames;
+    frames.frames.translation[1].map() = tPoint{Lx, 0, 0};
+    frames.frames.translation[2].map() = tPoint{0, Ly, 0};
+    frames.frames.translation[3].map().setZero();
+    PartitionOptions partition;
+    partition.metisSeed = 42;
+    AutoAppendName2ID names;
+    auto mesh = ReadNativeMeshFromCGNS(g_mpi, g_dim, meshPath(file), partition, [&](const std::string &name)
+                                       { return names(name); }, periodic ? std::optional<NativePeriodicImportOptions>(frames) : std::nullopt);
+
+    // Bisect nBisect times via elevation+bisection
+    for (int ib = 0; ib < nBisect; ib++)
+    {
+        auto meshO2 = std::make_shared<UnstructuredMesh>(g_mpi, g_dim);
+        meshO2->BuildO2FromO1Elevation(*mesh);
+
+        auto meshBis = std::make_shared<UnstructuredMesh>(g_mpi, g_dim);
+        meshBis->BuildBisectO1FormO2(*meshO2);
+
+        mesh = meshBis;
+    }
+
+    return mesh;
+}
+
+static ssp<UnstructuredMesh> buildMesh(
+    const std::string &file, bool periodic,
+    DNDS::real Lx, DNDS::real Ly, int nBisect = 0)
+{
+    auto mesh = buildMeshUpToGhost(file, periodic, Lx, Ly, nBisect);
+    mesh->PrepareNativeTopology();
+    mesh->AssertOnFaces();
+    return mesh;
+}
+
+// ===================================================================
+// VR builder
+// ===================================================================
+enum class RecMethod
+{
+    GaussGreen, // explicit 2nd-order Gauss-Green gradient
+    VFV_P1_HQM, // iterative VR, maxOrder=1, HQM weights
+    VFV_P2_HQM, // iterative VR, maxOrder=2, HQM weights
+    VFV_P3_HQM, // iterative VR, maxOrder=3, HQM weights
+    VFV_P1_Default,
+    VFV_P2_Default,
+    VFV_P3_Default,
+};
+
+static const char *recMethodName(RecMethod m)
+{
+    switch (m)
+    {
+    case RecMethod::GaussGreen:
+        return "GG";
+    case RecMethod::VFV_P1_HQM:
+        return "P1-HQM";
+    case RecMethod::VFV_P2_HQM:
+        return "P2-HQM";
+    case RecMethod::VFV_P3_HQM:
+        return "P3-HQM";
+    case RecMethod::VFV_P1_Default:
+        return "P1-Def";
+    case RecMethod::VFV_P2_Default:
+        return "P2-Def";
+    case RecMethod::VFV_P3_Default:
+        return "P3-Def";
+    }
+    return "?";
+}
+
+static int recMethodOrder(RecMethod m)
+{
+    switch (m)
+    {
+    case RecMethod::GaussGreen:
+        return 1;
+    case RecMethod::VFV_P1_HQM:
+    case RecMethod::VFV_P1_Default:
+        return 1;
+    case RecMethod::VFV_P2_HQM:
+    case RecMethod::VFV_P2_Default:
+        return 2;
+    case RecMethod::VFV_P3_HQM:
+    case RecMethod::VFV_P3_Default:
+        return 3;
+    }
+    return 1;
+}
+
+static ssp<tVR> buildVR(
+    ssp<UnstructuredMesh> mesh, RecMethod method,
+    bool useSOR = false, DNDS::real relaxation = 1.0)
+{
+    auto vr = std::make_shared<tVR>(g_mpi, mesh);
+
+    NativeCFV::VRSettings defaultSettings(g_dim);
+    nlohmann::ordered_json j;
+    defaultSettings.WriteIntoJson(j);
+
+    int order = recMethodOrder(method);
+    j["maxOrder"] = order;
+    j["intOrder"] = std::max(order + 2, 5);
+    j["cacheDiffBase"] = true;
+    // Force Jacobi iteration for deterministic results across MPI partitions
+    j["SORInstead"] = useSOR;
+    j["jacobiRelax"] = relaxation;
+
+    bool isHQM = (method == RecMethod::VFV_P1_HQM ||
+                  method == RecMethod::VFV_P2_HQM ||
+                  method == RecMethod::VFV_P3_HQM);
+
+    if (method == RecMethod::GaussGreen)
+    {
+        j["subs2ndOrder"] = 1; // Gauss-Green
+        // weights don't matter for explicit GG
+    }
+    else if (isHQM)
+    {
+        j["subs2ndOrder"] = 0; // full VFV
+        j["functionalSettings"]["dirWeightScheme"] = "HQM_OPT";
+        j["functionalSettings"]["geomWeightScheme"] = "HQM_SD";
+        j["functionalSettings"]["geomWeightPower"] = 0.5;
+        j["functionalSettings"]["geomWeightBias"] = 1.0;
+    }
+    else
+    {
+        j["subs2ndOrder"] = 0; // full VFV
+        j["functionalSettings"]["dirWeightScheme"] = "Factorial";
+        j["functionalSettings"]["geomWeightScheme"] = "GWNone";
+    }
+
+    vr->parseSettings(j);
+    if (mesh->IsPeriodic())
+        vr->SetPeriodicTransformations(); // identity for scalar
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    return vr;
+}
+
+// ===================================================================
+// Boundary callback: Dirichlet (returns exact value for wall tests)
+// ===================================================================
+using ScalarFunc = std::function<DNDS::real(const tPoint &)>;
+
+static tVR::TFBoundary<g_nv> makeDirichletBC(const ScalarFunc &f)
+{
+    return [f](const auto &, const auto &, DNDS::index, DNDS::index, int,
+               const tPoint &, const tPoint &pPhy, t_index)
+    {
+        return Eigen::Vector<DNDS::real, g_nv>{f(pPhy)};
+    };
+}
+
+static tVR::TFBoundary<g_nv> g_zeroBC =
+    [](const auto &, const auto &, DNDS::index, DNDS::index, int,
+       const tPoint &, const tPoint &, t_index)
+{ return Eigen::Vector<DNDS::real, g_nv>::Zero(); };
+
+// ===================================================================
+// Core: run reconstruction and measure L1 error at 6th-degree quadrature
+// points, normalized by domain volume.
+// Returns the error and optionally prints iteration progress.
+// ===================================================================
+static DNDS::real runTest(
+    ssp<tVR> vr,
+    RecMethod method,
+    const ScalarFunc &exactFunc,
+    const tVR::TFBoundary<g_nv> &bc,
+    int maxIters,
+    DNDS::real convTol, // convergence threshold on increment; 0 = no early stop
+    bool printProgress)
+{
+    auto mesh = vr->mesh;
+
+    // --- Allocate arrays ---
+    NativeCFV::tUDof<g_nv> u;
+    vr->BuildUDof(u, 1);
+
+    // --- Set cell-averaged DOFs via quadrature ---
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+    {
+        auto qCell = vr->GetCellQuad(iCell);
+        Eigen::Vector<DNDS::real, g_nv> uc;
+        uc.setZero();
+        qCell.IntegrationSimple(
+            uc,
+            [&](auto &vInc, int iG)
+            {
+                vInc(0) = exactFunc(vr->GetCellQuadraturePPhys(iCell, iG)) *
+                          vr->GetCellJacobiDet(iCell, iG);
+            });
+        u[iCell] = uc / vr->GetCellVol(iCell);
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+
+    // --- Reconstruct ---
+    if (method == RecMethod::GaussGreen)
+    {
+        // Explicit Gauss-Green: produces gradient, not polynomial coefficients
+        NativeCFV::tUGrad<g_nv, g_dim> uGrad;
+        vr->BuildUGrad(uGrad, 1);
+        vr->DoReconstruction2ndGrad<g_nv>(uGrad, u, bc, 1 /*GG method*/);
+        uGrad.trans.startPersistentPull();
+        uGrad.trans.waitPersistentPull();
+
+        // Measure L1 error: u_rec(x) = u_mean + grad^T * (x - x_bary)
+        static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<g_dim - 1>);
+        DNDS::real errLocal = 0.0;
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            auto qCell = vr->GetCellQuad(iCell);
+            DNDS::real errCell = 0.0;
+            qCell.IntegrationSimple(
+                errCell,
+                [&](DNDS::real &vInc, int iG)
+                {
+                    tPoint pPhy = vr->GetCellQuadraturePPhys(iCell, iG);
+                    DNDS::real uRecVal = u[iCell](0) +
+                                         (uGrad[iCell].transpose() *
+                                          (pPhy - vr->GetCellBary(iCell))(Seq012))(0);
+                    DNDS::real uExact = exactFunc(pPhy);
+                    vInc = std::abs(uRecVal - uExact) * vr->GetCellJacobiDet(iCell, iG);
+                });
+            errLocal += errCell;
+        }
+        DNDS::real errGlobal = 0.0;
+        MPI::Allreduce(&errLocal, &errGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+        return errGlobal / vr->GetGlobalVol();
+    }
+    else
+    {
+        // Iterative VFV reconstruction
+        NativeCFV::tURec<g_nv> uRec, uRecNew;
+        vr->BuildURec(uRec, 1);
+        vr->BuildURec(uRecNew, 1);
+
+        DNDS::real lastInc = veryLargeReal;
+        for (int iter = 0; iter < maxIters; iter++)
+        {
+            vr->DoReconstructionIter<g_nv>(
+                uRec, uRecNew, u, bc, /*putIntoNew=*/true);
+
+            // Compute increment norm
+            DNDS::real incLocal = 0.0;
+            for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+                incLocal += (uRecNew[iCell] - uRec[iCell]).array().square().sum();
+            DNDS::real incGlobal = 0.0;
+            MPI::Allreduce(&incLocal, &incGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+            incGlobal = std::sqrt(incGlobal / mesh->NumCellGlobal());
+
+            std::swap(uRec, uRecNew);
+            uRec.trans.startPersistentPull();
+            uRec.trans.waitPersistentPull();
+
+            lastInc = incGlobal;
+            if (printProgress && g_mpi.rank == 0 && (iter < 5 || (iter + 1) % 20 == 0))
+                std::cout << "    iter " << iter + 1 << " inc = "
+                          << std::scientific << incGlobal << std::endl;
+
+            if (convTol > 0 && incGlobal < convTol)
+            {
+                if (printProgress && g_mpi.rank == 0)
+                    std::cout << "    converged at iter " << iter + 1 << std::endl;
+                break;
+            }
+        }
+
+        // Measure L1 error at cell quadrature points (using VR's intOrder, which >= 6)
+        DNDS::real errLocal = 0.0;
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+        {
+            auto qCell = vr->GetCellQuad(iCell);
+            DNDS::real errCell = 0.0;
+            qCell.IntegrationSimple(
+                errCell,
+                [&](DNDS::real &vInc, int iG)
+                {
+                    Eigen::VectorXd baseVal =
+                        vr->GetIntPointDiffBaseValue(
+                            iCell, -1, -1, iG, std::array<int, 1>{0}, 1) *
+                        uRec[iCell];
+                    DNDS::real uRecVal = baseVal(0) + u[iCell](0);
+                    DNDS::real uExact = exactFunc(vr->GetCellQuadraturePPhys(iCell, iG));
+                    vInc = std::abs(uRecVal - uExact) * vr->GetCellJacobiDet(iCell, iG);
+                });
+            errLocal += errCell;
+        }
+        DNDS::real errGlobal = 0.0;
+        MPI::Allreduce(&errLocal, &errGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+        return errGlobal / vr->GetGlobalVol();
+    }
+}
+
+// ===================================================================
+// Prebuilt test data
+// ===================================================================
+
+// --- Wall mesh (polynomial exactness) ---
+static ssp<UnstructuredMesh> g_wall_mesh;
+
+// --- Periodic meshes for convergence (IV10 quad, IV10U tri) ---
+static ssp<UnstructuredMesh> g_iv10[3];  // bisect 0,1,2
+static ssp<UnstructuredMesh> g_iv10u[3]; // bisect 0,1,2
+
+// --- VR objects keyed by (mesh_ptr, method) ---
+// We build them on demand in the test runner to avoid combinatorial explosion
+// at startup. But for the wall mesh we prebuild a few.
+
+int main(int argc, char **argv)
+{
+    MPI_Init(&argc, &argv);
+    g_mpi.setWorld();
+
+    if (g_mpi.rank == 0)
+        std::cout << "=== Building meshes ===" << std::endl;
+
+    g_wall_mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0, 0);
+
+    for (int ib = 0; ib < 3; ib++)
+    {
+        if (g_mpi.rank == 0)
+            std::cout << "  IV10_10 bisect=" << ib << std::endl;
+        g_iv10[ib] = buildMesh("IV10_10.cgns", true, 10, 10, ib);
+    }
+    for (int ib = 0; ib < 3; ib++)
+    {
+        if (g_mpi.rank == 0)
+            std::cout << "  IV10U_10 bisect=" << ib << std::endl;
+        g_iv10u[ib] = buildMesh("IV10U_10.cgns", true, 10, 10, ib);
+    }
+
+    if (g_mpi.rank == 0)
+        std::cout << "=== Meshes built ===" << std::endl;
+
+    doctest::Context ctx;
+    ctx.applyCommandLine(argc, argv);
+    int res = ctx.run();
+
+    g_wall_mesh.reset();
+    for (auto &m : g_iv10)
+        m.reset();
+    for (auto &m : g_iv10u)
+        m.reset();
+    MPI_Finalize();
+    return res;
+}
+
+// ===================================================================
+// Test functions (periodic, L=10)
+// ===================================================================
+static const DNDS::real g_L = 10.0;
+static const DNDS::real g_k = 2.0 * pi / g_L;
+
+static ScalarFunc sinCos = [](const tPoint &p)
+{ return std::sin(g_k * p[0]) * std::cos(g_k * p[1]); };
+
+static ScalarFunc cosPlusCos = [](const tPoint &p)
+{ return std::cos(g_k * p[0]) + std::cos(g_k * p[1]); };
+
+TEST_CASE("VR setup uses the small-mode cutoff and reduces owned-cell diagnostics")
+{
+    auto vr = buildVR(g_wall_mesh, RecMethod::VFV_P2_Default);
+    auto settings = vr->getSettings();
+    std::vector<Eigen::MatrixXd> expected;
+    DNDS::index discarded = 0;
+    for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
+    {
+        // Independently recover the positive local system from its unfiltered
+        // inverse, then use its symmetric eigensystem as the spectral oracle.
+        const Eigen::MatrixXd A = vr->get_matrixAAInvB()(iCell, 0).inverse();
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> spectrum(A);
+        REQUIRE(spectrum.info() == Eigen::Success);
+        auto values = spectrum.eigenvalues().eval();
+        const DNDS::real cutoff = 0.8 * values.maxCoeff();
+        REQUIRE(values.minCoeff() < cutoff); // must distinguish min/max filtering
+        for (Eigen::Index iMode = 0; iMode < values.size(); ++iMode)
+            if (values[iMode] > cutoff)
+                values[iMode] = 1 / values[iMode];
+            else
+            {
+                values[iMode] = 0;
+                ++discarded;
+            }
+        expected.push_back(spectrum.eigenvectors() * values.asDiagonal() * spectrum.eigenvectors().transpose());
+    }
+    settings.svdTolerance = 0.8;
+    vr->parseSettings(settings);
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
+        CHECK(vr->get_matrixAAInvB()(iCell, 0).isApprox(expected[iCell], 1e-10));
+    DNDS::index discardedGlobal = 0;
+    MPI::Allreduce(&discarded, &discardedGlobal, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+    CHECK(vr->GetInverseDiagnostics().filteredCells == 9);
+    CHECK(vr->GetInverseDiagnostics().discardedModes == discardedGlobal);
+    // A relative threshold of one discards every mode, including equality.
+    settings.svdTolerance = 1;
+    vr->parseSettings(settings);
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    const auto &summary = vr->GetInverseDiagnostics();
+    CHECK(summary.cells == 9);
+    CHECK(summary.filteredCells == 9);
+    CHECK(summary.rankZeroCells == 9);
+    CHECK(summary.discardedModes == 45); // five nonconstant P2 modes per cell
+    for (DNDS::index iCell = 0; iCell < g_wall_mesh->NumCell(); ++iCell)
+        CHECK(vr->get_matrixAAInvB()(iCell, 0).isZero());
+    CHECK(std::isfinite(summary.maxCondition));
+}
+
+TEST_CASE("Mesh dependency stamps reject stale reconstruction and permit explicit rebuild")
+{
+    auto mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+    vr->FinalizeMetrics(); // A metric publication also invalidates derived bases.
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    const auto cells = mesh->Entities(EntityKind::Cell);
+    // Preparing the native auxiliary graph must not invalidate geometry/bases.
+    // Natural ordering also supports singleton and empty local partitions.
+    Direct::DirectPrecControl ordering;
+    ordering.useDirectPrec = true;
+    ordering.orderingCode = 0;
+    Direct::SerialSymLUStructure graph(g_mpi, mesh->NumCell());
+    const auto auxiliaryStamp = mesh->versions.Stamp();
+    mesh->ObtainLocalFactFillOrdering(graph, ordering);
+    CHECK(auxiliaryStamp.Valid());
+    CHECK(cells.Valid());
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+
+    auto volume = [&]()
+    {
+        DNDS::real total = 0;
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+            total += vr->GetCellVol(cell);
+        MPI::AllreduceOneReal(total, MPI_SUM, g_mpi);
+        return total;
+    };
+    const auto oldVolume = volume();
+    mesh->TransformCoords([](const tPoint &point) -> tPoint
+                          { return 2.0 * point; });
+    CHECK(cells.Valid());                // Geometry changes preserve entity numbering.
+    CHECK_THROWS(vr->FinalizeMetrics()); // Same-shaped old values cannot be republished.
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    NativeCFV::tUDof<g_nv> u;
+    NativeCFV::tURec<g_nv> rec, scratch;
+    vr->BuildUDof(u, 1);
+    vr->BuildURec(rec, 1);
+    vr->BuildURec(scratch, 1);
+    u.setConstant(0.0);
+    rec.setConstant(0.0);
+    CHECK_THROWS(vr->DoReconstructionIter<g_nv>(rec, scratch, u, g_zeroBC, true));
+    CHECK_THROWS(vr->ConstructBaseAndWeight());
+    CHECK_THROWS(vr->ConstructRecCoeff());
+    vr->ConstructMetrics();
+    CHECK(volume() == doctest::Approx(4.0 * oldVolume).epsilon(1e-12));
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructBaseAndWeight();
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->DoReconstructionIter<g_nv>(rec, scratch, u, g_zeroBC, true));
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        CHECK(scratch[cell].norm() == doctest::Approx(0.0).epsilon(1e-14));
+
+    // A failed coefficient/base rebuild must not leave the preceding snapshot
+    // marked valid. Repeating boundary-cache setup must clear old point entries.
+    auto settings = vr->getSettings();
+    settings.intOrderVRBC = 1;
+    vr->parseSettings(settings);
+    vr->ConstructMetrics();
+    // A held read rejects a tracked geometry edit; no malformed legacy mapping
+    // is installed into the native state merely to provoke a rebuild failure.
+    {
+        auto retained = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        CHECK_THROWS(mesh->TransformCoords([](const tPoint &p)
+                                           { return p; }));
+    }
+    // Explicitly invalidate geometry so the failed dependency check still tests
+    // a new epoch, then rebuild the same boundary cache twice below.
+    mesh->TransformCoords([](const tPoint &p)
+                          { return p; });
+    CHECK_THROWS(vr->ConstructBaseAndWeight());
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+    mesh->TransformCoords([](const tPoint &p)
+                          { return p; });
+    CHECK_THROWS(vr->ConstructRecCoeff());
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    // A valid primary-only publication cannot satisfy face metric prerequisites.
+    // Keep a detached full publication for retry; no corrupt map is installed.
+    auto full = mesh->CurrentNativeState()->BindEpoch(Runtime::VersionTracker{});
+    auto primary = NativeMeshAssembler::CaptureOwned(*full, g_mpi);
+    primary.requirements.faces = primary.requirements.cellFaceNeighbors = primary.requirements.allFaceCellsLocal = false;
+    primary.spaces.erase(EntityKind::Face);
+    primary.ids.erase(EntityKind::Face);
+    // This temporary primary-only fixture is a new logical domain. Its absent
+    // face family cannot carry the full mesh's retained face-ID high-water map.
+    primary.identity = {};
+    const auto primaryNodes = EntitySpace::CreateOwned(EntityKind::Node, g_mpi,
+                                                       primary.spaces.at(EntityKind::Node).NumOwned());
+    for (auto &[kind, space] : primary.spaces)
+        space = kind == EntityKind::Node ? primaryNodes : primaryNodes.CreateSibling(kind, space.NumOwned());
+    primary.faceInfo.reset();
+    primary.cellFacesPbi.reset();
+    primary.faceNodesPbi.reset();
+    for (auto relation : {MeshRelation::CellFaces, MeshRelation::FaceNodes, MeshRelation::FaceCells,
+                          MeshRelation::FaceBoundaries, MeshRelation::BoundaryFaces, MeshRelation::CellFaceCells})
+        primary.relations[size_t(relation)].reset();
+    for (auto it = primary.namedRelations.begin(); it != primary.namedRelations.end();)
+        if (it->first.from == EntityKind::Face || it->first.to == EntityKind::Face)
+            it = primary.namedRelations.erase(it);
+        else
+            ++it;
+    // This fixture deliberately removes the Face family. Retaining its old
+    // face traversal recipe is an invalid coverage contract and must fail;
+    // select primary coverage explicitly before publishing the new fixture.
+    CHECK_THROWS(AssembleNativeMesh(g_mpi, primary, 1));
+    primary.ghostSpec = DefaultNativeMeshGhostSpec(primary, 1, true);
+    mesh->ReplaceNativeForSetup(AssembleNativeMesh(g_mpi, std::move(primary), 1));
+    CHECK_THROWS(vr->ConstructMetrics());
+    mesh->ReplaceNativeForSetup(full);
+    CHECK_THROWS(vr->ValidateMetricsDependencies());
+    CHECK_THROWS(vr->FinalizeMetrics()); // Failed full rebuild cleared old stage publication.
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+
+    // The nine-cell fixture has singleton partitions at np=8. One local
+    // block still publishes a reorder epoch without asking Metis to split
+    // a singleton graph into two parts.
+    mesh->ReorderLocalCells(1, 1);
+    CHECK_FALSE(cells.Valid());
+    CHECK_THROWS(vr->ValidateMeshDependencies());
+    vr->ConstructMetrics();
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+}
+
+TEST_CASE("Granular metric publication requires current prerequisites and dependent rebuilds")
+{
+    auto mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    std::vector<tPoint> before;
+    for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+        before.emplace_back(vr->GetCellBary(cell));
+    mesh->TransformCoords([](const tPoint &point) -> tPoint
+                          { return 2 * point; });
+    vr->SetCellAtrBasic();
+    // Same-sized arrays from the previous epoch are not valid prerequisites.
+    CHECK_THROWS(vr->ConstructCellBary());
+    CHECK_THROWS(vr->ConstructCellIntJacobiDet());
+    CHECK_THROWS(vr->ConstructCellAlignedHBox());
+    CHECK_THROWS(vr->ConstructCellMajorHBoxCoordInertia());
+    CHECK_THROWS(vr->ConstructCellSmoothScale());
+    CHECK_THROWS(vr->FinalizeMetrics());
+    vr->ConstructCellVolume();
+    vr->ConstructCellBary();
+    for (DNDS::index cell = 0; cell < mesh->NumCellProc(); ++cell)
+        CHECK(vr->GetCellBary(cell).isApprox(2 * before.at(cell), 1e-12));
+    CHECK_THROWS(vr->ConstructFaceIntPPhysics());
+    vr->SetFaceAtrBasic();
+    CHECK_THROWS(vr->ConstructFaceMeanNorm()); // Centers have not been rebuilt.
+    vr->ConstructMetrics();
+    CHECK_NOTHROW(vr->ValidateMetricsDependencies());
+
+    // A same-epoch input rebuild also invalidates dependent completion bits.
+    vr->ConstructCellVolume();
+    CHECK_THROWS(vr->FinalizeMetrics());
+    vr->ConstructCellBary();
+    vr->ConstructCellIntJacobiDet();
+    vr->ConstructCellIntPPhysics();
+    vr->ConstructCellAlignedHBox();
+    vr->ConstructCellMajorHBoxCoordInertia();
+    vr->ConstructCellSmoothScale();
+    CHECK_NOTHROW(vr->FinalizeMetrics());
+    vr->ConstructBaseAndWeight();
+    vr->ConstructRecCoeff();
+    CHECK_NOTHROW(vr->ValidateMeshDependencies());
+
+    vr->SetFaceAtrBasic();
+    CHECK_THROWS(vr->FinalizeMetrics());
+    vr->ConstructFaceArea();
+    vr->ConstructFaceIntJacobiDet();
+    vr->ConstructFaceIntPPhysics();
+    vr->ConstructFaceUnitNorm();
+    vr->ConstructFaceMeanNorm();
+    CHECK_THROWS(vr->FinalizeMetrics()); // Smoothing depends on face area.
+    vr->ConstructCellSmoothScale();
+    CHECK_NOTHROW(vr->FinalizeMetrics());
+}
+
+TEST_CASE("Native reconstruction matrix export preserves mesh state and exact face slots")
+{
+    auto state = ReadNativeCGNS(g_mpi, meshPath("Uniform_3x3_wall.cgns"), 2,
+                                [](const std::string &)
+                                { return BC_ID_DEFAULT_WALL; }, 0, {2, true});
+    state = PrepareNativeMeshTopology(*state, g_mpi, true, false, 2);
+    auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    const auto stamp = mesh->versions.Stamp();
+    auto retained = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+    auto archive = make_ssp<Serializer::SerializerJSON>();
+    archive->CreatePath("/");
+    const auto archivePath = archive->GetCurrentPath();
+    vr->WriteSerializeRecMatrix(archive);
+    CHECK(stamp.Valid());
+    CHECK(mesh->HasNativeState());
+    CHECK(archive->GetCurrentPath() == archivePath);
+    tAdjPair loaded;
+    loaded.InitPair("exported reconstruction face graph", g_mpi);
+    loaded.ReadSerialize(archive, "/VR_Matrix/cell2cellFace");
+    REQUIRE(loaded.Size() == mesh->NumCellProc());
+    const auto view = retained.HostView();
+    // Compare exported global entries with the live ordered physical face
+    // incidences, including absent boundary neighbors. This deliberately checks
+    // serialization/numbering rather than re-testing the topology constructor.
+    const auto cells = mesh->Entities(EntityKind::Cell);
+    for (DNDS::index cell = 0; cell < view.NumCell(); ++cell)
+    {
+        const auto faces = view.CellFaces(cell);
+        REQUIRE(loaded.RowSize(cell) == DNDS::rowsize(faces.size()));
+        for (DNDS::rowsize slot = 0; slot < DNDS::rowsize(faces.size()); ++slot)
+        {
+            const auto other = view.CellFaceOther(cell, faces[slot], slot);
+            const auto expected = other == UnInitIndex ? UnInitIndex : cells.LocalToGlobal(other);
+            CHECK(loaded(cell, slot) == expected);
+        }
+    }
+    // Independently ask owners for the full face rows. Ghosts may lack local
+    // face closure, so deriving ghost rows from truncated ghost faces is wrong.
+    std::vector<std::vector<DNDS::index>> before;
+    for (DNDS::index row = 0; row < loaded.son->Size(); ++row)
+        before.emplace_back(loaded.son->operator[](row));
+    loaded.trans.createMPITypes();
+    loaded.trans.pullOnce();
+    for (DNDS::index row = 0; row < loaded.son->Size(); ++row)
+        CHECK(std::vector<DNDS::index>(loaded.son->operator[](row)) == before[size_t(row)]);
+    archive->GoToPath("/VR_Matrix/matrixAAInvB");
+    CHECK(archive->ListCurrentPath().count("father") == 1);
+    archive->GoToPath("/");
+}
+
+TEST_CASE("Finite-volume scoped query views retain native topology and reject stale publications")
+{
+    auto state = ReadNativeCGNS(g_mpi, meshPath("Uniform_3x3_wall.cgns"), 2,
+                                [](const std::string &)
+                                { return BC_ID_DEFAULT_WALL; });
+    state = PrepareNativeMeshTopology(*state, g_mpi);
+    auto mesh = UnstructuredMesh::FromNative(g_mpi, state);
+    auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+    CHECK(mesh->HasNativeState());
+    {
+        auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
+        auto view = scope.View();
+        DNDS::real volume = 0;
+        for (DNDS::index cell = 0; cell < view.mesh.NumCell(); ++cell)
+        {
+            CHECK(view.mesh.CellFaces(cell).size() == 4);
+            CHECK(view.GetCellVol(cell) == doctest::Approx(1));
+            volume += view.GetCellVol(cell);
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &volume, 1, MPI_DOUBLE, MPI_SUM, g_mpi.comm);
+        CHECK(volume == doctest::Approx(9));
+        CHECK_THROWS(mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2));
+        scope.Wait();
+        CHECK_THROWS(scope.View());
+    }
+    {
+        auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
+        vr->ConstructMetrics();
+        CHECK_THROWS(scope.View()); // Same mesh epoch, different metric publication.
+    }
+    mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2);
+    CHECK_THROWS(vr->AcquireDeviceRead<DeviceBackend::Host>());
+    vr->ConstructMetrics();
+    {
+        auto scope = vr->AcquireDeviceRead<DeviceBackend::Host>();
+        auto view = scope.View();
+        for (DNDS::index cell = 0; cell < view.mesh.NumCell(); ++cell)
+            CHECK(view.GetCellVol(cell) == doctest::Approx(4));
+    }
+}
+
+TEST_CASE("Wall-distance replacement invalidates only reconstruction that depends on it")
+{
+    auto mesh = buildMesh("Uniform_3x3_wall.cgns", false, 0, 0);
+    auto isWall = [](t_index zone)
+    { return FaceIDIsExternalBC(zone); };
+    mesh->BuildNodeWallDist(isWall);
+    auto ordinary = buildVR(mesh, RecMethod::VFV_P2_Default);
+    auto wall = buildVR(mesh, RecMethod::VFV_P2_Default);
+    auto settings = wall->getSettings();
+    settings.functionalSettings.useAnisotropicFunctional = true;
+    settings.functionalSettings.anisotropicType = NativeCFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist;
+    wall->parseSettings(settings);
+    wall->ConstructMetrics();
+    wall->ConstructBaseAndWeight();
+    wall->ConstructRecCoeff();
+    REQUIRE_NOTHROW(wall->ValidateMeshDependencies());
+    UnstructuredMesh::WallDistOptions options;
+    options.minWallDist = 0.25;
+    mesh->BuildNodeWallDist(isWall, options);
+    CHECK_NOTHROW(ordinary->ValidateMeshDependencies());
+    CHECK_NOTHROW(wall->ValidateMetricsDependencies());
+    CHECK_THROWS(wall->ValidateBaseDependencies());
+    CHECK_THROWS(wall->ConstructRecCoeff());
+    wall->ConstructBaseAndWeight();
+    wall->ConstructRecCoeff();
+    CHECK_NOTHROW(wall->ValidateMeshDependencies());
+}
+
+TEST_CASE("CFV native authority preserves metrics and anisotropic reconstruction")
+{
+    bool wallDistance = false;
+    SUBCASE("periodic centroid difference") {}
+    SUBCASE("wall distance") { wallDistance = true; }
+    auto mesh = wallDistance ? buildMesh("Uniform_3x3_wall.cgns", false, 0, 0)
+                             : buildMesh("IV10_10.cgns", true, 10, 10);
+    if (wallDistance)
+        mesh->BuildNodeWallDist([](t_index zone)
+                                { return FaceIDIsExternalBC(zone); });
+    auto makeVR = [&]()
+    {
+        auto vr = buildVR(mesh, RecMethod::VFV_P2_Default);
+        auto settings = vr->getSettings();
+        settings.functionalSettings.scaleType = NativeCFV::VRSettings::FunctionalSettings::ScaleType::CellMax;
+        settings.functionalSettings.useAnisotropicFunctional = true;
+        settings.functionalSettings.anisotropicType = wallDistance ? NativeCFV::VRSettings::FunctionalSettings::AnisotropicType::WallDist
+                                                                   : NativeCFV::VRSettings::FunctionalSettings::AnisotropicType::CentDiff;
+        vr->parseSettings(settings);
+        vr->ConstructMetrics();
+        vr->ConstructBaseAndWeight();
+        vr->ConstructRecCoeff();
+        return vr;
+    };
+    auto sample = [&](const ssp<tVR> &vr)
+    {
+        std::vector<DNDS::real> values;
+        auto append = [&](const auto &matrix)
+        {
+            for (Eigen::Index j = 0; j < matrix.cols(); ++j)
+                for (Eigen::Index i = 0; i < matrix.rows(); ++i)
+                    values.push_back(matrix(i, j));
+        };
+        NativeCFV::tUDof<g_nv> u;
+        NativeCFV::tURec<g_nv> rec, result;
+        vr->BuildUDof(u, 1);
+        vr->BuildURec(rec, 1);
+        vr->BuildURec(result, 1);
+        rec.setConstant(0.125);
+        for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+        {
+            const auto point = vr->GetCellBary(cell);
+            u[cell](0) = std::sin(point(0)) + std::cos(point(1));
+        }
+        u.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        vr->DoReconstructionIter<g_nv>(rec, result, u, g_zeroBC, true);
+        auto read = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        const auto view = read.HostView();
+        for (DNDS::index cell = 0; cell < view.NumCellProc(); ++cell)
+        {
+            values.push_back(vr->GetCellVol(cell));
+            append(vr->GetCellBary(cell));
+            append(vr->GetCellQuadraturePPhys(cell, -1));
+            if (cell >= view.NumCell())
+                continue;
+            append(result[cell]);
+            append(vr->GetCellRecMatAInv(cell));
+            auto faces = view.CellFaces(cell);
+            for (size_t slot = 0; slot < faces.size(); ++slot)
+            {
+                const auto face = faces[slot];
+                const auto side = view.CellIsFaceBack(cell, face, slot) ? 0 : 1;
+                append(vr->GetCellRecMatAInvB(cell, slot));
+                append(vr->GetFaceNormFromCell(face, cell, side, -1));
+                append(vr->GetFaceQuadraturePPhysFromCell(face, cell, side, -1));
+            }
+        }
+        return values;
+    };
+    // Metamorphic restoration check, not an independent legacy numerical
+    // oracle: both samples use this implementation. Polynomial/reference
+    // fixtures elsewhere provide the independent mathematical comparisons.
+    const auto expected = sample(makeVR());
+    auto retained = NativeMeshSnapshot::Capture(*mesh, MeshReadRequirements::CellFlux());
+    const auto beforeState = mesh->CurrentNativeState()->BindEpoch(Runtime::VersionTracker{});
+    std::vector<tPoint> oldPoints;
+    {
+        auto read = retained.AcquireRead();
+        const auto view = read.HostView();
+        for (DNDS::index node = 0; node < view.NumNodeProc(); ++node)
+            oldPoints.push_back(view.Coord(node));
+    }
+    mesh->ApplyGeometryTransform(Eigen::Matrix3d::Identity(), 2);
+    {
+        auto oldRead = retained.AcquireRead();
+        const auto oldView = oldRead.HostView();
+        auto newRead = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+        const auto newView = newRead.HostView();
+        for (DNDS::index node = 0; node < newView.NumNodeProc(); ++node)
+        {
+            CHECK(oldView.Coord(node).isApprox(oldPoints[size_t(node)]));
+            CHECK(newView.Coord(node).isApprox(2 * oldPoints[size_t(node)]));
+        }
+    }
+    // Restoring the exact detached publication must rebuild identical geometry,
+    // anisotropic weights, face slots and numerical reconstruction.
+    mesh->ReplaceNativeForSetup(beforeState);
+    const auto actual = sample(makeVR());
+    REQUIRE(actual.size() == expected.size());
+    for (size_t i = 0; i < actual.size(); ++i)
+    {
+        CAPTURE(i);
+        CHECK(std::isfinite(actual[i]));
+        CHECK(actual[i] == doctest::Approx(expected[i]).epsilon(1e-11));
+    }
+}
+
+// ===================================================================
+// POLYNOMIAL EXACTNESS on wall mesh (Uniform_3x3_wall, [-1,2]^2)
+// ===================================================================
+
+#define POLY_TEST(testName, method, polyFunc, polyDeg)                             \
+    TEST_CASE("Wall/" testName "/" #method)                                        \
+    {                                                                              \
+        ScalarFunc f = polyFunc;                                                   \
+        auto vr = buildVR(g_wall_mesh, RecMethod::method);                         \
+        auto bc = makeDirichletBC(f);                                              \
+        DNDS::real err = runTest(vr, RecMethod::method, f, bc, 100, 1e-15, false); \
+        if (g_mpi.rank == 0)                                                       \
+            std::cout << "[Wall/" testName "/" #method "] err = "                  \
+                      << std::scientific << err << std::endl;                      \
+        if (polyDeg == 0)                                                          \
+            CHECK(err < 1e-12);                                                    \
+        else                                                                       \
+            CHECK(err < 10.0); /* golden-value regression checked separately */    \
+    }
+
+// Constant (degree 0): exact for all methods
+POLY_TEST("const", GaussGreen, [](const tPoint &)
+          { return 1.0; }, 0)
+POLY_TEST("const", VFV_P1_HQM, [](const tPoint &)
+          { return 1.0; }, 0)
+POLY_TEST("const", VFV_P2_HQM, [](const tPoint &)
+          { return 1.0; }, 0)
+POLY_TEST("const", VFV_P3_HQM, [](const tPoint &)
+          { return 1.0; }, 0)
+POLY_TEST("const", VFV_P1_Default, [](const tPoint &)
+          { return 1.0; }, 0)
+
+// Linear (degree 1): exact for GG and p>=1
+POLY_TEST("linear", GaussGreen, [](const tPoint &p)
+          { return p[0] + 2 * p[1]; }, 1)
+POLY_TEST("linear", VFV_P1_HQM, [](const tPoint &p)
+          { return p[0] + 2 * p[1]; }, 1)
+POLY_TEST("linear", VFV_P2_HQM, [](const tPoint &p)
+          { return p[0] + 2 * p[1]; }, 1)
+POLY_TEST("linear", VFV_P3_HQM, [](const tPoint &p)
+          { return p[0] + 2 * p[1]; }, 1)
+POLY_TEST("linear", VFV_P1_Default, [](const tPoint &p)
+          { return p[0] + 2 * p[1]; }, 1)
+
+// Quadratic (degree 2): exact for p>=2
+POLY_TEST("quad", VFV_P2_HQM, [](const tPoint &p)
+          { return p[0] * p[0] + p[1] * p[1]; }, 2)
+POLY_TEST("quad", VFV_P3_HQM, [](const tPoint &p)
+          { return p[0] * p[0] + p[1] * p[1]; }, 2)
+POLY_TEST("quad", VFV_P2_Default, [](const tPoint &p)
+          { return p[0] * p[0] + p[1] * p[1]; }, 2)
+
+// Cubic (degree 3): exact for p>=3
+POLY_TEST("cubic", VFV_P3_HQM, [](const tPoint &p)
+          { return p[0] * p[0] * p[0] + p[0] * p[1] * p[1]; }, 3)
+POLY_TEST("cubic", VFV_P3_Default, [](const tPoint &p)
+          { return p[0] * p[0] * p[0] + p[0] * p[1] * p[1]; }, 3)
+
+#undef POLY_TEST
+
+// ===================================================================
+// PERIODIC SMOOTH FUNCTIONS on IV10 (quad) and IV10U (tri) meshes
+// with convergence series (bisect 0,1,2).
+// Golden values -- to be filled after first acquisition run.
+// ===================================================================
+
+struct PeriodicTestCase
+{
+    const char *meshName;             // "IV10" or "IV10U"
+    ssp<UnstructuredMesh> *meshArray; // pointer to g_iv10 or g_iv10u
+    RecMethod method;
+    ScalarFunc func;
+    const char *funcName;
+    int maxIters;
+    DNDS::real convTol;
+    DNDS::real golden[3];  // golden L1/vol for bisect 0,1,2 (0 = not yet acquired)
+    bool checkConvergence; // whether to also check the iteration converges
+};
+
+// Golden values captured from commit c774b89 on dev/harry_refac1 (np=1).
+// Jacobi iteration ensures determinism across all np values.
+static PeriodicTestCase g_periodicTests[] = {
+    // IV10 (quad) + sin*cos
+    {"IV10", g_iv10, RecMethod::GaussGreen, sinCos, "sincos", 1, 0, {1.5599270188e-02, 3.4233789068e-03, 7.8943623278e-04}, false},
+    {"IV10", g_iv10, RecMethod::VFV_P1_HQM, sinCos, "sincos", 200, 1e-14, {4.6604402914e-02, 9.2961629825e-03, 1.5347312301e-03}, true},
+    {"IV10", g_iv10, RecMethod::VFV_P2_HQM, sinCos, "sincos", 200, 1e-14, {3.0528143687e-03, 2.3057099673e-04, 2.4367733525e-05}, true},
+    {"IV10", g_iv10, RecMethod::VFV_P3_HQM, sinCos, "sincos", 200, 1e-14, {1.9105219870e-03, 4.6701352192e-05, 1.4890868814e-06}, false},
+    {"IV10", g_iv10, RecMethod::VFV_P1_Default, sinCos, "sincos", 200, 1e-14, {4.6604402914e-02, 9.2961629825e-03, 1.5347312301e-03}, false},
+    {"IV10", g_iv10, RecMethod::VFV_P3_Default, sinCos, "sincos", 200, 1e-14, {1.8840503911e-03, 2.4995731251e-05, 8.3670061853e-07}, false},
+
+    // IV10U (tri) + sin*cos
+    {"IV10U", g_iv10u, RecMethod::GaussGreen, sinCos, "sincos", 1, 0, {1.3027440876e-02, 3.8074751503e-03, 1.0853979656e-03}, false},
+    {"IV10U", g_iv10u, RecMethod::VFV_P1_HQM, sinCos, "sincos", 200, 1e-14, {1.2040354507e-02, 2.2707678072e-03, 4.6833420900e-04}, false},
+    {"IV10U", g_iv10u, RecMethod::VFV_P2_HQM, sinCos, "sincos", 200, 1e-14, {5.5617445849e-04, 5.9964034731e-05, 6.4337896956e-06}, false},
+    {"IV10U", g_iv10u, RecMethod::VFV_P3_HQM, sinCos, "sincos", 200, 1e-14, {1.5878119293e-04, 9.8836538778e-06, 4.3407055649e-07}, false},
+
+    // IV10 (quad) + cos+cos
+    {"IV10", g_iv10, RecMethod::VFV_P3_HQM, cosPlusCos, "cos+cos", 200, 1e-14, {5.5612138851e-04, 1.6082305163e-05, 6.6188225747e-07}, false},
+};
+
+static const int g_nPeriodicTests = sizeof(g_periodicTests) / sizeof(g_periodicTests[0]);
+
+TEST_CASE("Periodic reconstruction convergence series")
+{
+    for (int ti = 0; ti < g_nPeriodicTests; ti++)
+    {
+        auto &tc = g_periodicTests[ti];
+        std::string label = std::string(tc.meshName) + "/" + tc.funcName +
+                            "/" + recMethodName(tc.method);
+
+        SUBCASE(label.c_str())
+        {
+            for (int ib = 0; ib < 3; ib++)
+            {
+                CAPTURE(ib);
+                auto mesh = tc.meshArray[ib];
+                auto vr = buildVR(mesh, tc.method);
+                bool print = (ib == 0 && tc.checkConvergence);
+                DNDS::real err = runTest(vr, tc.method, tc.func,
+                                         g_zeroBC, tc.maxIters, tc.convTol, print);
+
+                if (g_mpi.rank == 0)
+                    std::cout << "[" << label << " bis=" << ib
+                              << "] err = " << std::scientific
+                              << std::setprecision(10) << err << std::endl;
+
+                if (tc.golden[ib] != 0.0)
+                    CHECK(err == doctest::Approx(tc.golden[ib]).epsilon(1e-6));
+                else
+                    CHECK(err >= 0.0); // acquisition: just check non-negative
+            }
+        }
+    }
+}
+
+// ===================================================================
+// Convergence check: selected VFV cases should converge
+// ===================================================================
+
+TEST_CASE("VFV P2 HQM converges on IV10 base mesh")
+{
+    auto vr = buildVR(g_iv10[0], RecMethod::VFV_P2_HQM);
+
+    NativeCFV::tUDof<g_nv> u;
+    vr->BuildUDof(u, 1);
+    NativeCFV::tURec<g_nv> uRec, uRecNew;
+    vr->BuildURec(uRec, 1);
+    vr->BuildURec(uRecNew, 1);
+
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); iCell++)
+    {
+        auto qCell = vr->GetCellQuad(iCell);
+        Eigen::Vector<DNDS::real, g_nv> uc;
+        uc.setZero();
+        qCell.IntegrationSimple(
+            uc,
+            [&](auto &vInc, int iG)
+            {
+                vInc(0) = sinCos(vr->GetCellQuadraturePPhys(iCell, iG)) *
+                          vr->GetCellJacobiDet(iCell, iG);
+            });
+        u[iCell] = uc / vr->GetCellVol(iCell);
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+
+    DNDS::real lastInc = veryLargeReal;
+    int convergedAt = 0;
+    for (int iter = 0; iter < 200; iter++)
+    {
+        vr->DoReconstructionIter<g_nv>(uRec, uRecNew, u, g_zeroBC, true);
+
+        DNDS::real incLocal = 0.0;
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); iCell++)
+            incLocal += (uRecNew[iCell] - uRec[iCell]).array().square().sum();
+        DNDS::real incGlobal = 0.0;
+        MPI::Allreduce(&incLocal, &incGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+        incGlobal = std::sqrt(incGlobal / vr->mesh->NumCellGlobal());
+
+        std::swap(uRec, uRecNew);
+        uRec.trans.startPersistentPull();
+        uRec.trans.waitPersistentPull();
+
+        lastInc = incGlobal;
+        if (incGlobal < 1e-14)
+        {
+            convergedAt = iter + 1;
+            break;
+        }
+    }
+
+    if (g_mpi.rank == 0)
+        std::cout << "[Convergence P2-HQM IV10] " << convergedAt
+                  << " iters, final inc = " << std::scientific << lastInc << std::endl;
+
+    CHECK(convergedAt > 0);
+    CHECK(convergedAt < 200);
+}
+
+// ===================================================================
+// DEBUG: Compare InterpolateFace (DSL) vs InterpolateFaceLegacy
+// ===================================================================
+
+TEST_CASE("Native periodic face slots match independent Quad4 vertex and neighbor oracle")
+{
+    auto mesh = buildMesh("IV10_10.cgns", true, 10, 10);
+    auto access = mesh->AcquireRead(MeshReadRequirements::CellFlux());
+    const auto view = access.HostView();
+    const auto cells = mesh->Entities(EntityKind::Cell);
+    const auto nodes = mesh->Entities(EntityKind::Node);
+    const std::array<std::array<int, 2>, 4> vertices{{{{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 0}}}};
+    DNDS::index checked = 0;
+    for (DNDS::index cell = 0; cell < mesh->NumCell(); ++cell)
+    {
+        REQUIRE(view.GetCellInfo(cell).getElemType() == Elem::Quad4);
+        const auto cone = view.CellNodes(cell);
+        const auto faces = view.CellFaces(cell);
+        REQUIRE(faces.size() == 4);
+        for (size_t slot = 0; slot < 4; ++slot)
+        {
+            const auto face = faces[slot];
+            std::array<DNDS::index, 2> expected{nodes.LocalToGlobal(cone[size_t(vertices[slot][0])]),
+                                                nodes.LocalToGlobal(cone[size_t(vertices[slot][1])])};
+            const auto actual = view.FaceNodes(face);
+            REQUIRE(actual.size() == 2);
+            std::array<DNDS::index, 2> global{nodes.LocalToGlobal(actual[0]), nodes.LocalToGlobal(actual[1])};
+            if (!view.CellIsFaceBack(cell, face, slot))
+                std::swap(expected[0], expected[1]);
+            CHECK(global == expected);
+            tSmallCoords physical;
+            view.GetCoordsOnCell(cell, physical);
+            const auto midpoint = (physical.col(vertices[slot][0]) + physical.col(vertices[slot][1])) / 2;
+            const bool seam = std::abs(midpoint[0]) < 1e-9 || std::abs(midpoint[0] - 10) < 1e-9 ||
+                              std::abs(midpoint[1]) < 1e-9 || std::abs(midpoint[1] - 10) < 1e-9;
+            if (seam)
+                CHECK(FaceIDIsPeriodic(view.GetFaceInfo(face).zone));
+            else
+                CHECK(FaceIDIsInternal(view.GetFaceInfo(face).zone));
+            const auto adjacent = view.FaceCells(face);
+            CHECK((adjacent[0] == cell || adjacent[1] == cell));
+            CHECK(adjacent[0] >= 0);
+            CHECK(adjacent[1] >= 0); // all-periodic grid has no physical boundary
+            if (adjacent[0] >= 0 && adjacent[1] >= 0)
+                CHECK(cells.LocalToGlobal(adjacent[0]) != cells.LocalToGlobal(adjacent[1]));
+            ++checked;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &checked, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+    CHECK(checked == 400);
+}
+
+// ===================================================================
+// LIMITER PROCEDURE TESTS
+//
+// After reconstruction, apply DoCalculateSmoothIndicator + DoLimiterWBAP_C
+// and measure the post-limiter L1 error.  For scalar fields the
+// eigenvalue transform (FM/FMI) is identity.
+//
+// Golden value sentinel: 0.0 means "not yet acquired -- just print and
+// check non-negative".
+// ===================================================================
+
+#include "NativeCFV/Legacy/VariationalReconstruction_LimiterProcedure.hxx"
+
+/// Identity eigenvalue transform for nVarsFixed==1 (scalar).
+static tVR::tLimitBatch<g_nv> identityFM(
+    const Eigen::Vector<DNDS::real, g_nv> &,
+    const Eigen::Vector<DNDS::real, g_nv> &,
+    const tPoint &,
+    const Eigen::Ref<tVR::tLimitBatch<g_nv>> &data)
+{
+    return data;
+}
+
+/// Run reconstruction, then limiter, then measure L1 error.
+/// @param limiterKind  0 = WBAP_C, 1 = WBAP_3
+static DNDS::real runLimitedTest(
+    ssp<tVR> vr,
+    RecMethod method,
+    const ScalarFunc &exactFunc,
+    const tVR::TFBoundary<g_nv> &bc,
+    int maxIters,
+    DNDS::real convTol,
+    int limiterKind,
+    bool ifAll,
+    bool printProgress)
+{
+    auto mesh = vr->mesh;
+
+    // --- Allocate arrays ---
+    NativeCFV::tUDof<g_nv> u;
+    vr->BuildUDof(u, 1);
+
+    // --- Set cell-averaged DOFs via quadrature ---
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+    {
+        auto qCell = vr->GetCellQuad(iCell);
+        Eigen::Vector<DNDS::real, g_nv> uc;
+        uc.setZero();
+        qCell.IntegrationSimple(
+            uc,
+            [&](auto &vInc, int iG)
+            {
+                vInc(0) = exactFunc(vr->GetCellQuadraturePPhys(iCell, iG)) *
+                          vr->GetCellJacobiDet(iCell, iG);
+            });
+        u[iCell] = uc / vr->GetCellVol(iCell);
+    }
+    u.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+
+    // --- Reconstruct (iterative VFV) ---
+    NativeCFV::tURec<g_nv> uRec, uRecNew, uRecBuf;
+    vr->BuildURec(uRec, 1);
+    vr->BuildURec(uRecNew, 1);
+    vr->BuildURec(uRecBuf, 1);
+
+    for (int iter = 0; iter < maxIters; iter++)
+    {
+        vr->DoReconstructionIter<g_nv>(uRec, uRecNew, u, bc, true);
+        std::swap(uRec, uRecNew);
+        uRec.trans.startPersistentPull();
+        uRec.trans.waitPersistentPull();
+
+        DNDS::real incLocal = 0.0;
+        for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+            incLocal += (uRecNew[iCell] - uRec[iCell]).array().square().sum();
+        DNDS::real incGlobal = 0.0;
+        MPI::Allreduce(&incLocal, &incGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+        incGlobal = std::sqrt(incGlobal / mesh->NumCellGlobal());
+        if (convTol > 0 && incGlobal < convTol)
+            break;
+    }
+
+    // --- Smooth indicator ---
+    NativeCFV::tScalarPair si;
+    vr->BuildScalar(si);
+    vr->DoCalculateSmoothIndicator<g_nv, 1>(si, uRec, u, std::array<int, 1>{0});
+    si.trans.startPersistentPull();
+    si.trans.waitPersistentPull();
+
+    // --- Limiter ---
+    tVR::tFMEig<g_nv> fm = identityFM;
+    tVR::tFMEig<g_nv> fmi = identityFM;
+
+    if (limiterKind == 0)
+        vr->DoLimiterWBAP_C<g_nv>(u, uRec, uRecNew, uRecBuf, si, ifAll, fm, fmi, /*putIntoNew=*/true);
+    else
+        vr->DoLimiterWBAP_3<g_nv>(u, uRec, uRecNew, uRecBuf, si, ifAll, fm, fmi, /*putIntoNew=*/true);
+
+    // uRecNew now holds the limited reconstruction
+    auto &uRecLim = uRecNew;
+
+    // --- Measure L1 error ---
+    DNDS::real errLocal = 0.0;
+    for (DNDS::index iCell = 0; iCell < mesh->NumCell(); iCell++)
+    {
+        auto qCell = vr->GetCellQuad(iCell);
+        DNDS::real errCell = 0.0;
+        qCell.IntegrationSimple(
+            errCell,
+            [&](DNDS::real &vInc, int iG)
+            {
+                Eigen::VectorXd baseVal =
+                    vr->GetIntPointDiffBaseValue(
+                        iCell, -1, -1, iG, std::array<int, 1>{0}, 1) *
+                    uRecLim[iCell];
+                DNDS::real uRecVal = baseVal(0) + u[iCell](0);
+                DNDS::real uExact = exactFunc(vr->GetCellQuadraturePPhys(iCell, iG));
+                vInc = std::abs(uRecVal - uExact) * vr->GetCellJacobiDet(iCell, iG);
+            });
+        errLocal += errCell;
+    }
+    DNDS::real errGlobal = 0.0;
+    MPI::Allreduce(&errLocal, &errGlobal, 1, DNDS_MPI_REAL, MPI_SUM, g_mpi.comm);
+    return errGlobal / vr->GetGlobalVol();
+}
+
+struct LimiterTestCase
+{
+    const char *meshName;
+    ssp<UnstructuredMesh> *meshArray;
+    RecMethod method;
+    ScalarFunc func;
+    const char *funcName;
+    int limiterKind; // 0 = WBAP_C, 1 = WBAP_3
+    const char *limName;
+    bool ifAll;           // limiter applied to all cells (no smooth-indicator skip)
+    DNDS::real golden[3]; // golden L1/vol for bisect 0,1,2
+                          // 0.0 = not yet acquired (just print, CHECK >= 0)
+};
+
+static LimiterTestCase g_limiterTests[] = {
+    // IV10 (quad), P2-HQM, sincos, WBAP_C (ifAll=true so every cell is limited)
+    {"IV10", g_iv10, RecMethod::VFV_P2_HQM, sinCos, "sincos", 0, "CWBAP", true, {6.6975633577e-02, 2.2647765241e-02, 9.2028443979e-03}},
+
+    // IV10 (quad), P3-HQM, sincos, WBAP_C (ifAll=true)
+    {"IV10", g_iv10, RecMethod::VFV_P3_HQM, sinCos, "sincos", 0, "CWBAP", true, {7.1333971937e-02, 2.6226392939e-02, 1.1194383457e-02}},
+
+    // IV10U (tri), P2-HQM, sincos, WBAP_C (ifAll=true)
+    {"IV10U", g_iv10u, RecMethod::VFV_P2_HQM, sinCos, "sincos", 0, "CWBAP", true, {3.5176301510e-02, 1.4925026476e-02, 6.9002847378e-03}},
+
+    // IV10 (quad), P2-HQM, sincos, WBAP_3 (ifAll=true)
+    {"IV10", g_iv10, RecMethod::VFV_P2_HQM, sinCos, "sincos", 1, "3WBAP", true, {6.6488044323e-02, 2.2593150005e-02, 9.1963848358e-03}},
+
+    // IV10 (quad), P3-HQM, sincos, WBAP_3 (ifAll=true)
+    {"IV10", g_iv10, RecMethod::VFV_P3_HQM, sinCos, "sincos", 1, "3WBAP", true, {7.1372867657e-02, 2.6697894435e-02, 1.1593632890e-02}},
+};
+
+static const int g_nLimiterTests = sizeof(g_limiterTests) / sizeof(g_limiterTests[0]);
+
+TEST_CASE("Limiter procedure: reconstruction + smooth indicator + WBAP limiter")
+{
+    for (int ti = 0; ti < g_nLimiterTests; ti++)
+    {
+        auto &tc = g_limiterTests[ti];
+        std::string label = std::string(tc.meshName) + "/" + tc.funcName +
+                            "/" + recMethodName(tc.method) + "/" + tc.limName;
+
+        SUBCASE(label.c_str())
+        {
+            for (int ib = 0; ib < 3; ib++)
+            {
+                CAPTURE(ib);
+                auto mesh = tc.meshArray[ib];
+                auto vr = buildVR(mesh, tc.method);
+                DNDS::real err = runLimitedTest(
+                    vr, tc.method, tc.func, g_zeroBC,
+                    200, 1e-14, tc.limiterKind, tc.ifAll, false);
+
+                if (g_mpi.rank == 0)
+                    std::cout << "[" << label << " bis=" << ib
+                              << "] limited err = " << std::scientific
+                              << std::setprecision(10) << err << std::endl;
+
+                if (tc.golden[ib] != 0.0)
+                    CHECK(err == doctest::Approx(tc.golden[ib]).epsilon(1e-6));
+                else
+                    CHECK(err >= 0.0);
+            }
+        }
+    }
+}
+
+TEST_CASE("A-weighted limited variational reconstruction update has exact alpha endpoints and blend")
+{
+    auto checkJacobi = [&](DNDS::real alphaValue)
+    {
+        auto vr = buildVR(g_iv10[0], RecMethod::VFV_P2_Default);
+        NativeCFV::tUDof<g_nv> u;
+        NativeCFV::tUDof<1> alpha;
+        NativeCFV::tURec<g_nv> recInitial, recBase, recLimited, recBaseNew, recLimitedNew, recTarget;
+        vr->BuildUDof(u, 1);
+        vr->BuildUDof(alpha, 1);
+        vr->BuildURec(recInitial, 1);
+        vr->BuildURec(recBase, 1);
+        vr->BuildURec(recLimited, 1);
+        vr->BuildURec(recBaseNew, 1);
+        vr->BuildURec(recLimitedNew, 1);
+        vr->BuildURec(recTarget, 1);
+
+        u.setConstant(0.0);
+        alpha.setConstant(alphaValue);
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            recInitial[iCell].setConstant(0.01 * (iCell + 1));
+            recTarget[iCell].setConstant(2.0 + 0.001 * iCell);
+        }
+        u.trans.startPersistentPull();
+        recInitial.trans.startPersistentPull();
+        recTarget.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        recInitial.trans.waitPersistentPull();
+        recTarget.trans.waitPersistentPull();
+
+        recBase = recInitial;
+        recLimited = recInitial;
+        vr->DoReconstructionIter<g_nv>(recBase, recBaseNew, u, g_zeroBC, true);
+        vr->DoReconstructionIterLimited<g_nv>(
+            recLimited, recLimitedNew, u, g_zeroBC, recTarget, alpha, true);
+
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            auto expected = (1.0 - alphaValue) * recBaseNew[iCell] + alphaValue * recTarget[iCell];
+            CHECK((recLimitedNew[iCell] - expected).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-12));
+        }
+    };
+
+    checkJacobi(0.0);
+    checkJacobi(0.4);
+    checkJacobi(1.0);
+}
+
+TEST_CASE("A-weighted limited variational reconstruction preserves GS and relaxation semantics")
+{
+    auto checkSweep = [&](bool useSOR, DNDS::real relaxation, DNDS::real alphaValue)
+    {
+        auto vr = buildVR(g_iv10[0], RecMethod::VFV_P2_Default, useSOR, relaxation);
+        NativeCFV::tUDof<g_nv> u;
+        NativeCFV::tUDof<1> alpha;
+        NativeCFV::tURec<g_nv> recInitial, recBase, recLimited, recBaseNew, recLimitedNew, recTarget;
+        vr->BuildUDof(u, 1);
+        vr->BuildUDof(alpha, 1);
+        vr->BuildURec(recInitial, 1);
+        vr->BuildURec(recBase, 1);
+        vr->BuildURec(recLimited, 1);
+        vr->BuildURec(recBaseNew, 1);
+        vr->BuildURec(recLimitedNew, 1);
+        vr->BuildURec(recTarget, 1);
+
+        u.setConstant(0.0);
+        alpha.setConstant(alphaValue);
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            recInitial[iCell].setConstant(0.01 * (iCell + 1));
+            recTarget[iCell].setConstant(2.0 + 0.001 * iCell);
+        }
+        u.trans.startPersistentPull();
+        recInitial.trans.startPersistentPull();
+        recTarget.trans.startPersistentPull();
+        u.trans.waitPersistentPull();
+        recInitial.trans.waitPersistentPull();
+        recTarget.trans.waitPersistentPull();
+
+        recBase = recInitial;
+        recLimited = recInitial;
+        if (alphaValue == 0.0)
+            vr->DoReconstructionIter<g_nv>(recBase, recBaseNew, u, g_zeroBC, false);
+        vr->DoReconstructionIterLimited<g_nv>(
+            recLimited, recLimitedNew, u, g_zeroBC, recTarget, alpha, false);
+
+        for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+        {
+            if (alphaValue == 0.0)
+                CHECK((recLimited[iCell] - recBase[iCell]).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-13));
+            else
+            {
+                auto expected = (1.0 - relaxation) * recInitial[iCell] + relaxation * recTarget[iCell];
+                CHECK((recLimited[iCell] - expected).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-13));
+            }
+        }
+    };
+
+    checkSweep(false, 0.35, 0.0);
+    checkSweep(true, 0.35, 0.0);
+    checkSweep(false, 0.35, 1.0);
+    checkSweep(true, 0.35, 1.0);
+}
+
+TEST_CASE("Gradient conversion populates only O2 reconstruction modes")
+{
+    auto vr = buildVR(g_iv10[0], RecMethod::VFV_P3_Default);
+    NativeCFV::tUGrad<g_nv, g_dim> gradient;
+    NativeCFV::tURec<g_nv> reconstruction;
+    vr->BuildUGrad(gradient, 1);
+    vr->BuildURec(reconstruction, 1);
+    reconstruction.setConstant(7.0);
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+    {
+        gradient[iCell](0, 0) = 0.25 + 0.01 * iCell;
+        gradient[iCell](1, 0) = -0.75 + 0.02 * iCell;
+    }
+
+    vr->ConvertUGradToURec(reconstruction, gradient);
+    static const auto Seq012 = Eigen::seq(Eigen::fix<0>, Eigen::fix<g_dim - 1>);
+    static const auto Seq123 = Eigen::seq(Eigen::fix<1>, Eigen::fix<g_dim>);
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+    {
+        Eigen::Matrix<DNDS::real, g_dim, g_dim> d1bv;
+        d1bv = vr->GetIntPointDiffBaseValue(
+            iCell, -1, -1, -1, Seq123, g_dim + 1)(EigenAll, Seq012);
+        auto recovered = d1bv * reconstruction[iCell](Seq012, EigenAll);
+        CHECK((recovered - gradient[iCell]).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-12));
+        CHECK(reconstruction[iCell](Eigen::seq(g_dim, reconstruction[iCell].rows() - 1), EigenAll).norm() == 0.0);
+    }
+}
+
+TEST_CASE("O2 WBAP traversal agrees with full-order traversal on a linear target")
+{
+    auto vr = buildVR(g_iv10[0], RecMethod::VFV_P3_HQM);
+    NativeCFV::tUDof<g_nv> u;
+    NativeCFV::tUGrad<g_nv, g_dim> gradient;
+    NativeCFV::tURec<g_nv> full, linear, work, buffer;
+    NativeCFV::tScalarPair indicator;
+    vr->BuildUDof(u, 1);
+    vr->BuildUGrad(gradient, 1);
+    vr->BuildURec(full, 1);
+    vr->BuildURec(linear, 1);
+    vr->BuildURec(work, 1);
+    vr->BuildURec(buffer, 1);
+    vr->BuildScalar(indicator);
+    u.setConstant(1.0);
+    for (DNDS::index i = 0; i < vr->mesh->NumCell(); ++i)
+    {
+        const auto x = vr->GetCellQuadraturePPhys(i, -1);
+        gradient[i](0, 0) = std::sin(x(0)) + 0.2;
+        gradient[i](1, 0) = std::cos(x(1)) - 0.3;
+    }
+    vr->ConvertUGradToURec(full, gradient);
+    u.trans.startPersistentPull();
+    full.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    full.trans.waitPersistentPull();
+    linear = full;
+    tVR::tFMEig<g_nv> fm = identityFM;
+    vr->DoLimiterWBAP_3<g_nv>(u, full, work, buffer, indicator, true, fm, fm, false);
+    vr->DoLimiterWBAP_3<g_nv>(u, linear, work, buffer, indicator, true, fm, fm, false, 1);
+    for (DNDS::index i = 0; i < vr->mesh->NumCell(); ++i)
+        CHECK((full[i] - linear[i]).norm() == doctest::Approx(0).epsilon(1e-12).scale(1));
+}
+
+TEST_CASE("Limited Jacobi converges to the directly assembled penalized system")
+{
+    if (g_mpi.size != 1)
+        return;
+
+    constexpr DNDS::real alphaValue = 0.35;
+    auto vr = buildVR(g_wall_mesh, RecMethod::VFV_P2_Default);
+    NativeCFV::tUDof<g_nv> u;
+    NativeCFV::tUDof<1> alpha;
+    NativeCFV::tURec<g_nv> input, output, target, iterate, scratch;
+    vr->BuildUDof(u, 1);
+    vr->BuildUDof(alpha, 1);
+    vr->BuildURec(input, 1);
+    vr->BuildURec(output, 1);
+    vr->BuildURec(target, 1);
+    vr->BuildURec(iterate, 1);
+    vr->BuildURec(scratch, 1);
+
+    alpha.setConstant(alphaValue);
+    for (DNDS::index iCell = 0; iCell < vr->mesh->NumCell(); ++iCell)
+    {
+        u[iCell](0) = 0.2 + 0.03 * iCell;
+        target[iCell].setConstant(1.0 + 0.01 * iCell);
+    }
+    u.trans.startPersistentPull();
+    target.trans.startPersistentPull();
+    u.trans.waitPersistentPull();
+    target.trans.waitPersistentPull();
+
+    const DNDS::index nCells = vr->mesh->NumCell();
+    const DNDS::index nModes = target[0].rows();
+    const DNDS::index systemSize = nCells * nModes;
+    auto flatten = [&](const NativeCFV::tURec<g_nv> &field)
+    {
+        Eigen::VectorXd vector(systemSize);
+        for (DNDS::index iCell = 0; iCell < nCells; ++iCell)
+            vector(Eigen::seqN(iCell * nModes, nModes)) = field[iCell].col(0);
+        return vector;
+    };
+    auto setBasis = [&](NativeCFV::tURec<g_nv> &field, DNDS::index dof)
+    {
+        field.setConstant(0.0);
+        field[dof / nModes](dof % nModes, 0) = 1.0;
+    };
+
+    input.setConstant(0.0);
+    vr->DoReconstructionIter<g_nv>(input, output, u, g_zeroBC, true);
+    Eigen::VectorXd affine = flatten(output);
+    Eigen::MatrixXd coupling(systemSize, systemSize);
+    for (DNDS::index dof = 0; dof < systemSize; ++dof)
+    {
+        setBasis(input, dof);
+        vr->DoReconstructionIter<g_nv>(input, output, u, g_zeroBC, true);
+        coupling.col(dof) = flatten(output) - affine;
+    }
+    Eigen::MatrixXd penalized = Eigen::MatrixXd::Identity(systemSize, systemSize) -
+                                (1.0 - alphaValue) * coupling;
+    Eigen::VectorXd rhs = (1.0 - alphaValue) * affine + alphaValue * flatten(target);
+    Eigen::VectorXd direct = penalized.fullPivLu().solve(rhs);
+
+    iterate.setConstant(0.0);
+    for (int iteration = 0; iteration < 500; ++iteration)
+        vr->DoReconstructionIterLimited<g_nv>(
+            iterate, scratch, u, g_zeroBC, target, alpha, false);
+    CHECK((flatten(iterate) - direct).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-10));
+
+    auto vrSOR = buildVR(g_wall_mesh, RecMethod::VFV_P2_Default, true, 1.0);
+    NativeCFV::tURec<g_nv> iterateSOR, scratchSOR;
+    vrSOR->BuildURec(iterateSOR, 1);
+    vrSOR->BuildURec(scratchSOR, 1);
+    iterateSOR.setConstant(0.0);
+    for (int iteration = 0; iteration < 500; ++iteration)
+        vrSOR->DoReconstructionIterLimited<g_nv>(
+            iterateSOR, scratchSOR, u, g_zeroBC, target, alpha, false);
+    CHECK((flatten(iterateSOR) - direct).norm() == doctest::Approx(0.0).scale(1.0).epsilon(1e-10));
+}
+
+TEST_CASE("Static reconstruction mask passed as a call argument constrains updates")
+{
+    for (bool sor : {false, true})
+    {
+        auto vr = buildVR(g_wall_mesh, RecMethod::VFV_P3_Default, sor);
+        // Selector evaluation and storage belong to the caller, not VR.
+        NativeCFV::tUDof<1> expected, u, alpha;
+        std::vector<DNDS::index> selectedCells;
+        vr->BuildUDof(expected, 1);
+        vr->BuildUDof(u, 1);
+        vr->BuildUDof(alpha, 1);
+        DNDS::index selected = 0, selectedAll = 0;
+        auto legacyRead = g_wall_mesh->AcquireLegacyRead(NativeGeom::MeshReadRequirements::CellFlux());
+        const auto &meshLegacy = legacyRead.HostView();
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+        {
+            bool on = vr->GetCellBary(i)(0) < 0;
+            for (auto f : meshLegacy.cell2face[i])
+                on = on || meshLegacy.GetFaceZone(f) == NativeGeom::BC_ID_DEFAULT_WALL;
+            expected[i](0) = on;
+            selected += on;
+            u[i](0) = 2 + vr->GetCellBary(i)(0);
+        }
+        expected.trans.pullOnce();
+        u.trans.pullOnce();
+        MPI::Allreduce(&selected, &selectedAll, 1, DNDS_MPI_INDEX, MPI_SUM, g_mpi.comm);
+        CHECK(selectedAll == 8); // Boundary ring of the 3x3 mesh; centre remains free.
+        for (DNDS::index i = 0; i < expected.Size(); ++i)
+        {
+            if (expected[i](0))
+                selectedCells.push_back(i);
+        }
+        const NativeCFV::ReconstructionMaskView reconstructionMask{&expected, &selectedCells};
+
+        NativeCFV::tURec<1> rec, scratch, target;
+        vr->BuildURec(rec, 1);
+        vr->BuildURec(scratch, 1);
+        vr->BuildURec(target, 1);
+        target.setConstant(3);
+        alpha.setConstant(1);
+        for (bool intoNew : {false, true})
+        {
+            rec.setConstant(7); // Include dirty owned/ghost coefficients, as with a restart.
+            scratch.setConstant(7);
+            vr->DoReconstructionIterLimited<1>(rec, scratch, u, g_zeroBC, target, alpha, intoNew, reconstructionMask);
+            auto &result = intoNew ? scratch : rec;
+            for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            {
+                if (expected[i](0))
+                    CHECK(result[i].isZero(0));
+                else
+                    CHECK(result[i].isConstant(3, 1e-12));
+            }
+            for (DNDS::index i = g_wall_mesh->NumCell(); i < result.Size(); ++i)
+                if (expected[i](0))
+                    CHECK(result[i].isZero(0));
+        }
+        // Krylov residual and derivative use identity constraint rows, not singular zero rows.
+        rec.setConstant(2);
+        vr->DoReconstructionIter<1>(rec, scratch, u, g_zeroBC, true, true, false, reconstructionMask);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            if (expected[i](0))
+                CHECK(scratch[i].isConstant(2));
+        tVR::TFBoundaryDiff<1> zeroDiff = [](const auto &, const auto &, const auto &, DNDS::index, DNDS::index, int,
+                                             const tPoint &, const tPoint &, t_index)
+        { return Eigen::Vector<DNDS::real, 1>::Zero().eval(); };
+        vr->DoReconstructionIterDiff<1>(rec, rec, scratch, u, zeroDiff, reconstructionMask);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            if (expected[i](0))
+                CHECK(scratch[i].isConstant(2));
+
+        // GG gradients (including owned-only temporaries) and passive-column overrides obey the mask.
+        NativeCFV::tUGrad<1, 2> gradient;
+        vr->BuildUGrad(gradient, 1, false, false);
+        vr->DoReconstruction2ndGrad<1>(gradient, u, g_zeroBC, 1, reconstructionMask);
+        vr->ConvertUGradToURec<1>(rec, gradient, {0}, reconstructionMask);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            if (expected[i](0))
+            {
+                CHECK(gradient[i].isZero(0));
+                CHECK(rec[i].isZero(0));
+            }
+        // A subsequent call without a mask is unconstrained: VR retains no view.
+        rec.setConstant(7);
+        vr->DoReconstructionIterLimited<1>(rec, scratch, u, g_zeroBC, target, alpha);
+        for (DNDS::index i = 0; i < g_wall_mesh->NumCell(); ++i)
+            CHECK(rec[i].isConstant(3, 1e-12));
+    }
+}

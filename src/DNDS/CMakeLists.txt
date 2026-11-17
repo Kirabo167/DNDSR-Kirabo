@@ -20,9 +20,11 @@ set(DNDS_PCH_TARGETS_FAST dnds_PCHs_fast)
 dnds_variable_to_parent_scope(DNDS_PCH_TARGETS_FAST)
 
 set(LIBNAME dnds)
+find_package(Threads REQUIRED)
 
 set(LINKS
 ${DNDS_EXTERNAL_LIBS}
+Threads::Threads
 )
 
 set(CPPS
@@ -30,6 +32,18 @@ MPI.cpp
 Defines.cpp
 EnvReader.cpp
 Device/DeviceStorage.cpp
+Runtime/Storage/Buffer.cpp
+Runtime/Storage/AllocationDiagnostics.cpp
+Runtime/Storage/ElementSchema.cpp
+Runtime/Execution/EagerEngine.cpp
+Runtime/Execution/AccessTracking.cpp
+Runtime/Execution/CUDAExecution.cpp
+Runtime/Communication/Exchange.cpp
+Runtime/Communication/RowTransfer.cpp
+Runtime/Communication/NCCLTransfer.cpp
+Algebra/DofAlgebra.cpp
+Algebra/AmgXPreconditioner.cpp
+Config/JsonSchema.cpp
 Profiling.cpp
 HardEigen.cpp
 Serializer/SerializerBase.cpp
@@ -43,6 +57,7 @@ file(GLOB ARRAYDOF_OP_SOURCES CONFIGURE_DEPENDS "ArrayDOF_inst/*.cpp")
 list(APPEND CPPS ${ARRAYDOF_OP_SOURCES})
 
 if (DNDS_USE_CUDA)
+    list(APPEND CPPS Runtime/Communication/RowTransfer_CUDA.cu Algebra/DofAlgebra_CUDA.cu)
     list(APPEND CPPS Device/DeviceStorage_CUDA.cu)
     file(GLOB ARRAYDOF_OP_SOURCES_CUDA CONFIGURE_DEPENDS "ArrayDOF_inst/*.cu")
     list(APPEND CPPS ${ARRAYDOF_OP_SOURCES_CUDA})
@@ -88,6 +103,11 @@ install(TARGETS ${LIBNAME}_shared
 
 set(CPPS_BIND
 dnds_pybind11.cpp
+Runtime/Interop/Runtime_bind.cpp
+Runtime/Interop/MPI_bind.cpp
+Runtime/Interop/DLPack_bind.cpp
+Runtime/Execution/Eager_bind.cpp
+Algebra/Algebra_bind.cpp
 Defines_bind.cpp
 MPI_bind.cpp
 Array_bind.cpp

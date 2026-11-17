@@ -139,4 +139,5 @@ for dependency in "${EXPECTED_DIRS[@]}"; do
 done
 REPLACEMENT_COMPLETE=1
 
+bash "${SCRIPT_DIR}/install_spdlog_deps.sh"
 echo "Installed header-only dependencies ${HEADERONLYS_VERSION} (${HEADERONLYS_SHA256})."
