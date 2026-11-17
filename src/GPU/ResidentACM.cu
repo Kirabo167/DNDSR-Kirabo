@@ -1,6 +1,7 @@
 #include "ResidentACM.hpp"
 #include "ResidentCommon.cuh"
 #include "FluxMath.cuh"
+#include "SSTSpatial.hpp"
 #include <iostream>
 #include <fstream>
 
@@ -22,6 +23,7 @@ namespace DNDS::GPU
             const double *coupling;
             double *u, *rec, *oldRec, *gradient, *theta, *flux, *rhs, *dt;
             double *q = nullptr, *qGradient = nullptr, *flowGradient = nullptr, *qLimiter = nullptr;
+            double *qExtrema = nullptr;
             double *eddy = nullptr, *volumeFlux = nullptr, *qFlux = nullptr, *qRate = nullptr, *qRhs = nullptr;
         };
         __device__ void Rotate(const double *matrix, const double *source, double *destination)

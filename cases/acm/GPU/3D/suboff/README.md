@@ -194,7 +194,113 @@ venv/bin/python scripts/run_suboff_steady_gpu.py --detach --gpu-device 1 \
 `scripts/analyze_gpu_sst_audit.py` 检查格式并生成带列名的摘要 JSON。
 
 `scripts/verify_gpu_sst_closure.py` 从生产头文件提取实际设备函数，验证均匀衰减、
-近壁剪切、刚体旋转、正负交叉扩散和壁面 omega 的解析值，并单独复现非正交扩散
-不满足离散最大值原理的反例。反例复现成功并不表示扩散具有正性保证。
+近壁剪切、刚体旋转、正负交叉扩散和壁面 omega 的解析值，并检查非正交扩散
+原反例被有界面电导消除。该保护仅约束扩散，不证明含源项的完整更新保持正性。
+2026-11-13 的独立 GPU 修复还包含最小二乘 SST 梯度及分离的对流入流状态；
+`scripts/audit_gpu_sst_model.py` 执行实际生产面通量和隐式面核，验证四类入流边界、
+体积通量与重构速度方向不一致、局部极值和非正交线性场。
+最初冻结 CPU 不含这些修复。用户随后授权以 `dcf4662` 为基线同步纯 CPU SST，
+2026-11-16 的新面电导算法仅修改独立 `ACMGPU` host 和 CUDA，默认对照为这两条路径；
+纯 CPU 保持 2026-11-13 冻结算法，显式选择 CPU 时仅作历史比较，不能要求更新结果逐项相同。
 `scripts/audit_suboff_sst_local.py` 可独立复算保存场的局部源项与分子扩散；
 它对扭曲面的几何处理是近似的，应以完整参考/设备残差诊断确认实际残差。
+
+### 2026-11-15 双卡定常续算
+
+`suboff_SST_steady_local_restart33000_dualGPU_spatial_fixed_20261115.json`
+从第 33000 步静压检查点继续，保留完整 3914184 单元、二次 CFV、局部 CFL=0.5、
+阻尼 0.3、每步一次修正和三次 LU-SGS 扫描，以及原有六方程绝对目标和连续 20 次判据。
+两卡空闲显存不对称，因此采用三个等规模 MPI 分区，rank 0 放在 GPU0，rank 1、2
+放在 GPU1。单元数分别为 1304754、1304719、1304711；该分配不保证显存或耗时严格按比例。
+
+原单卡检查点保持不变。`scripts/remap_acm_vtkhdf_restart.py` 按目标网格模板重排，
+逐一验证唯一顶点坐标、单元类型和完整顶点集合；所有单元场直接重排，没有插值。
+目标模板和正式运行均使用 OMP_NUM_THREADS=8、同一网格及 METIS 设置。
+三进程小网格的精确初场导入、设备映射和 host/CUDA 定常更新对照通过，
+24 个场数组的最大缩放误差为 3.21e-13 以下。
+
+~~~bash
+venv/bin/python scripts/run_suboff_gpu_test.py \
+  --config cases/acm/GPU/3D/suboff/suboff_SST_steady_local_restart33000_dualGPU_spatial_fixed_20261115.json \
+  --output data/out/GPU/SUBOFF_SST_steady_local_restart33000_dualGPU_spatial_fixed_20261115 \
+  --rank-devices 0 1 1 --device-min-free-mib 28672 53248
+~~~
+
+队列要求 GPU0 至少空闲 28 GiB、GPU1 至少空闲 52 GiB，为分区 halo 和设备工作区
+预留空间；两卡分别满足才启动，不能仅将空闲显存相加。显存检查属于启动预检，
+不保证其他进程随后不会申请显存。所有流动及 SST 数值核仍在 GPU 执行；
+当前 MPI halo 传输使用设备打包与固定页主存中转。输出每 100 步及收敛终步保存。
+部署状态以 `data/out/GPU/SUBOFF_active_run.json` 指向的 status.json 为准；
+小网格验证通过不代表完整 SUBOFF 已经收敛。
+
+### 2026-11-16 SST 有界面扩散
+
+独立 `ACMGPU` host 与 CUDA 将原来的精确极值开关替换为连续状态差驱动的面电导：
+`c = clamp(g/dq, 0, 2*|n|²/|dn|)`，其中 g 为非正交修正后的法向导数，
+dq 为两侧单元/边界幽灵状态差，dn 为中心连线的法向投影。dq=0 时显式通量严格为零，
+隐式系数取两点值。扩散通量直接计算为 `diffusivity*dq*c`，避免大切向梯度重新投影时的
+相消误差；隐式块冻结并使用同一个 c，包括边界幽灵状态导数。内部面仍使用同一共享通量。
+这会限制反向及过大的非正交修正；强偏斜网格上的任意仿射场不保证完全保持原通量。
+该限制不证明对流、源项及完整耦合更新的正性或收敛性。
+
+原第 45100 步完整 3914184 单元检查点的只读复算中，处于下限且 RHS 为负的
+k/omega 单元数由 67/5 变为 0/0。原场尚未适应该算子，k RMS 从 0.02752 升至 0.05208、
+omega RMS 从 1.1071e7 升至 4.1216e7，不能据此报告收敛改善。
+二维/三维、单/双进程的 80 项 host/CUDA 对照、32 项实际 CUDA 面核检查、
+三进程双 GPU 精确重排续算和显存访问检查均通过。纯 CPU 保持冻结快照，
+完整 GPU 正式续算未因这些测试自动启动。记录位于
+`data/out/GPU/SST_bounded_flux_fix_20261116/validation_summary.json`。
+
+### 2026-11-16 入口湍流参数对比
+
+`suboff_SST_steady_local_restart45300_Tu0p1_dualGPU_20261116.json` 仍从原 GPU 第 45300 步
+完整场恢复，保持双卡三分区、定常局部 CFL=0.5、松弛 0.3 和原六方程收敛目标。
+只改变入口/远场湍流值及未使用检查点时的初始值：
+
+| 参数 | 原值 | 新值 |
+| --- | --- | --- |
+| k | 8.333524834710744e-11 | 1.5e-6 |
+| omega | 0.2295684113865932 | 1.1478420569329661 |
+| 入口湍流强度 | 0.0007453646% | 0.1% |
+| omega × 艇长 / U | 1 | 5 |
+| 名义入口 nu_t/nu=k/(nu*omega) | 0.001 | 3.5999173 |
+
+取艇长 L=4.356、U=1，按 `k=1.5*(Tu*U)^2`、`omega=5*U/L` 换算。
+原始 SST 的低湍流范围使用近似计算域长度；该网格域长约为 5 倍艇长，原 omega×域长/U≈5，
+因此不能因其 omega×艇长/U=1 就宣称原设置错误。
+新值用于参数敏感性研究，不保证解决不收敛，也不代表原参考工况的实测入口条件。
+
+[Spalart–Rumsey 2007](https://ntrs.nasa.gov/api/citations/20070035069/downloads/20070035069.pdf)
+区分入口和艇体附近环境湍流，并讨论低 omega 及衰减可能造成的收敛问题；
+[NASA CFL3D](https://nasa.github.io/CFL3D/Cfl3dv6/cfl3dv6_new.html) 给出湍流强度换算和
+环境参数表；[SUBOFF 风洞实验](https://www.mdpi.com/2077-1312/12/9/1576) 报告约 0.1% 来流强度，
+其偏航、介质和雷诺数条件与本任务不同。
+[TMR SST](https://tmbwg.github.io/turbmodels/sst.html) 给出的壁面系数为 `10*6/0.075=800`，本次保持不变。
+
+模型仍为原 SST1994，没有加入 SST-sust 源项，也未将全域下限提高至环境湍流值。
+新入口值仍会衰减，不能视为全域恒定 Tu=0.1%。导入的旧场不重置；压力、速度和湍流变量均保留。
+GPU 小网格验证覆盖三进程双卡、旧场导入完全一致和新入口条件下的十次定常更新，
+不构成完整 SUBOFF 网格的收敛验证。文献审查及测试记录在
+`data/out/GPU/SUBOFF_SST_turbulence_parameter_study_20261116/`。
+
+### 2026-11-17 UUID 队列与初始化内存核查
+
+`suboff_SST_steady_local_restart45300_Tu0p1_dualGPU_20261117.json` 从相同的完整第 45300 步
+检查点恢复，数值设置与前一天的 Tu=0.1% 配置相同，输出使用新目录。
+前一天的任务在初始化阶段被 OOM 终止，没有完成新的迭代。不能将此终止视为数值发散。
+
+队列支持 `--rank-device-uuids UUID0 UUID1 UUID1`，与 `--rank-devices` 互斥。
+`--device-min-free-mib 28672 53248` 在 UUID 模式按不同 UUID 首次出现的顺序解释；
+每次检查重新解析可见编号，缺卡时状态为 `waiting_for_gpu_access`，不会退化为单卡运行。
+`--minimum-host-free-gib 145` 同时检查账号 cgroup 余量及系统可用主存。
+本地服务上限为 145 GiB，账号当时上限为 160 GiB；这属于资源配置，不保证初始化一定能容纳。
+运行资源、GPU 可见编号和访问权限会变化，应以当前队列状态为准。
+
+初始化仍保留 CPU 网格、重构及工作区，同时构建完整的主存上传包，直到 GPU 构造完成才释放。
+三进程日志中的 `payloadGiB` 合计约 58.27 GiB，仅为部分静态数组的小计，不是实测主存峰值；
+11 月 15 日和 16 日该小计相同，最近的面扩散修改没有新增按网格规模分配的数组。
+独立核查中，三进程各 32 次 resident 构造/销毁及 256 次定常更新后，追踪的设备和锁页分配归零；
+64 单元真实网格的 300 次 CUDA 定常更新在 `memcheck --leak-check full` 下报告零泄漏、零错误。
+主存 Valgrind 的 8 次小网格更新未比 MPI 初始化基线增加泄漏记录。
+这些小规模结果不代替完整网格峰值测量，也不构成收敛或所有异常路径无泄漏的证明。
+原始场、硬件采样、计算日志及本地内存审计记录保存在忽略的 `data/out/GPU/`，不随源码发布。

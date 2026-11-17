@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Compare actual conservative SST/BDF2 GPU fields against a selected CPU build."""
+"""Compare conservative SST/BDF2 fields across independent host reference and CUDA.
+
+The frozen pure-CPU baseline predates the bounded-conductance GPU algorithm.
+An explicit CPU comparison remains available for historical investigations, but
+different spatial algorithms need not produce identical trajectories.
+"""
 import argparse
 import hashlib
 import json
@@ -18,6 +23,8 @@ def main():
     parser.add_argument("--ranks", nargs="+", type=int, default=[1, 2])
     parser.add_argument("--cpu-build", type=Path, default=Path("build"))
     parser.add_argument("--dimension", type=int, choices=[2, 3], default=3)
+    parser.add_argument("--backends", nargs="+", choices=["cpu", "host", "cuda"], default=["host", "cuda"])
+    parser.add_argument("--gpu-device", default="auto")
     parser.add_argument("--modes", nargs="+", default=["wall", "far", "inlet", "outlet", "symmetry", "rusanov", "first", "green_gauss", "cfl_local", "cfl_global", "rho2", "linear_sweeps", "history_BE"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -26,7 +33,7 @@ def main():
     config = root / "cases/acm/GPU/3D/suboff/verify_SST_BDF2.json"
     environment = os.environ.copy()
     environment.pop("DISPLAY", None)
-    environment.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", HWLOC_COMPONENTS="-opencl",
+    environment.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", HWLOC_COMPONENTS="-opencl,-gl,-cuda,-nvml",
                        OMPI_MCA_pml="ob1", OMPI_MCA_btl="self,vader,tcp", OMPI_MCA_btl_tcp_if_include="lo",
                        OMPI_MCA_oob_tcp_if_include="lo")
     summary = []
@@ -72,14 +79,14 @@ def main():
                                   "/timeMarchSettings/maxImplicitIterations": 30,
                                   "/timeMarchSettings/implicitTolerance": 1e-10})
             cpu = None
-            for backend in ["cpu", "host", "cuda"]:
+            for backend in args.backends:
                 directory = output / f"{mode}_np{ranks}" / backend
                 directory.mkdir(parents=True, exist_ok=True)
                 exe = ((root / args.cpu_build / f"app/acm2EQ{args.dimension}D.exe") if backend == "cpu"
                        else root / f"build-gpu-solvers/app/acm2EQ_gpu{args.dimension}D.exe")
-                command = ["mpirun", "-np", str(ranks), str(exe), str(config)]
+                command = ["mpirun", "--bind-to", "none", "-np", str(ranks), str(exe), str(config)]
                 if backend != "cpu":
-                    command += ["--backend", backend, "--gpu-device", "auto"]
+                    command += ["--backend", backend, "--gpu-device", args.gpu_device]
                 for key, value in {**overrides, "/outputSettings/directory": str(directory)}.items():
                     command += ["-k", key, "-v", json.dumps(value)]
                 for attempt in range(3):
@@ -117,13 +124,14 @@ def main():
                         reference = cpu[name][key]
                         maximum = max(maximum, float(np.max(np.abs(values - reference) / np.maximum(1., np.abs(reference)))))
                 entry = dict(mode=mode, dimension=args.dimension, ranks=ranks, backend=backend, maximum_scaled_error=maximum,
+                             reference_backend=args.backends[0],
                              tolerance=5e-8, passed=maximum <= 5e-8, log=str(directory / "run.log"),
                              executable_sha256=hashlib.file_digest(exe.open("rb"), "sha256").hexdigest())
                 summary.append(entry)
                 (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
                 print(json.dumps(entry), flush=True)
                 if not entry["passed"]:
-                    raise RuntimeError(f"GPU/CPU SST/BDF2 comparison failed: {entry}")
+                    raise RuntimeError(f"SST/BDF2 reference comparison failed: {entry}")
 
 
 if __name__ == "__main__":

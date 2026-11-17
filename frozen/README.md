@@ -22,3 +22,8 @@ python3 scripts/verify_cpu_freeze.py
 The `artifacts.sha256` files describe the complete local snapshots; they do not
 imply that the binaries or archives are included in this Git branch. Preserve
 the selected manifests rather than regenerating them from changed CPU sources.
+
+On 2026-11-13 the user authorized synchronizing the SST spatial fixes into CPU/GPU
+using existing GitHub main `dcf4662` as the base. The new snapshot preserves the
+NCFV contents and previous snapshots, and records separately rebuilt CPU binaries.
+This is a local authorized baseline refresh; no GitHub CPU branch is rewritten.

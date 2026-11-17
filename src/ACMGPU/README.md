@@ -263,12 +263,15 @@ Current limits:
 
 - periodic translations are configurable, while rotational periodic setup is not exposed yet;
 - WBAP/CWBAP requires `Variational` reconstruction;
-- the independent turbulence field uses first-order or limited second-order Green-Gauss
-  reconstruction, controlled by `turbulenceSettings.secondOrderReconstruction`, with every
+- the independent turbulence field uses first-order or limited second-order reconstruction;
+  SST uses coordinate-scaled weighted least-squares gradients, while other models retain
+  Green-Gauss gradients, controlled by `turbulenceSettings.secondOrderReconstruction`, with every
   supported flow reconstruction and time integrator;
 - LU-SGS/GMRES uses a first-order frozen face linearization as the implicit operator while the
   nonlinear residual retains the selected high-order reconstruction;
 - unified RANS uses approximate implicit coupling rather than a full turbulence spatial Jacobian;
+- SST prescribed advective inflow states are separate from diffusion ghosts; nonorthogonal
+  diffusion uses bounded non-negative face conductance, without a full source/update positivity guarantee;
 - BDF2 physical dual-time marching accepts laminar flow and all four RANS models;
   physical-time accuracy requires converging both the flow and
   turbulence defects within each physical step;
@@ -389,3 +392,15 @@ Logs expose `innerTarget`, `steadyResidual`, used/next CFL, and reconstruction s
 count/last equation defect. `converged` still refers to the inner target, not to the
 global steady solution. Steady-only controls reject explicit and BDF2 integrators;
 physical dual-time accuracy is unchanged. Both steady controls default to disabled.
+
+The 2026-11-16 independent SST transport uses a shared non-negative face conductance
+bounded by twice the two-point value. Nonorthogonal corrections within that bound
+are retained; unsafe corrections are limited. Both the explicit diffusion flux
+and the frozen-coefficient implicit block use that coefficient. The flux carries
+the cell-state difference times conductance directly, avoiding cancellation when
+reprojecting large tangential gradients on a nearly equal-state face. Exact local
+extremum flags no longer control this face protection. This change is mirrored in
+the resident CUDA solver; the frozen pure-CPU baseline retains its earlier method.
+The limiter can restrict otherwise affine fluxes on strongly skewed meshes and
+does not prove positivity of the full coupled source/time update. State floors
+remain a final safety guard, and convergence still requires the raw residuals.

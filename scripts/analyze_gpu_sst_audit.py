@@ -25,7 +25,7 @@ def main():
            *[f'grad_{q}_x{j}' for q in ['k','omega'] for j in range(3)],
            'local_dt','wall_distance','volume','cell_eddy_viscosity','transport_rate_k','transport_rate_omega',
            'correction_k','correction_omega','relaxed_correction_k','relaxed_correction_omega','wall_faces',
-           *[f'GG_affine_response_{i}{j}' for i in range(3) for j in range(3)]]
+           *[f'gradient_affine_response_{i}{j}' for i in range(3) for j in range(3)]]
     report=dict(version=1,cells=count,input=str(args.input.resolve()),column_names=names)
     square=np.zeros(6);finite=True;floor_negative=[0,0];floor_negative_square=np.zeros(2)
     negative_diagonal=0;nonpositive_det=0;blocked=[0,0]

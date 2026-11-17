@@ -106,12 +106,14 @@ namespace DNDS::ACM
         _vfv->BuildUGrad(_flowGradient, nFlowVariables);
         _vfv->BuildUDof(_limiter, nStoredVariables);
         _vfv->BuildUDof(_flowLimiter, 1);
+        _vfv->BuildUDof(_diffusionExtrema, nStoredVariables);
         _state.setConstant(0.0);
         _rhs.setConstant(0.0);
         _gradient.setConstant(0.0);
         _flowGradient.setConstant(0.0);
         _limiter.setConstant(1.0);
         _flowLimiter.setConstant(1.0);
+        _diffusionExtrema.setConstant(0.0);
     }
 
     template <int gDim>
@@ -119,6 +121,8 @@ namespace DNDS::ACM
     void ACMTurbulenceTransport<gDim>::Initialize()
     {
         BuildWallDistance();
+        if (_turbulenceSettings.model == TurbulenceModel::KOmegaSST)
+            BuildSSTGradientStencils();
         const TurbulenceState initial = _turbulenceSettings.InitialState();
         _state.setConstant(initial);
         _state.trans.startPersistentPull();
@@ -315,6 +319,51 @@ namespace DNDS::ACM
     }
 
     template <int gDim>
+    void ACMTurbulenceTransport<gDim>::BuildSSTGradientStencils()
+    {
+        _sstGradientStencils.resize(static_cast<std::size_t>(_mesh->NumCell()));
+        for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+        {
+            auto &stencil = _sstGradientStencils[cell];
+            const auto center = _vfv->GetCellQuadraturePPhys(cell, -1);
+            const auto faces = _mesh->cell2face[cell];
+            stencil.displacement.clear();
+            for (rowsize j = 0; j < faces.size(); ++j)
+            {
+                const index face = faces[j], other = _mesh->CellFaceOther(cell, face, j);
+                const rowsize side = _mesh->CellIsFaceBack(cell, face, j) ? 0 : 1;
+                Vector3 delta = Vector3::Zero();
+                if (other != UnInitIndex)
+                    delta = ToVector3(_vfv->GetOtherCellPointFromCell(cell, other, face, side,
+                        _vfv->GetCellQuadraturePPhys(other, -1)) - center);
+                else
+                {
+                    const Vector3 normal = ToVector3(_vfv->GetFaceNormFromCell(face, cell, side, -1)) * (side ? -1 : 1);
+                    const Vector3 offset = ToVector3(_vfv->GetFaceQuadraturePPhysFromCell(face, cell, side, -1) - center);
+                    delta = 2 * normal * offset.dot(normal);
+                }
+                stencil.displacement.push_back(delta);
+            }
+            BuildSSTGradientWeights<gDim>(stencil);
+        }
+    }
+
+    template <int gDim>
+    void ACMTurbulenceTransport<gDim>::BoundSSTDiffusionGradient(index left, index right,
+        const Vector3 &normal, TurbulenceGradient &gradient) const
+    {
+        if (_turbulenceSettings.model != TurbulenceModel::KOmegaSST) return;
+        for (int k = 0; k < 2; ++k)
+        {
+            const real derivative = normal.dot(gradient.col(k));
+            const int leftFlags = int(_diffusionExtrema[left](k));
+            const int rightFlags = right == UnInitIndex ? 0 : int(_diffusionExtrema[right](k));
+            const real bounded = SSTBoundNormalDerivative(derivative, leftFlags, rightFlags);
+            gradient.col(k) += normal * ((bounded - derivative) / normal.squaredNorm());
+        }
+    }
+
+    template <int gDim>
     /** @copydoc ACMTurbulenceTransport::EvaluateGradients */
     void ACMTurbulenceTransport<gDim>::EvaluateGradients(TFlowDof &flow, real time)
     {
@@ -332,6 +381,7 @@ namespace DNDS::ACM
                 Eigen::Matrix<real, nFlowVariables, gDim>::Zero();
             Eigen::Matrix<real, nStoredVariables, gDim> turbulenceGradient =
                 Eigen::Matrix<real, nStoredVariables, gDim>::Zero();
+            TurbulenceState lower = _state[iCell], upper = _state[iCell];
             const auto cellFaces = _mesh->cell2face[iCell];
             for (rowsize iCellFace = 0; iCellFace < cellFaces.size(); iCellFace++)
             {
@@ -394,21 +444,25 @@ namespace DNDS::ACM
                                                : thisLength /
                                                      (thisLength + otherLength + verySmallReal);
                 const real area = _vfv->GetFaceArea(iFace);
-                flowGradient +=
-                    (otherFlow - State(flow[iCell])) * interpolation *
-                    area * outward.template head<gDim>().transpose();
-                turbulenceGradient +=
-                    (otherTurbulence - TurbulenceState(_state[iCell])) * interpolation *
-                    area * outward.template head<gDim>().transpose();
+                const Vector3 weight = _turbulenceSettings.model == TurbulenceModel::KOmegaSST
+                    ? _sstGradientStencils[iCell].weight[iCellFace] : Vector3(interpolation * area * outward);
+                flowGradient += (otherFlow - State(flow[iCell])) * weight.template head<gDim>().transpose();
+                turbulenceGradient += (otherTurbulence - TurbulenceState(_state[iCell])) * weight.template head<gDim>().transpose();
+                lower = lower.cwiseMin(otherTurbulence);
+                upper = upper.cwiseMax(otherTurbulence);
             }
-            const real inverseVolume = 1.0 / _vfv->GetCellVol(iCell);
+            const real inverseVolume = _turbulenceSettings.model == TurbulenceModel::KOmegaSST ? 1.0 : 1.0 / _vfv->GetCellVol(iCell);
             _flowGradient[iCell] = (flowGradient * inverseVolume).transpose();
             _gradient[iCell] = (turbulenceGradient * inverseVolume).transpose();
+            for (int k = 0; k < nStoredVariables; ++k)
+                _diffusionExtrema[iCell](k) = SSTExtremaFlags(_state[iCell](k), lower(k), upper(k));
         }
         _flowGradient.trans.startPersistentPull();
         _flowGradient.trans.waitPersistentPull();
         _gradient.trans.startPersistentPull();
         _gradient.trans.waitPersistentPull();
+        _diffusionExtrema.trans.startPersistentPull();
+        _diffusionExtrema.trans.waitPersistentPull();
     }
 
     template <int gDim>
@@ -795,6 +849,7 @@ namespace DNDS::ACM
                             .transpose() /
                         connectionProjection;
 
+                BoundSSTDiffusionGradient(faceToCell[0], faceToCell[1], normal, faceTurbulenceGradient);
                 const Eigen::Matrix<real, 3, 4> faceFlowGradient =
                     CorrectedFaceGradient(
                         flowGradientLeft,
@@ -945,22 +1000,30 @@ namespace DNDS::ACM
                                 .transpose() /
                             connectionProjection;
 
+                    BoundSSTDiffusionGradient(faceToCell[0], faceToCell[1], normal, faceGradient);
                     const TurbulenceState faceTurbulence = ClampTurbulenceState(
                         0.5 * (leftTurbulence + rightTurbulence),
                         _turbulenceSettings);
                     const real normalVelocityLeft = leftFlow.head<3>().dot(normal);
                     const real normalVelocityRight = rightFlow.head<3>().dot(normal);
+                    const bool prescribedInflow = _turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                        faceToCell[1] == UnInitIndex && SSTPrescribedInflow(static_cast<int>(
+                            _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(iFace))));
+                    TurbulenceState advectiveRight = prescribedInflow
+                        ? (normalVelocityLeft < 0 ? _turbulenceSettings.FarFieldState() : leftTurbulence)
+                        : rightTurbulence;
                     TurbulenceState advectiveFlux =
                         0.5 *
                         (normalVelocityLeft * leftTurbulence +
-                         normalVelocityRight * rightTurbulence -
+                         normalVelocityRight * advectiveRight -
                          std::max(std::abs(normalVelocityLeft),
                                   std::abs(normalVelocityRight)) *
-                             (rightTurbulence - leftTurbulence));
+                             (advectiveRight - leftTurbulence));
                     if (_faceVolumeFlux)
                     {
                         const real volumeFlux = _faceVolumeFlux(iFace, iG, time);
-                        advectiveFlux = volumeFlux * (volumeFlux >= 0 ? leftTurbulence : rightTurbulence);
+                        if (prescribedInflow) advectiveRight = _turbulenceSettings.FarFieldState();
+                        advectiveFlux = volumeFlux * (volumeFlux >= 0 ? leftTurbulence : advectiveRight);
                     }
                     if (faceToCell[1] == UnInitIndex)
                     {
@@ -1036,7 +1099,10 @@ namespace DNDS::ACM
             if (flux < 0)
                 upwind = cells[1] == UnInitIndex ? GenerateBoundary(face, left, cells[0])
                                                  : ReconstructTurbulenceState(cells[1], face, 1, point);
-            if (cells[1] == UnInitIndex && boundary == BoundaryType::BCFar &&
+            if (_turbulenceSettings.model == TurbulenceModel::KOmegaSST && cells[1] == UnInitIndex &&
+                flux < 0 && SSTPrescribedInflow(static_cast<int>(boundary)))
+                upwind = _turbulenceSettings.FarFieldState();
+            else if (cells[1] == UnInitIndex && boundary == BoundaryType::BCFar &&
                 ReconstructFlowState(flow, cells[0], face, 0, point).template head<3>().dot(
                     ToVector3(_vfv->GetFaceNorm(face, point))) >= 0)
                 upwind = left;
@@ -1159,6 +1225,7 @@ namespace DNDS::ACM
                 if (std::abs(projection) > 1e-14)
                     gradient += normal * (qRightCell - TurbulenceState(_state[cells[0]]) -
                                            gradient.transpose() * displacement).transpose() / projection;
+                BoundSSTDiffusionGradient(cells[0], cells[1], normal, gradient);
                 const TurbulenceState diffusion = TurbulenceDiffusivity(
                     ClampTurbulenceState(0.5 * (qLeft + qRight), _turbulenceSettings), gradient,
                     _faceWallDistance[static_cast<std::size_t>(face)], _flowSettings.rho0,
@@ -1189,7 +1256,11 @@ namespace DNDS::ACM
                 }
                 if (cells[1] == UnInitIndex)
                 {
-                    contribution.template leftCols<2>() += contribution.template rightCols<2>() * ghostDerivative;
+                    auto boundaryBlock = (contribution.template rightCols<2>() * ghostDerivative).eval();
+                    if (_turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                        SSTPrescribedInflow(static_cast<int>(_boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(face)))))
+                        boundaryBlock -= advRight * ghostDerivative;
+                    contribution.template leftCols<2>() += boundaryBlock;
                     contribution.template rightCols<2>().setZero();
                 }
                 contribution *= _vfv->GetFaceJacobiDet(face, pointIndex);

@@ -69,7 +69,6 @@ namespace ACMResidentDetail
         double lo[6], hi[6], theta[3]{1, 1, 1};
         for (int k = 0; k < 6; ++k)
             lo[k] = hi[k] = k < 4 ? v.u[cell * 4 + k] : v.q[cell * 2 + k - 4];
-        if (v.s.turbulenceSecondOrder)
         {
             for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
             {
@@ -81,6 +80,11 @@ namespace ACMResidentDetail
                     lo[k] = fmin(lo[k], value); hi[k] = fmax(hi[k], value);
                 }
             }
+        }
+        for (int k = 0; k < 2; ++k)
+            v.qExtrema[cell * 2 + k] = SSTExtremaFlags(v.q[cell * 2 + k], lo[k + 4], hi[k + 4]);
+        if (v.s.turbulenceSecondOrder)
+        {
             for (int k = 0; k < 2; ++k) lo[k + 4] = fmax(lo[k + 4], v.s.turbulenceMinimum[k]);
             for (I j = v.cells[cell].begin; j < v.cells[cell].end; ++j)
             {
@@ -180,7 +184,8 @@ namespace ACMResidentDetail
         }
     }
     __device__ void SSTPointData(const View &v, const ResidentACMFace &face, const ResidentACMPoint &point,
-                                 double *ql, double *qr, double *qg, double *fg)
+                                 double *ql, double *qr, double *qg, double *fg,
+                                 double *conductance = nullptr, double *normalDerivativeOut = nullptr)
     {
         double fl[4], fr[4], qmr[2], fmr[4], gqr[6], gfr[12];
         for (int k = 0; k < 2; ++k)
@@ -237,7 +242,34 @@ namespace ACMResidentDetail
             for (int k = 0; k < 12; ++k) gfr[k] = v.flowGradient[face.left * 12 + k];
         }
         CorrectGradient(v.q + face.left * 2, qmr, v.qGradient + face.left * 6, gqr, point.displacement, point.normal, 2, qg);
+        for (int k = 0; k < 2; ++k)
+        {
+            double normalDerivative = 0, normalSquared = 0;
+            for (int d = 0; d < 3; ++d)
+            {
+                normalDerivative += point.normal[d] * qg[k * 3 + d];
+                normalSquared += point.normal[d] * point.normal[d];
+            }
+            double projection = 0;
+            for (int d = 0; d < 3; ++d) projection += point.displacement[d] * point.normal[d];
+            const double jump = qmr[k] - v.q[face.left * 2 + k];
+            const double coefficient = SSTNormalConductance(normalDerivative, jump, projection, normalSquared);
+            if (conductance) conductance[k] = coefficient;
+            const double bounded = jump * coefficient;
+            if (normalDerivativeOut) normalDerivativeOut[k] = bounded;
+            if (normalSquared > 0)
+                for (int d = 0; d < 3; ++d)
+                    qg[k * 3 + d] += point.normal[d] * (bounded - normalDerivative) / normalSquared;
+        }
         CorrectGradient(v.u + face.left * 4, fmr, v.flowGradient + face.left * 12, gfr, point.displacement, point.normal, 4, fg);
+    }
+    __device__ double SSTAdvectiveValue(const View &v, const ResidentACMFace &face, double flux,
+                                       const double *left, const double *right, int variable)
+    {
+        if (flux >= 0) return left[variable];
+        if (face.right < 0 && SSTPrescribedInflow(face.type))
+            return QClamp(v, v.s.turbulenceFar[variable], variable);
+        return right[variable];
     }
     __global__ void SSTEddy(View v)
     {
@@ -266,8 +298,8 @@ namespace ACMResidentDetail
         for (I p = face.begin; p < face.end; ++p)
         {
             const auto &point = v.points[p];
-            double ql[2], qr[2], qg[6], fg[12], mean[2], diffusion[2], rateDiff[2];
-            SSTPointData(v, face, point, ql, qr, qg, fg);
+            double ql[2], qr[2], qg[6], fg[12], mean[2], diffusion[2], rateDiff[2], derivative[2];
+            SSTPointData(v, face, point, ql, qr, qg, fg, nullptr, derivative);
             for (int k = 0; k < 2; ++k) mean[k] = QClamp(v, .5 * (ql[k] + qr[k]), k);
             Diffusivity(v, mean, qg, face.wallDistance, v.eddy[p], diffusion);
             double dn = 0;
@@ -275,11 +307,9 @@ namespace ACMResidentDetail
             const double distance = fmax(fabs(dn), v.s.minimumWallDistance);
             for (int k = 0; k < 2; ++k)
             {
-                double derivative = 0;
-                for (int d = 0; d < 3; ++d) derivative += point.normal[d] * qg[k * 3 + d];
-                double advective = v.volumeFlux[p] * (v.volumeFlux[p] >= 0 ? ql[k] : qr[k]);
+                double advective = v.volumeFlux[p] * SSTAdvectiveValue(v, face, v.volumeFlux[p], ql, qr, k);
                 if (face.right < 0 && (face.type == 2 || face.type == 4 || face.type == 3 || face.type == 9)) advective = 0;
-                total[k] -= point.measure * (advective - diffusion[k] * derivative);
+                total[k] -= point.measure * (advective - diffusion[k] * derivative[k]);
                 double unitGradient[6]{};
                 for (int d = 0; d < 3; ++d) unitGradient[k * 3 + d] = point.normal[d];
                 Diffusivity(v, v.q + face.left * 2, unitGradient, face.wallDistance, v.eddy[p], rateDiff);
@@ -445,7 +475,7 @@ namespace ACMResidentDetail
             rhs[row] /= matrix[row * n + row];
         }
     }
-    // Frozen primitive-scalar face blocks, matching the CPU transport operator.
+    // Frozen primitive-scalar face blocks, matching the independent host reference.
     // Entries are [left k, left omega, right k, right omega]; scalar transport
     // has no cross-variable face terms. Source coupling remains a local 2x2 block.
     __global__ void SSTImplicitFaces(View v, double *blocks, double *advected)
@@ -458,8 +488,8 @@ namespace ACMResidentDetail
             for (I p = face.begin; p < face.end; ++p)
             {
                 const auto &point = v.points[p];
-                double ql[2], qr[2], qg[6], fg[12], mean[2], diffusion[2];
-                SSTPointData(v, face, point, ql, qr, qg, fg);
+                double ql[2], qr[2], qg[6], fg[12], mean[2], diffusion[2], conductance[2];
+                SSTPointData(v, face, point, ql, qr, qg, fg, conductance);
                 for (int k = 0; k < 2; ++k) mean[k] = QClamp(v, .5 * (ql[k] + qr[k]), k);
                 Diffusivity(v, mean, qg, face.wallDistance, v.eddy[p], diffusion);
                 double projection = 0, ghostDerivative = 1;
@@ -483,11 +513,13 @@ namespace ACMResidentDetail
                 const double flux = impermeable ? 0 : v.volumeFlux[p];
                 for (int k = 0; k < 2; ++k)
                 {
-                    const double diff = fabs(projection) > 1e-14 ? diffusion[k] / projection : 0;
+                    const double diff = diffusion[k] * conductance[k];
                     const double left = fmax(flux, 0.) + diff, right = fmin(flux, 0.) - diff;
-                    total[k] += point.measure * (left + (face.right < 0 ? right * ghostDerivative : 0));
+                    const double advectiveDerivative = SSTPrescribedInflow(face.type) ? 0 : 1;
+                    const double boundaryDerivative = fmin(flux, 0.) * advectiveDerivative - diff * ghostDerivative;
+                    total[k] += point.measure * (left + (face.right < 0 ? boundaryDerivative : 0));
                     if (face.right >= 0) total[2 + k] += point.measure * right;
-                    if (!impermeable) upwind[k] += point.measure * (flux >= 0 ? ql[k] : qr[k]);
+                    if (!impermeable) upwind[k] += point.measure * SSTAdvectiveValue(v, face, flux, ql, qr, k);
                 }
                 area += point.measure;
             }
@@ -566,14 +598,8 @@ namespace ACMResidentDetail
             const auto &face = v.faces[link.face];
             for (int k = 0; k < 2; ++k) out[33 + k] += v.qRate[link.face * 2 + k] / v.cells[cell].volume;
             if (link.neighbor < 0 && (face.type == 2 || face.type == 4)) out[39] += 1;
-            double displacement[3]{}, measure = 0;
-            for (I p = face.begin; p < face.end; ++p)
-            {
-                measure += v.points[p].measure;
-                for (int d = 0; d < 3; ++d) displacement[d] += v.points[p].measure * v.points[p].displacement[d] * (link.side ? -1 : 1);
-            }
             for (int d = 0; d < 3; ++d)
-                for (int e = 0; e < 3; ++e) out[40 + d * 3 + e] += link.turbulenceWeight[d] * displacement[e] / measure;
+                for (int e = 0; e < 3; ++e) out[40 + d * 3 + e] += link.turbulenceWeight[d] * link.turbulenceDisplacement[e];
         }
     }
     __global__ void SGSSweep(View v, const I *nodes, I begin, I end, const double *jac, const double *diagonal,
@@ -755,7 +781,7 @@ struct ACMSSTWorkspace
     ResidentDetail::Halo &halo;
     MPI_Comm comm;
     I globalOwned;
-    ResidentDetail::Buffer<double> q, qGradient, flowGradient, qLimiter, eddy, volumeFlux, qFlux, qRate, qRhs;
+    ResidentDetail::Buffer<double> q, qGradient, flowGradient, qLimiter, qExtrema, eddy, volumeFlux, qFlux, qRate, qRhs;
     ResidentDetail::Buffer<double> jac, diagonal, qDiagonal, increment, qIncrement, linearResidual, qLinearResidual, work;
     ResidentDetail::Buffer<double> qJac, kineticJac, advected, qWork, qWorkRhs;
     ResidentDetail::Buffer<double> previous, previousPrevious, qPrevious, qPreviousPrevious, norms;
@@ -781,6 +807,7 @@ struct ACMSSTWorkspace
             q.Upload(data.initialTurbulence);
             qPrevious.Upload(data.initialTurbulence); qPreviousPrevious.Upload(data.initialTurbulence);
             qGradient.Resize(v.count * 6); flowGradient.Resize(v.count * 12); qLimiter.Resize(v.count * 3);
+            qExtrema.Resize(v.count * 2);
             eddy.Resize(data.points.size()); volumeFlux.Resize(data.points.size());
             qFlux.Resize(v.faceCount * 2); qRate.Resize(v.faceCount * 2); qRhs.Resize(v.count * 2);
             qDiagonal.Resize(v.owned * 4); qIncrement.Resize(v.count * 2); qLinearResidual.Resize(v.count * 2);
@@ -788,6 +815,7 @@ struct ACMSSTWorkspace
             kineticJac.Resize(v.faceCount * 8);
             qWork.Resize(v.count * 2); qWorkRhs.Resize(v.count * 2);
             v.q = q.data; v.qGradient = qGradient.data; v.flowGradient = flowGradient.data; v.qLimiter = qLimiter.data;
+            v.qExtrema = qExtrema.data;
             v.eddy = eddy.data; v.volumeFlux = volumeFlux.data; v.qFlux = qFlux.data; v.qRate = qRate.data; v.qRhs = qRhs.data;
         }
         jac.Resize(v.faceCount * 32); diagonal.Resize(v.owned * 16);
@@ -835,6 +863,7 @@ struct ACMSSTWorkspace
         halo.Pull(v.qGradient, 6); halo.Pull(v.flowGradient, 12);
         if (v.owned) SSTLimiter<<<Blocks(v.owned), 128>>>(v);
         halo.Pull(v.qLimiter, 3);
+        halo.Pull(v.qExtrema, 2);
         if (v.faceCount) SSTEddy<<<Blocks(v.faceCount), 128>>>(v);
         Check(cudaGetLastError(), "SST prepare kernels");
     }

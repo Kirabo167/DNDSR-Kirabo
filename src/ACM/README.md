@@ -254,12 +254,15 @@ Current limits:
 
 - periodic translations are configurable, while rotational periodic setup is not exposed yet;
 - WBAP/CWBAP requires `Variational` reconstruction;
-- the independent turbulence field uses first-order or limited second-order Green-Gauss
-  reconstruction, controlled by `turbulenceSettings.secondOrderReconstruction`, with every
+- the independent turbulence field uses first-order or limited second-order reconstruction;
+  SST uses coordinate-scaled weighted least-squares gradients, while other models retain
+  Green-Gauss gradients, controlled by `turbulenceSettings.secondOrderReconstruction`, with every
   supported flow reconstruction and time integrator;
 - LU-SGS/GMRES uses a first-order frozen face linearization as the implicit operator while the
   nonlinear residual retains the selected high-order reconstruction;
 - unified RANS uses approximate implicit coupling rather than a full turbulence spatial Jacobian;
+- SST prescribed advective inflow states are separate from diffusion ghosts; nonorthogonal
+  diffusion is constrained at stencil extrema, without a full source/update positivity guarantee;
 - BDF2 physical dual-time marching accepts laminar flow and all four RANS models;
   physical-time accuracy requires converging both the flow and
   turbulence defects within each physical step;

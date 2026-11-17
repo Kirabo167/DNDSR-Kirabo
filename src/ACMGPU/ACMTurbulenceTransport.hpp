@@ -17,10 +17,12 @@
 #include "ACMBDF2.hpp"
 #include "ACMTime.hpp"
 #include "ACMTurbulence.hpp"
+#include "ACMSSTSpatial.hpp"
 
 #include "CFV/VariationalReconstruction.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "GPU/ResidentACM.hpp"
+#include "GPU/SSTSpatial.hpp"
 
 #include <vector>
 #include <functional>
@@ -172,6 +174,12 @@ namespace DNDS::ACMGPU
         /** @brief Positive cell wall distance used by the closure. */
         real CellWallDistance(index cell) const { return _cellWallDistance.at(static_cast<std::size_t>(cell)); }
 
+        /** @brief Read-only diagnostics of the prepared SST spatial operator. */
+        VelocityGradient InspectCellVelocityGradient(index cell) const { return CellVelocityGradient(cell); }
+        TurbulenceGradient InspectCellTurbulenceGradient(index cell) const { return CellTurbulenceGradient(cell); }
+        const SSTGradientStencil &InspectCellGradientStencil(index cell) const
+        { return _sstGradientStencils.at(static_cast<std::size_t>(cell)); }
+
         /** @brief Internal Jacobian probes retain the current scalar/flow limiter branches. */
         void SetLimiterFrozen(bool value) { _limiterFrozen = value; InvalidatePreparation(); }
 
@@ -243,6 +251,8 @@ namespace DNDS::ACMGPU
         TFlowGradient _flowGradient;                 ///< Current flow gradients for production/mu_t.
         TLimiter _limiter;                           ///< Componentwise face-reconstruction limiter.
         TFlowLimiter _flowLimiter;                   ///< Shared limiter for all reconstructed flow entries.
+        TLimiter _diffusionExtrema;                  ///< SST stencil minimum/maximum flags, including ghosts.
+        std::vector<SSTGradientStencil> _sstGradientStencils; ///< Static least-squares geometry for owned cells.
         std::vector<real> _cellWallDistance;         ///< One positive value per owned/ghost cell.
         std::vector<real> _faceWallDistance;         ///< One positive value per process face.
         std::vector<std::vector<real>> _faceEddyViscosity; ///< Frozen values at face quadrature points.
@@ -295,8 +305,13 @@ namespace DNDS::ACMGPU
          */
         void BuildWallDistance();
 
+        void BuildSSTGradientStencils();
+
+        TurbulenceState BoundSSTDiffusionGradient(index left, const TurbulenceState &right,
+            const Vector3 &displacement, const Vector3 &normal, TurbulenceGradient &gradient) const;
+
         /**
-         * @brief Compute Green--Gauss gradients for flow and turbulence fields.
+         * @brief Compute linear-exact least-squares SST gradients (legacy Green--Gauss for other models).
          * @param flow Current flow state with valid ghost values.
          * @param time Current boundary-evaluation time.
          */

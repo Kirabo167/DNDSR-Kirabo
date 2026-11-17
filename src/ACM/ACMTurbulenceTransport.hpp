@@ -17,6 +17,7 @@
 #include "ACMBDF2.hpp"
 #include "ACMTime.hpp"
 #include "ACMTurbulence.hpp"
+#include "ACMSSTSpatial.hpp"
 
 #include "CFV/VariationalReconstruction.hpp"
 #include "Geom/Mesh/Mesh.hpp"
@@ -241,6 +242,8 @@ namespace DNDS::ACM
         TFlowGradient _flowGradient;                 ///< Current flow gradients for production/mu_t.
         TLimiter _limiter;                           ///< Componentwise face-reconstruction limiter.
         TFlowLimiter _flowLimiter;                   ///< Shared limiter for all reconstructed flow entries.
+        TLimiter _diffusionExtrema;                  ///< SST stencil minimum/maximum flags, including ghosts.
+        std::vector<SSTGradientStencil> _sstGradientStencils; ///< Static least-squares geometry for owned cells.
         std::vector<real> _cellWallDistance;         ///< One positive value per owned/ghost cell.
         std::vector<real> _faceWallDistance;         ///< One positive value per process face.
         std::vector<std::vector<real>> _faceEddyViscosity; ///< Frozen values at face quadrature points.
@@ -293,8 +296,13 @@ namespace DNDS::ACM
          */
         void BuildWallDistance();
 
+        void BuildSSTGradientStencils();
+
+        void BoundSSTDiffusionGradient(index left, index right, const Vector3 &normal,
+                                       TurbulenceGradient &gradient) const;
+
         /**
-         * @brief Compute Green--Gauss gradients for flow and turbulence fields.
+         * @brief Compute linear-exact least-squares SST gradients (legacy Green--Gauss for other models).
          * @param flow Current flow state with valid ghost values.
          * @param time Current boundary-evaluation time.
          */

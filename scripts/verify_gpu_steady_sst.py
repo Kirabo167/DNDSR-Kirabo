@@ -26,7 +26,7 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     executable = root/'build-gpu-solvers/app/acm2EQ_gpu3D.exe'
     case = root/'cases/acm/GPU/3D/suboff/verify_SST_BDF2.json'
-    environment = dict(os.environ, OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', HWLOC_COMPONENTS='-opencl',
+    environment = dict(os.environ, OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', HWLOC_COMPONENTS='-opencl,-gl,-cuda,-nvml',
                        OMPI_MCA_pml='ob1', OMPI_MCA_btl='self,vader,tcp', OMPI_MCA_btl_tcp_if_include='lo',
                        OMPI_MCA_oob_tcp_if_include='lo')
     environment.pop('DISPLAY', None)

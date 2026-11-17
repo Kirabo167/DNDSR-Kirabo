@@ -1,0 +1,34 @@
+{
+  "date": "2026-11-13",
+  "created_utc": "2026-11-13T06:01:58.215034+00:00",
+  "upstream_repository": "https://github.com/Kirabo167/DNDSR-Kirabo",
+  "upstream_main": "dcf466279482a59a663dfe35a8d07baeb39f4a9d",
+  "previous_snapshot": "ACM_NCFV_CPU_20261110_dcf4662",
+  "source_files": 64,
+  "scope": "User-authorized local SST spatial fixes based on existing main dcf4662: separate advective inflow/diffusion ghosts, scaled least-squares gradients and conservative diffusion extremum protection. Preserve NCFV sources and validated NCFV binaries.",
+  "validation": {
+    "cpu_ctests_passed": 16,
+    "cpu_host_cuda": {
+      "2D": {
+        "records": 60,
+        "maximum_scaled_error": 5.717648576819556e-15
+      },
+      "3D": {
+        "records": 60,
+        "maximum_scaled_error": 1.942890293094024e-15
+      }
+    },
+    "cpp_spatial_test_cases": 4,
+    "cpp_spatial_assertions": 1016,
+    "cpu_executable_cuda_dependency": false
+  },
+  "binary_origins": {
+    "acm2D.exe": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/build/app/acm2D.exe",
+    "acm3D.exe": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/build/app/acm3D.exe",
+    "acm2EQ2D.exe": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/build/app/acm2EQ2D.exe",
+    "acm2EQ3D.exe": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/build/app/acm2EQ3D.exe",
+    "ncfv_euler2D.exe": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/frozen/ACM_NCFV_CPU_20261110_c62e501/bin/ncfv_euler2D.exe",
+    "ncfv_euler3D.exe": "/mnt/ssd-SATARAID5/home/mrz/projects/DNDSR/frozen/ACM_NCFV_CPU_20261110_c62e501/bin/ncfv_euler3D.exe"
+  },
+  "publication": "No commit or push requested; no GitHub branch is modified."
+}

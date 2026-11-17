@@ -35,6 +35,7 @@ def main():
 
     harness='''#include <cuda_runtime.h>
 #include <cmath>
+#include "GPU/SSTSpatial.hpp"
 using I = long long;
 struct Cell { double wallDistance; };
 struct Settings {
@@ -59,21 +60,22 @@ __global__ void Probe(const double *input, double *output) {
     const double left[1]{1e-14},right[1]{1+1e-14},gradient[3]{0,2,0};
     const double displacement[3]{1,1,0},normal[3]{1,0,0};
     CorrectGradient(left,right,gradient,gradient,displacement,normal,1,output+9);
+    output[12]=(right[0]-left[0])*DNDS::GPU::SSTNormalConductance(output[9],right[0]-left[0],1,1);
 }
 extern "C" int probe(int device, const double *input, double *output) {
     cudaError_t error=cudaSetDevice(device); if(error) return int(error);
     double *a=nullptr,*b=nullptr;
     error=cudaMalloc(&a,21*sizeof(double));if(error) return int(error);
-    error=cudaMalloc(&b,12*sizeof(double));if(error){cudaFree(a);return int(error);}
+    error=cudaMalloc(&b,13*sizeof(double));if(error){cudaFree(a);return int(error);}
     error=cudaMemcpy(a,input,21*sizeof(double),cudaMemcpyHostToDevice);
-    if(!error){Probe<<<1,1>>>(a,b);error=cudaMemcpy(output,b,12*sizeof(double),cudaMemcpyDeviceToHost);}
+    if(!error){Probe<<<1,1>>>(a,b);error=cudaMemcpy(output,b,13*sizeof(double),cudaMemcpyDeviceToHost);}
     cudaFree(a);cudaFree(b);return int(error);
 }
 '''
     src=args.output/'closure_probe.cu';lib=args.output/'closure_probe.so'
     src.write_text(harness)
     compiler=Path('/usr/local/cuda-13.2/bin/nvcc')
-    subprocess.run([str(compiler),'-shared','-Xcompiler','-fPIC','-arch=sm_80','--fmad=false',str(src),'-o',str(lib)],check=True)
+    subprocess.run([str(compiler),'-shared','-Xcompiler','-fPIC','-arch=sm_80','--fmad=false','-I'+str(root/'src'),str(src),'-o',str(lib)],check=True)
     dll=ctypes.CDLL(str(lib.resolve()))
     dll.probe.argtypes=[ctypes.c_int,np.ctypeslib.ndpointer(dtype=np.float64,flags='C_CONTIGUOUS'),np.ctypeslib.ndpointer(dtype=np.float64,flags='C_CONTIGUOUS')]
     cases=[]
@@ -81,7 +83,7 @@ extern "C" int probe(int device, const double *input, double *output) {
     def check(name,gradient,distance,expected,cross=0):
         value=np.zeros(21);value[:2]=[.2,4.];value[2:14]=np.asarray(gradient).ravel();value[20]=distance
         if cross: value[14]=1.;value[17]=cross
-        output=np.zeros(12)
+        output=np.zeros(13)
         status=dll.probe(args.gpu_device,value,output)
         if status: raise RuntimeError(f'CUDA probe failed: {status}')
         errors={}
@@ -102,9 +104,11 @@ extern "C" int probe(int device, const double *input, double *output) {
     normal_derivative=cases[-1]['output'][9]
     if abs(normal_derivative+1)>1e-12:
         raise ValueError('Nonorthogonal diffusion probe did not reproduce the current operator')
-    cases.append(dict(case='nonorthogonal_diffusion_counterexample_reproduced',passed=True,
-                      satisfies_discrete_maximum_principle=False,normal_derivative=normal_derivative,
-                      explanation='Left state is a strict minimum. The corrected normal gradient is negative, so diffusion can decrease it further.'))
+    bounded=cases[-1]['output'][12]
+    if abs(bounded)>1e-12: raise ValueError('SST bounded face conductance failed')
+    cases.append(dict(case='nonorthogonal_diffusion_bounded_conductance',passed=True,
+                      raw_normal_derivative=normal_derivative,bounded_normal_derivative=bounded,
+                      explanation='The production non-negative face conductance removes the anti-diffusive flux without an exact-extremum switch.'))
     (args.output/'summary.json').write_text(json.dumps(cases,indent=2)+'\n')
     print(json.dumps([dict(case=x['case'],passed=x['passed']) for x in cases],indent=2))
 

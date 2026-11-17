@@ -330,6 +330,17 @@ namespace DNDS::ACMGPU
         }
         for (index face = 0; face < _mesh->NumFaceProc(); ++face)
             data.faces[face].wallDistance = _faceWallDistance[face];
+        for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+        {
+            const auto &stencil = _sstGradientStencils[cell];
+            const auto &entry = data.cells[cell];
+            for (GPU::DeviceIndex j = entry.begin; j < entry.end; ++j)
+                for (int d = 0; d < 3; ++d)
+                {
+                    data.links[j].turbulenceWeight[d] = stencil.weight[j - entry.begin](d);
+                    data.links[j].turbulenceDisplacement[d] = stencil.displacement[j - entry.begin](d);
+                }
+        }
     }
 
     template <ACMModel model>
@@ -338,11 +349,14 @@ namespace DNDS::ACMGPU
         if (const char *audit = std::getenv("DNDS_GPU_SST_HOST_AUDIT_FILE"))
         {
             DNDS_check_throw_info(nTurbulence == 2, "Host SST audit requires two turbulence equations");
-            DNDS_check_throw_info(_mpi.size == 1, "Host snapshot audit currently requires one MPI rank");
             EvaluateRHS(_rhs, _physicalTime);
             nlohmann::ordered_json report;
             report["backend"] = "host reference, one spatial residual evaluation, no state advance";
             report["cells"] = GetMesh()->NumCell();
+            report["global_cells"] = GetMesh()->NumCellGlobal();
+            report["rank"] = _mpi.rank;
+            report["ranks"] = _mpi.size;
+            report["vtk_cell_offset"] = GetMesh()->vtkCellOffset;
             std::array<real, 6> square{};
             std::array<std::vector<index>, 6> worst;
             std::array<index, 2> floorCount{}, floorNegative{};
@@ -352,8 +366,44 @@ namespace DNDS::ACMGPU
                 const auto center = GetReconstruction()->GetCellQuadraturePPhys(cell, -1);
                 std::array<real, 6> state{}, rhs{};
                 for (int k = 0; k < 6; ++k) { state[k] = _u[cell](k); rhs[k] = _rhs[cell](k); }
-                return nlohmann::ordered_json{{"cell", cell}, {"center", {center(0), center(1), center(2)}},
-                    {"state", state}, {"rhs", rhs}, {"volume", GetReconstruction()->GetCellVol(cell)}};
+                const auto transport = _flowSolver.GetTurbulenceTransport();
+                const auto source = transport->CellSource(cell);
+                const auto flowGradient = transport->InspectCellVelocityGradient(cell);
+                const auto qGradient = transport->InspectCellTurbulenceGradient(cell);
+                const auto &stencil = transport->InspectCellGradientStencil(cell);
+                nlohmann::ordered_json fg = nlohmann::ordered_json::array(),
+                    qg = nlohmann::ordered_json::array(), dx = nlohmann::ordered_json::array(),
+                    weight = nlohmann::ordered_json::array();
+                for (int i = 0; i < 3; ++i)
+                {
+                    fg.push_back({flowGradient(i, 0), flowGradient(i, 1), flowGradient(i, 2)});
+                    qg.push_back({qGradient(i, 0), qGradient(i, 1)});
+                }
+                for (std::size_t j = 0; j < stencil.displacement.size(); ++j)
+                {
+                    const auto &d = stencil.displacement[j], &w = stencil.weight[j];
+                    dx.push_back({d(0), d(1), d(2)});
+                    weight.push_back({w(0), w(1), w(2)});
+                }
+                nlohmann::ordered_json faces = nlohmann::ordered_json::array();
+                const auto ids = GetMesh()->cell2face[cell];
+                for (rowsize j = 0; j < ids.size(); ++j)
+                {
+                    const index face = ids[j], other = GetMesh()->CellFaceOther(cell, face, j);
+                    faces.push_back({{"face", face}, {"neighbor_local", other},
+                        {"zone", GetMesh()->GetFaceZone(face)}});
+                }
+                return nlohmann::ordered_json{{"cell", cell}, {"rank", _mpi.rank},
+                    {"vtk_cell", GetMesh()->vtkCellOffset + cell},
+                    {"center", {center(0), center(1), center(2)}},
+                    {"state", state}, {"rhs", rhs}, {"volume", GetReconstruction()->GetCellVol(cell)},
+                    {"wall_distance", transport->CellWallDistance(cell)},
+                    {"source", {source(0), source(1)}},
+                    {"flow_gradient", fg}, {"turbulence_gradient", qg},
+                    {"gradient_stencil_displacement", dx}, {"gradient_stencil_weight", weight},
+                    {"transport", {rhs[4] / _configuration.acmSettings.rho0 - source(0),
+                                   rhs[5] / _configuration.acmSettings.rho0 - source(1)}},
+                    {"faces", faces}};
             };
             for (index cell = 0; cell < GetMesh()->NumCell(); ++cell)
             {
@@ -379,20 +429,26 @@ namespace DNDS::ACMGPU
                         }
                     }
             }
+            std::array<real, 6> globalSquare{};
+            MPI::Allreduce(square.data(), globalSquare.data(), 6, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
             for (int k = 0; k < 6; ++k)
             {
-                report["equation_rms"].push_back(std::sqrt(square[k] / GetMesh()->NumCell()));
+                report["equation_square_sum"].push_back(square[k]);
+                report["equation_rms"].push_back(std::sqrt(globalSquare[k] / GetMesh()->NumCellGlobal()));
                 report["worst_cells"][k] = nlohmann::ordered_json::array();
                 for (index cell : worst[k]) report["worst_cells"][k].push_back(sample(cell));
             }
             report["floor_cells"] = floorCount;
             report["floor_negative_rhs_cells"] = floorNegative;
+            report["floor_negative_rhs_square_sum"] = floorNegativeSquare;
             for (int k = 0; k < 2; ++k) report["floor_negative_rhs_rms"].push_back(std::sqrt(floorNegativeSquare[k] / GetMesh()->NumCell()));
-            std::ofstream stream(audit);
+            const std::string filename = _mpi.size == 1 ? std::string(audit) :
+                fmt::format("{}.rank{:05d}.json", audit, _mpi.rank);
+            std::ofstream stream(filename);
             DNDS_check_throw_info(bool(stream), "Cannot open host snapshot audit output");
             stream << report.dump(2) << std::endl;
             DNDS_check_throw_info(bool(stream), "Cannot write host snapshot audit output");
-            log() << "Host SST snapshot audit saved without advancing state: " << audit << std::endl;
+            log() << "Host SST snapshot audit saved without advancing state: " << filename << std::endl;
             return true;
         }
         return false;

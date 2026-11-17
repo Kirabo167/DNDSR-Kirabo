@@ -511,10 +511,14 @@ The user froze the current CPU versions. Preserve `src/ACM`, `src/NCFV`,
 an update before GPU implementation and on 2026-11-10 explicitly authorized
 synchronizing CPU/GPU with GitHub main. The user then authorized syncing
 `c62e501` into the local CPU contents and GPU implementation, publishing only
-to `GPUACM`. The active baseline is now `c62e501` plus preserved NCFV changes;
+to `GPUACM`. On 2026-11-13 the user explicitly authorized using existing
+GitHub main `dcf4662` as the baseline and synchronizing the SST spatial fixes
+to CPU/GPU: separate advective inflow states, scaled least-squares gradients,
+and extremum-limited nonorthogonal diffusion. The active CPU baseline includes
+these local fixes plus preserved NCFV changes;
 the pure-CPU GitHub branch must not be pushed or overwritten by this workflow.
 The subsequent documentation-only `dcf4662` update is also synchronized locally;
-the active snapshot records it while reusing the validated `c62e501` binaries.
+the newer active snapshot also records the rebuilt and validated SST fixes.
 Its snapshot is selected by
 `frozen/active_cpu_snapshot.txt`; the earlier `ACM_NCFV_CPU_20261103` snapshot
 remains available as history.

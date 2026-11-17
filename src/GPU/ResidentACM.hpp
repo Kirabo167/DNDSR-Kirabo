@@ -28,6 +28,7 @@ namespace DNDS::GPU
         DeviceIndex neighbor = -1, face = 0, coupling = 0, boundaryBegin = 0, boundaryEnd = 0;
         int side = 0;
         double rotation[9]{}, meanWeight[ACMMaximumModes]{}, gradientWeight[3]{}, turbulenceWeight[3]{};
+        double turbulenceDisplacement[3]{};
     };
     struct ResidentACMPoint
     {
