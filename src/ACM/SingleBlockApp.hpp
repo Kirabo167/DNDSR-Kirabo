@@ -13,7 +13,7 @@
 
 #include "ACMSolver.hpp"
 
-#include <argparse.hpp>
+#include "DNDS/Config/SolverArguments.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -54,14 +54,7 @@ namespace DNDS::ACM
 
         argparse::ArgumentParser parser(GetSingleBlockAppName(model), DNDS_VERSION_STRING);
         parser.add_argument("config").default_value("");
-        parser.add_argument("-k", "--overwrite_key")
-            .append()
-            .default_value<std::vector<std::string>>({});
-        parser.add_argument("-v", "--overwrite_value")
-            .append()
-            .default_value<std::vector<std::string>>({});
-        parser.add_argument("--emit-schema").flag().default_value(false);
-        parser.add_argument("--check-config").flag().default_value(false);
+        DNDS::Config::AddSolverArguments(parser);
 
         try
         {

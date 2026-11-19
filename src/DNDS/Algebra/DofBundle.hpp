@@ -100,6 +100,17 @@ namespace DNDS::Algebra
         }
         DofField<real> &Block(const std::string &name) { return _blocks[Find(name)].second; }
         const DofField<real> &Block(const std::string &name) const { return _blocks[Find(name)].second; }
+        /// Physical fields in insertion order. Pair with Name(i) when a label is needed.
+        DofField<real> &BlockAt(index iBlock)
+        {
+            DNDS_check_throw_info(iBlock >= 0 && iBlock < BlockNumber(), "DOF block index out of range");
+            return _blocks[iBlock].second;
+        }
+        const DofField<real> &BlockAt(index iBlock) const
+        {
+            DNDS_check_throw_info(iBlock >= 0 && iBlock < BlockNumber(), "DOF block index out of range");
+            return _blocks[iBlock].second;
+        }
         const std::string &Name(index iBlock) const
         {
             DNDS_check_throw_info(iBlock >= 0 && iBlock < BlockNumber(), "DOF block index out of range");

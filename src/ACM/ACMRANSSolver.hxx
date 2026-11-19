@@ -5,6 +5,7 @@
 
 #include "ACMRANSSolver.hpp"
 #include "ACMLinear.hpp"
+#include "ACMResidualNorms.hpp"
 
 #include <cmath>
 #include <filesystem>
@@ -253,22 +254,7 @@ namespace DNDS::ACM
     template <ACMModel model>
     TimeStepReport ACMSolver<model, true>::NormReport(const TDof &residual) const
     {
-        std::array<real, 6> local{}, global{};
-        for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
-            for (int variable = 0; variable < nVarsFixed; variable++)
-                local[variable] += residual[cell](variable) * residual[cell](variable);
-        MPI::Allreduce(local.data(), global.data(), nVarsFixed, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
-        TimeStepReport report;
-        const real count = std::max<real>(1, GetMesh()->NumCellGlobal());
-        real flowSquare = 0, turbulenceSquare = 0;
-        for (int variable = 0; variable < nVarsFixed; variable++)
-        {
-            report.equationDefectNorms[variable] = std::sqrt(global[variable] / count);
-            (variable < 4 ? flowSquare : turbulenceSquare) += global[variable];
-        }
-        report.finalDefectNorm = std::sqrt(flowSquare / (4 * count));
-        report.turbulenceDefectNorm = std::sqrt(turbulenceSquare / (nTurbulence * count));
-        return report;
+        return MeasureResidualNorms<nVarsFixed>(residual, GetMesh()->NumCell(), GetMesh()->NumCellGlobal(), _mpi.comm);
     }
 
     template <ACMModel model>

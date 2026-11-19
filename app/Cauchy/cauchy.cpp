@@ -4,7 +4,8 @@
 #include "DNDS/MPI/CollectiveStage.hpp"
 #include "DNDS/MPI/Failure.hpp"
 #include "DNDS/OMP.hpp"
-#include "argparse.hpp"
+#include "DNDS/Config/SolverArguments.hpp"
+#include "DNDS/Config/JsonOverrides.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -29,23 +30,10 @@ static int Run(int argc, char **argv, double started)
                 .default_value(std::string{})
                 .help("Cauchy JSON input; paths are relative to the working directory");
             arguments.add_argument("-h", "--help").flag();
-            arguments.add_argument("--check-config")
-                .flag()
-                .help("Print resolved configuration without constructing a mesh");
-            arguments.add_argument("--emit-schema")
-                .flag()
-                .help("Print the canonical raw-input JSON schema without reading a case");
+            DNDS::Config::AddSolverArguments(arguments);
             arguments.add_argument("--restart")
                 .default_value(std::string{})
                 .help("Restart from a Cauchy checkpoint");
-            arguments.add_argument("-k", "--overwrite_key")
-                .append()
-                .default_value<std::vector<std::string>>({})
-                .help("Resolved-config JSON pointer to override; pair with -v, may repeat");
-            arguments.add_argument("-v", "--overwrite_value")
-                .append()
-                .default_value<std::vector<std::string>>({})
-                .help("JSON value for the corresponding -k (quote JSON strings)");
             DNDS::MPI::LocalStage(mpi, [&]
                                   { arguments.parse_args(argc, argv); });
             if (arguments.get<bool>("--help"))
@@ -76,12 +64,12 @@ static int Run(int argc, char **argv, double started)
                 stream >> input;
                 const auto keys = arguments.get<std::vector<std::string>>("--overwrite_key");
                 const auto values = arguments.get<std::vector<std::string>>("--overwrite_value");
-                DNDS_check_throw_info(keys.size() == values.size(), "overwrite keys and values must be paired");
-                for (DNDS::index i = 0; i < DNDS::index(keys.size()); ++i)
-                {
-                    DNDS_check_throw_info(!keys[i].empty() && keys[i][0] == '/', "overwrite keys must be nonempty JSON pointers");
-                    overrides.push_back({keys[i], DNDS::Cauchy::Json::parse(values[i])});
-                } });
+                DNDS::Config::ForEachJsonOverride(keys, values, DNDS::Config::OverrideSyntax::Json,
+                    [&](const auto &pointer, DNDS::Cauchy::Json value)
+                    {
+                        DNDS_check_throw_info(!pointer.empty(), "overwrite keys must be nonempty JSON pointers");
+                        overrides.push_back({pointer.to_string(), std::move(value)});
+                    }); });
             auto config = DNDS::Cauchy::SimulationConfig::ResolveCollective(
                 input, mpi.comm, overrides);
             if (checkConfig)

@@ -40,6 +40,8 @@ API reference remain available at
 | `ACMVariable` | Variable-density artificial-compressibility flow solver |
 | `NCFV` | Third-order Node Center finite-volume solver with efficient differential and traditional quadrature modes |
 
+The [module interface guide (中文)](docs/architecture/SolverInterfaces_zh.md) traces the two solver paths and describes how a new module can reuse case overrides, field access and distributed residual diagnostics.
+
 ### Main capabilities
 
 - Compressible Euler and laminar/RANS Navier-Stokes calculations in 2D and 3D.

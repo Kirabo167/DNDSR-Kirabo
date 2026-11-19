@@ -10,6 +10,7 @@
  * @date 2026-09-01
  * @note Modifier: Runzhi Ma.
  */
+#include "ACMCommon/CaseInput.hpp"
 #include "ACMBC.hpp"
 #include "ACMBDF2.hpp"
 #include "ACMConfig.hpp"
@@ -1142,36 +1143,7 @@ namespace DNDS::ACM
         const std::vector<std::string> &overwriteKeys,
         const std::vector<std::string> &overwriteValues)
     {
-        DNDS_check_throw_info(overwriteKeys.size() == overwriteValues.size(),
-                              "ACM overwrite keys and values have different lengths");
-
-        std::ifstream input(jsonName);
-        DNDS_check_throw_info(input.good(), "ACM case configuration file does not exist: " + jsonName);
-        nlohmann::ordered_json resolved = nlohmann::ordered_json::parse(input, nullptr, true, true);
-        if (resolved.at("timeMarchSettings").contains("gmresRelativeTolerance"))
-        {
-            auto &timeMarch = resolved.at("timeMarchSettings");
-            DNDS_check_throw_info(!timeMarch.contains("linearRelativeTolerance") ||
-                                      timeMarch.at("linearRelativeTolerance") == timeMarch.at("gmresRelativeTolerance"),
-                                  "Specify only linearRelativeTolerance; the legacy gmresRelativeTolerance conflicts");
-            timeMarch["linearRelativeTolerance"] = timeMarch.at("gmresRelativeTolerance");
-            timeMarch.erase("gmresRelativeTolerance");
-        }
-
-        for (std::size_t i = 0; i < overwriteKeys.size(); i++)
-        {
-            const std::string keyName = overwriteKeys[i] == "/timeMarchSettings/gmresRelativeTolerance"
-                                            ? "/timeMarchSettings/linearRelativeTolerance" : overwriteKeys[i];
-            const nlohmann::ordered_json::json_pointer key(keyName);
-            try
-            {
-                resolved[key] = nlohmann::ordered_json::parse(overwriteValues[i]);
-            }
-            catch (const nlohmann::ordered_json::parse_error &)
-            {
-                resolved[key] = overwriteValues[i];
-            }
-        }
+        auto resolved = ACMCommon::ReadCaseDocument(jsonName, overwriteKeys, overwriteValues);
 
         // Keep pre-BDF2 case files valid without editing them in place.  The
         // normalized configuration and emitted schema still expose this key,

@@ -24,6 +24,7 @@
  */
 #pragma once
 
+#include "DNDS/Config/JsonOverrides.hpp"
 #include <iomanip>
 #include <functional>
 #include <tuple>
@@ -1046,53 +1047,14 @@ namespace DNDS::Euler
                     auto gSettingAdd = nlohmann::ordered_json::parse(fIn, nullptr, true, true);
                     gSetting.merge_patch(gSettingAdd);
                 }
-                DNDS_assert(overwriteKeys.size() == overwriteValues.size());
-                for (size_t i = 0; i < overwriteKeys.size(); i++)
-                {
-
-                    auto key = nlohmann::ordered_json::json_pointer(overwriteKeys[i].c_str());
-                    try
+                DNDS::Config::ForEachJsonOverride(overwriteKeys, overwriteValues, DNDS::Config::OverrideSyntax::EulerJsonC,
+                    [&](const auto &key, t_jsonconfig value)
                     {
-                        std::string valString =
-                            fmt::format(R"({{
-    "__val_entry": {}
-    }})",
-                                        overwriteValues[i]);
-                        auto valDoc = nlohmann::ordered_json::parse(valString, nullptr, true, true);
                         if (mpi.rank == 0)
                             log() << "JSON: overwrite key: " << key << std::endl
-                                  << "JSON: overwrite val: " << valDoc["__val_entry"] << std::endl;
-                        gSetting[key] = valDoc["__val_entry"];
-                    }
-                    catch (const nlohmann::ordered_json::parse_error &e)
-                    {
-                        try
-                        {
-                            std::string valString =
-                                fmt::format(R"({{
-"__val_entry": "{}"
-}})",
-                                            overwriteValues[i]);
-                            auto valDoc = nlohmann::ordered_json::parse(valString, nullptr, true, true);
-                            if (mpi.rank == 0)
-                                log() << "JSON: overwrite key: " << key << std::endl
-                                      << "JSON: overwrite val: " << valDoc["__val_entry"] << std::endl;
-                            gSetting[key] = valDoc["__val_entry"];
-                        }
-                        catch (const std::exception &e)
-                        {
-                            std::cerr << e.what() << "\n";
-                            std::cerr << overwriteValues[i] << "\n";
-                            DNDS_assert(false);
-                        }
-                    }
-                    catch (const std::exception &e)
-                    {
-                        std::cerr << e.what() << "\n";
-                        std::cerr << overwriteValues[i] << "\n";
-                        DNDS_assert(false);
-                    }
-                }
+                                  << "JSON: overwrite val: " << value << std::endl;
+                        gSetting[key] = std::move(value);
+                    });
                 config.ReadWriteJson(gSetting, nVars, read);
                 for (const auto &failure : config.validate())
                     DNDS_check_throw_info(failure.passed, failure.message);

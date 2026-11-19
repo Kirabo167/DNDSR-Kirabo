@@ -193,6 +193,8 @@ add_dependencies(all_unit_tests dnds_unit_tests geom_unit_tests)
 # DNDS core tests
 # ===================================================================
 dnds_add_unit_test(array "DNDS/test_Array.cpp" "dnds")
+dnds_add_unit_test(config_overrides "DNDS/test_ConfigOverrides.cpp" "dnds")
+add_dependencies(dnds_unit_tests dnds_test_config_overrides)
 
 # Native storage and communication, shared with the existing solver arrays.
 dnds_add_unit_test(runtime "DNDS/test_Runtime.cpp" "dnds")

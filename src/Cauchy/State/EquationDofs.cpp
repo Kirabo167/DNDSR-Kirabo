@@ -40,7 +40,7 @@ namespace DNDS::Cauchy
             for (index iField = 0; iField < storage.BlockNumber(); ++iField)
             {
                 fields.push_back(storage.Name(iField));
-                const auto &field = storage.Block(fields.back());
+                const auto &field = storage.BlockAt(iField);
                 DNDS_check_throw_info(field.Width() <= size_t(std::numeric_limits<index>::max()), "equation DOF width overflows index");
                 widths.push_back(index(field.Width()));
                 if (!iField)
@@ -111,7 +111,7 @@ namespace DNDS::Cauchy
         _pins.reserve(size_t(_fields.BlockNumber()));
         for (index iField = 0; iField < _fields.BlockNumber(); ++iField)
         {
-            const auto &field = _fields.Block(_fields.Name(iField));
+            const auto &field = _fields.BlockAt(iField);
             _pins.push_back({ArrayPin{field.Owned().SharedStorage(), field.Owned().Identity(), field.Owned().ShapeVersion()},
                              ArrayPin{field.Ghost().SharedStorage(), field.Ghost().Identity(), field.Ghost().ShapeVersion()}});
         }
@@ -168,8 +168,7 @@ namespace DNDS::Cauchy
     const Algebra::DofField<real> &EquationDofs::PhysicalField(index iField) const
     {
         Validate();
-        DNDS_check_throw_info(iField >= 0 && iField < _fields.BlockNumber(), "physical equation field index out of range");
-        return _fields.Block(_fields.Name(iField));
+        return _fields.BlockAt(iField);
     }
     Algebra::DofField<real> &EquationDofs::PhysicalField(index iField)
     {
@@ -196,7 +195,7 @@ namespace DNDS::Cauchy
         for (index iField = 0; iField < _fields.BlockNumber(); ++iField)
         {
             DNDS_check_throw_info(_fields.Name(iField) == _definition->fields[iField], "equation DOF physical field ordering changed");
-            const auto &field = _fields.Block(_fields.Name(iField));
+            const auto &field = _fields.BlockAt(iField);
             DNDS_check_throw_info(index(field.Width()) == _definition->widths[iField] && field.Device() == _definition->device, "equation DOF physical shape/device changed");
             const std::array<const R::Array<real> *, 2> arrays{&field.Owned(), &field.Ghost()};
             for (int part = 0; part < 2; ++part)
@@ -260,7 +259,10 @@ namespace DNDS::Cauchy
         Validate();
         Algebra::DofBundle fields(Space().NumericAlias());
         for (index iField = 0; iField < PhysicalFieldNumber(); ++iField)
-            fields.Add(_fields.Name(iField), Algebra::DofField<real>(fields.Space(), PhysicalField(iField).Owned(), PhysicalField(iField).Ghost()));
+        {
+            const auto &field = _fields.BlockAt(iField);
+            fields.Add(_fields.Name(iField), Algebra::DofField<real>(fields.Space(), field.Owned(), field.Ghost()));
+        }
         return {_definition, std::move(fields)};
     }
     EquationDofs::ReadScope::ReadScope(const EquationDofs &state, bool ghosts, Runtime::ExecutionContext context)
@@ -275,7 +277,7 @@ namespace DNDS::Cauchy
         {
             for (index iField = 0; iField < state._fields.BlockNumber(); ++iField)
             {
-                const auto &field = state._fields.Block(state._fields.Name(iField));
+                const auto &field = state._fields.BlockAt(iField);
                 _owned.emplace_back(field.Owned().Read(context));
                 if (ghosts)
                     _ghost.emplace_back(field.Ghost().Read(context));
@@ -336,7 +338,7 @@ namespace DNDS::Cauchy
         try
         {
             for (index iField = 0; iField < state._fields.BlockNumber(); ++iField)
-                _owned.emplace_back(state._fields.Block(state._fields.Name(iField)).Owned().Write(context));
+                _owned.emplace_back(state._fields.BlockAt(iField).Owned().Write(context));
         }
         catch (...)
         {

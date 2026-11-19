@@ -38,6 +38,10 @@ TEST_CASE("Reserved DoF scratch reuses prepared level aliases and communicating 
     A::DofBundle prototype(fine);
     prototype.Add("flow", A::DofField<>(fine, R::RowLayout::Dense(0, 5, 8)));
     prototype.Add("scalars", A::DofField<>(fine, R::RowLayout::ColMajor(0, 2)));
+    CHECK(&prototype.BlockAt(1) == &prototype.Block("scalars"));
+    CHECK(&std::as_const(prototype).BlockAt(0) == &prototype.Block("flow"));
+    CHECK_THROWS(prototype.BlockAt(-1));
+    CHECK_THROWS(std::as_const(prototype).BlockAt(prototype.BlockNumber()));
     A::DofScratchPool pool;
     const auto first = pool.Reserve(prototype), second = pool.Reserve(prototype);
     const auto bind = [&](auto &field)
@@ -66,7 +70,7 @@ TEST_CASE("Reserved DoF scratch reuses prepared level aliases and communicating 
         {
             auto transfer = borrow.BeginExchange(iField);
             transfer.Wait();
-            const auto ghost = fields.Block(fields.Name(iField)).Ghost().Read();
+            const auto ghost = fields.BlockAt(iField).Ghost().Read();
             CHECK(ghost.View<R::UniformTableRows>()(0, 0) == 100 * epoch + (rank + 1) % size);
         }
         {

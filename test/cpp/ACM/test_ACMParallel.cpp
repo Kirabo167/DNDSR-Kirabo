@@ -10,6 +10,7 @@
 #include "doctest.h"
 
 #include "ACM/ACMParallel.hpp"
+#include "ACM/ACMResidualNorms.hpp"
 #include "ACM/ACMSolver.hpp"
 #include "ACM/ACMTime.hpp"
 
@@ -38,6 +39,31 @@ using namespace DNDS::ACM;
 
 using ACMConvergence2D = std::integral_constant<ACMModel, ACMModel::ConstantDensity2D>;
 using ACMConvergence3D = std::integral_constant<ACMModel, ACMModel::ConstantDensity3D>;
+
+TEST_CASE_TEMPLATE("ACM residual RMS excludes ghosts and empty ranks from the denominator", Width,
+                   std::integral_constant<int, 4>, std::integral_constant<int, 5>, std::integral_constant<int, 6>)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    constexpr int width = Width::value;
+    using Row = Eigen::Vector<DNDS::real, width>;
+    const int owned = mpi.rank % 2 == 0 ? 1 : 0;
+    std::vector<Row> field(owned + 1, Row::Constant(1e8)); // Last row is a ghost.
+    if (owned)
+        for (int j = 0; j < width; ++j)
+            field[0](j) = -(mpi.rank + 1) * (j + 1);
+    const int count = (mpi.size + 1) / 2;
+    double meanSquare = 0;
+    for (int rank = 0; rank < mpi.size; rank += 2)
+        meanSquare += double((rank + 1) * (rank + 1)) / count;
+
+    const auto report = MeasureResidualNorms<width>(field, owned, count, mpi.comm);
+    for (int j = 0; j < 6; ++j)
+        CHECK(report.equationDefectNorms[j] == doctest::Approx(j < width ? (j + 1) * std::sqrt(meanSquare) : 0));
+    CHECK(report.finalDefectNorm == doctest::Approx(std::sqrt(7.5 * meanSquare)));
+    const double turbulenceMean = width == 4 ? 0 : width == 5 ? 25 : 30.5;
+    CHECK(report.turbulenceDefectNorm == doctest::Approx(std::sqrt(turbulenceMean * meanSquare)));
+}
 
 /// @test Degree-zero VR must retain the first-order residual on nonuniform MPI flow fields.
 TEST_CASE_TEMPLATE("ACM Wilcox degree-zero reconstruction matches first order", TModel, ACMConvergence2D, ACMConvergence3D)

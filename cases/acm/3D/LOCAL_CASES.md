@@ -24,6 +24,12 @@ segregated solver's iteration history.
 Mesh, output, and restart paths under `/fs2/home/mrz/DNDSR-Kirabo/` are retained
 for the original cluster. Those mesh and restart files are not available on
 this workstation; passing `--check-config` does not check their availability.
-The sphere restart still requires the original 2240-rank partition and starts
-from completed step 10000. Its Slurm check script is
-`scripts/check_sphere_restart_cp6.sh`, now using the migrated configuration path.
+The sphere restart requires the original 2240-rank partition and starts from
+completed step 10000. From `build/` on the original allocation, the following
+command reads the checkpoint and ends immediately after initialization.
+
+```sh
+yhrun -n 2240 -c 1 --ntasks-per-node=56 ./app/acm3D.exe \
+    ../cases/acm/3D/acm3D_sphere_Re100_1M_restart10000_add20000.json \
+    -k /timeMarchSettings/nSteps -v 0 -k /outputSettings/writeInitial -v false -k /outputSettings/interval -v 0
+```

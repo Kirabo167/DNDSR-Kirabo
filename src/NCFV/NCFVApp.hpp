@@ -3,7 +3,7 @@
 
 #include "NCFVSolver.hpp"
 
-#include <argparse.hpp>
+#include "DNDS/Config/SolverArguments.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -31,14 +31,7 @@ namespace DNDS::NCFV
         argparse::ArgumentParser parser(appName, DNDS_VERSION_STRING);
         parser.add_description(std::string("NCFV: ") + MethodName);
         parser.add_argument("config").default_value("");
-        parser.add_argument("-k", "--overwrite_key")
-            .append()
-            .default_value<std::vector<std::string>>({});
-        parser.add_argument("-v", "--overwrite_value")
-            .append()
-            .default_value<std::vector<std::string>>({});
-        parser.add_argument("--emit-schema").flag().default_value(false);
-        parser.add_argument("--check-config").flag().default_value(false);
+        DNDS::Config::AddSolverArguments(parser);
 
         try
         {

@@ -1,3 +1,4 @@
+#include "DNDS/Config/JsonOverrides.hpp"
 #include "NCFVConfig.hpp"
 
 #include "DNDS/Errors.hpp"
@@ -312,9 +313,6 @@ namespace DNDS::NCFV
         const std::vector<std::string> &overwriteKeys,
         const std::vector<std::string> &overwriteValues)
     {
-        DNDS_check_throw_info(overwriteKeys.size() == overwriteValues.size(),
-                              "NCFV overwrite keys and values have different lengths");
-
         std::ifstream input(jsonName);
         DNDS_check_throw_info(input.good(),
                               "NCFV configuration file does not exist: " + jsonName);
@@ -332,18 +330,9 @@ namespace DNDS::NCFV
         MergeArrayItemDefaults(
             resolved["initialField"]["expressions"], ExpressionInitializer{});
 
-        for (std::size_t i = 0; i < overwriteKeys.size(); i++)
-        {
-            const nlohmann::ordered_json::json_pointer key(overwriteKeys[i]);
-            try
-            {
-                resolved[key] = nlohmann::ordered_json::parse(overwriteValues[i]);
-            }
-            catch (const nlohmann::ordered_json::parse_error &)
-            {
-                resolved[key] = overwriteValues[i];
-            }
-        }
+        DNDS::Config::ForEachJsonOverride(overwriteKeys, overwriteValues, DNDS::Config::OverrideSyntax::JsonOrText,
+                                          [&](const auto &key, t_jsonconfig value)
+                                          { resolved[key] = std::move(value); });
 
         // An overwrite may replace an entire array after the first default
         // normalization, so normalize item-level optional fields once more.

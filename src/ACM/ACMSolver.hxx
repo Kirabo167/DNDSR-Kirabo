@@ -9,6 +9,7 @@
 
 #include "ACMSolver.hpp"
 #include "ACMLinear.hpp"
+#include "ACMResidualNorms.hpp"
 
 #include "DNDS/Errors.hpp"
 #include "DNDS/OMP.hpp"
@@ -611,10 +612,10 @@ namespace DNDS::ACM
                                                       coefficients,
                                                       physicalTimeStep);
             }
-            return _linearRhs.norm2() /
-                   std::sqrt(std::max<real>(
-                       1.0,
-                       static_cast<real>(_mesh->NumCellGlobal()) * Traits::nVarsFixed));
+            const auto norms = MeasureResidualNorms<Traits::nVarsFixed>(
+                _linearRhs, _mesh->NumCell(), _mesh->NumCellGlobal(), _mpi.comm);
+            report.equationDefectNorms = norms.equationDefectNorms;
+            return norms.finalDefectNorm;
         };
 
         report.initialDefectNorm = evaluateDefect();
@@ -624,26 +625,14 @@ namespace DNDS::ACM
                 _u, coefficients, physicalTimeStep, physicalTime);
         report.initialTurbulenceDefectNorm = report.turbulenceDefectNorm;
         const int activeEquations = Traits::nVarsFixed + (_turbulence ? _turbulence->ActiveVariableCount() : 0);
-        const auto recordEquationDefects = [&]()
+        const auto recordTurbulenceEquationDefects = [&]()
         {
-            std::array<real, 4> localSquares{};
-            for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
-                for (int variable = 0; variable < Traits::nVarsFixed; variable++)
-                    localSquares[static_cast<std::size_t>(variable)] +=
-                        _linearRhs[iCell](variable) * _linearRhs[iCell](variable);
-            std::array<real, 4> globalSquares{};
-            MPI::Allreduce(localSquares.data(), globalSquares.data(), Traits::nVarsFixed,
-                           DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
-            for (int variable = 0; variable < Traits::nVarsFixed; variable++)
-                report.equationDefectNorms[static_cast<std::size_t>(variable)] = std::sqrt(
-                    globalSquares[static_cast<std::size_t>(variable)] /
-                    std::max<real>(1, _mesh->NumCellGlobal()));
             if (_turbulence)
                 for (int variable = 0; variable < _turbulence->ActiveVariableCount(); variable++)
                     report.equationDefectNorms[static_cast<std::size_t>(variable + Traits::nVarsFixed)] =
                         _turbulence->GetPhysicalEquationDefectNorms()[static_cast<std::size_t>(variable)];
         };
-        recordEquationDefects();
+        recordTurbulenceEquationDefects();
         report.initialEquationDefectNorms = report.equationDefectNorms;
         report.defectTolerance = _configuration.timeMarchSettings.DualTimeGroupTarget(report.initialDefectNorm, false);
         report.turbulenceDefectTolerance = _configuration.timeMarchSettings.DualTimeGroupTarget(report.initialTurbulenceDefectNorm, true);
@@ -690,7 +679,7 @@ namespace DNDS::ACM
             }
             report.iterations = iteration + 1;
             report.finalDefectNorm = evaluateDefect();
-            recordEquationDefects();
+            recordTurbulenceEquationDefects();
             if (_configuration.timeMarchSettings.dualTimeConvergenceCriterion == "RelativeUpdate")
             {
                 report.appliedUpdateNorm = _configuration.timeMarchSettings.implicitRelaxation * _linearIncrement.norm2();

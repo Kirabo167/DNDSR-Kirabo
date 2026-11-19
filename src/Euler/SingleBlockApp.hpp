@@ -9,7 +9,8 @@
  */
 #pragma once
 
-#include <argparse.hpp>
+#include "DNDS/Config/SolverArguments.hpp"
+#include "DNDS/Config/JsonOverrides.hpp"
 
 #include "EulerSolver.hpp"
 
@@ -103,22 +104,8 @@ namespace DNDS::Euler
         argparse::ArgumentParser mainParser(getSingleBlockAppName(model), DNDS_VERSION_STRING);
         std::string read_configPath;
         mainParser.add_argument("config").default_value("");
-        mainParser.add_argument("-k", "--overwrite_key")
-            .help("keys to the json entries to overwrite")
-            .append()
-            .default_value<std::vector<std::string>>({});
-        mainParser.add_argument("-v", "--overwrite_value")
-            .help("values to the json entries to overwrite")
-            .append()
-            .default_value<std::vector<std::string>>({});
+        DNDS::Config::AddSolverArguments(mainParser);
         mainParser.add_argument("--debug").flag().default_value(false);
-        mainParser.add_argument("--emit-schema")
-            .help("Print JSON Schema for this solver's configuration and exit")
-            .flag()
-            .default_value(false);
-        mainParser.add_argument("--check-config")
-            .help("Validate configuration without loading meshes or writing results")
-            .flag().default_value(false);
 
         RegisterSignalHandler();
         GetSetVersionName(DNDS_VERSION_STRING);
@@ -192,18 +179,9 @@ namespace DNDS::Euler
             std::ifstream selectionInput(confJson);
             DNDS_check_throw_info(selectionInput.good(), "configuration file not found: " + confJson);
             auto selectionDocument = nlohmann::ordered_json::parse(selectionInput, nullptr, true, true);
-            for (std::size_t i = 0; i < overwriteKeys.size(); ++i)
-            {
-                const nlohmann::ordered_json::json_pointer key(overwriteKeys[i]);
-                try
-                {
-                    selectionDocument[key] = nlohmann::ordered_json::parse(overwriteValues[i]);
-                }
-                catch (const nlohmann::ordered_json::parse_error &)
-                {
-                    selectionDocument[key] = overwriteValues[i];
-                }
-            }
+            DNDS::Config::ForEachJsonOverride(overwriteKeys, overwriteValues, DNDS::Config::OverrideSyntax::EulerJsonC,
+                                              [&](const auto &key, t_jsonconfig value)
+                                              { selectionDocument[key] = std::move(value); });
             int nVars = getnVarsFixed(model);
             if (nVars == DynamicSize)
             {

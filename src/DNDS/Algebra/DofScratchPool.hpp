@@ -51,7 +51,7 @@ namespace DNDS::Algebra
         {
             for (index i = 0; i < fields.BlockNumber(); ++i)
             {
-                const auto &field = fields.Block(fields.Name(i));
+                const auto &field = fields.BlockAt(i);
                 DNDS_check_throw_info(field.Owned().Storage().IsIdle() && field.Ghost().Storage().IsIdle(),
                                       "DoF scratch still has active access or communication");
             }
@@ -124,7 +124,7 @@ namespace DNDS::Algebra
             for (index i = 0; i < prototype.BlockNumber(); ++i)
             {
                 const auto &name = prototype.Name(i);
-                const auto &source = prototype.Block(name);
+                const auto &source = prototype.BlockAt(i);
                 DNDS_check_throw_info(source.Device() == Runtime::Device::Host(), "reserved DoF scratch currently requires CPU storage");
                 DofField<real> field(source.Space(), Runtime::Array<real>(source.Owned().Layout()), Runtime::Array<real>(source.Ghost().Layout()));
                 bytes += field.Owned().Storage().Bytes() + field.Ghost().Storage().Bytes();
@@ -148,9 +148,9 @@ namespace DNDS::Algebra
             for (index i = 0; i < storage.BlockNumber(); ++i)
             {
                 const auto &name = storage.Name(i);
-                const auto &field = storage.Block(name);
+                const auto &field = storage.BlockAt(i);
                 prepared.fields.Add(name, DofField<real>(space, field.Owned(), field.Ghost()));
-                prepared.halos.push_back(binder(prepared.fields.Block(name)));
+                prepared.halos.push_back(binder(prepared.fields.BlockAt(i)));
             }
             _state->prepared.push_back(std::move(prepared));
             return index(_state->prepared.size()) - 1;
@@ -170,7 +170,7 @@ namespace DNDS::Algebra
                 {
                     // New borrowing epoch invalidates previous freshness/cache
                     // assumptions without resetting monotone storage versions.
-                    auto write = entry.fields.Block(entry.fields.Name(i)).Owned().Write();
+                    auto write = entry.fields.BlockAt(i).Owned().Write();
                 }
             slot.busy = true;
             _state->peak = std::max(_state->peak, ++_state->active);
