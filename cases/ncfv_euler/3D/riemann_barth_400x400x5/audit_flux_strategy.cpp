@@ -109,16 +109,6 @@ namespace
         return .5 * (integrated[0] + integrated[1]) + surface.measure * (numerical - central);
     }
 
-    State Primitive(const std::vector<DNDS::real> &value, DNDS::real gamma)
-    {
-        State state;
-        state(0) = value[0];
-        for (int i = 0; i < 3; i++)
-            state(i + 1) = value[0] * value[i + 1];
-        state(4) = value[4] / (gamma - 1) + .5 * state.segment<3>(1).squaredNorm() / state(0);
-        return state;
-    }
-
     State Exterior(const State &inside, const Vector &normal,
                    const DNDS::NCFV::BoundaryZoneSettings &boundary, DNDS::real gamma)
     {
@@ -126,17 +116,17 @@ namespace
         switch (boundary.mode)
         {
         case BoundaryMode::FarField:
+        case BoundaryMode::CharacteristicFarField:
         case BoundaryMode::SupersonicInlet:
-            return Primitive(boundary.primitive, gamma);
         case BoundaryMode::SupersonicOutlet:
+            return DNDS::NCFV::ReservoirCharacteristicTrace<3>(inside, normal, gamma, boundary.primitive);
+        case BoundaryMode::Extrapolation:
         case BoundaryMode::Periodic:
             return inside;
         case BoundaryMode::PressureOutlet:
-        {
-            State outside = inside;
-            outside(4) += (boundary.staticPressure - Pressure(inside, gamma)) / (gamma - 1);
-            return outside;
-        }
+            return DNDS::NCFV::PressureOutletCharacteristicTrace<3>(inside, State::Zero(), normal, gamma, boundary).first;
+        case BoundaryMode::MMSExactExterior:
+            break; // The manufactured source is incompatible with LLF flux correction.
         case BoundaryMode::SlipWall:
         case BoundaryMode::Symmetry:
         {

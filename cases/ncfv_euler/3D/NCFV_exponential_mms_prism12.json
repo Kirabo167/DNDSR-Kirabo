@@ -1,0 +1,44 @@
+{
+    "$schema": "ncfv_euler3D_schema.json",
+    "dimension": 3,
+    "solver": {
+        "type": "ncfv_euler",
+        "discretization": "NCFV",
+        "model": "IdealGas",
+        "fieldNVariables": 5
+    },
+    "mesh": {
+        "meshFile": "../cases/ncfv_euler/3D/prism_n12_j0.1.cgns"
+    },
+    "algorithm": {
+        "mode": "EfficientDifferential",
+        "macroFaceBoundary": true,
+        "quadratureOrder": 6,
+        "retainMicroGeometry": true
+    },
+    "reconstruction": {
+        "method": "SVDLeastSquares",
+        "stencilSizeFactor": 3.555555555555555,
+        "distanceWeightPower": 2,
+        "enableLimiter": false
+    },
+    "physics": {
+        "exponentialMMS": true,
+        "boundaryMode": "CharacteristicFarField",
+        "gamma": 1.4,
+        "riemannSolver": "Roe",
+        "initialPrimitive": [1.1, 0.3, 0.3, 0.6, 2.5],
+        "farFieldPrimitive": [1.1, 0.3, 0.3, 0.6, 2.5]
+    },
+    "time": {
+        "useCFLTimeStep": false,
+        "useLocalTimeStep": false,
+        "timeStep": 0.004166666666666667,
+        "iterations": 120,
+        "endTime": 0.5
+    },
+    "io": {
+        "writeResolvedConfiguration": false,
+        "writeVTK": false
+    }
+}

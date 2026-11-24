@@ -29,15 +29,15 @@
     "physics": {
         "gamma": 1.4,
         "riemannSolver": "Roe",
-        "boundaryMode": "SupersonicOutlet",
+        "boundaryMode": "Extrapolation",
         "initialPrimitive": [1.5, 0, 0, 0, 1.5],
         "farFieldPrimitive": [1.5, 0, 0, 0, 1.5],
         "requireBoundaryZoneCoverage": true,
         "boundaryZones": [
-            {"name": "XMIN", "mode": "SupersonicOutlet"},
-            {"name": "XMAX", "mode": "SupersonicOutlet"},
-            {"name": "YMIN", "mode": "SupersonicOutlet"},
-            {"name": "YMAX", "mode": "SupersonicOutlet"},
+            {"name": "XMIN", "mode": "Extrapolation"},
+            {"name": "XMAX", "mode": "Extrapolation"},
+            {"name": "YMIN", "mode": "Extrapolation"},
+            {"name": "YMAX", "mode": "Extrapolation"},
             {"name": "ZMIN", "mode": "Periodic"},
             {"name": "ZMAX", "mode": "Periodic"}
         ],

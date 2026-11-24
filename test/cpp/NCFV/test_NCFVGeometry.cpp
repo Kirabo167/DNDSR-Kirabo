@@ -8,6 +8,7 @@
 
 #include "NCFV/NCFVReconstruction.hpp"
 #include "NCFV/NCFVAnalytic.hpp"
+#include "NCFV/NCFVBoundary.hpp"
 #include "Geom/Quadrature.hpp"
 
 #include <cmath>
@@ -206,6 +207,257 @@ TEST_CASE("NCFV integration mode JSON names are stable")
           ViscosityModel::Sutherland);
     CHECK(nlohmann::json("Conservative").get<InitialFieldVariables>() ==
           InitialFieldVariables::Conservative);
+}
+
+TEST_CASE("NCFV coplanar boundary macroface integrates a quadratic and separates corners and zones")
+{
+    using namespace DNDS::NCFV;
+    const std::vector<Vector3> x{{0,0,0}, {1,0,0}, {1,1,0}, {0,1,0}, {0,0,1}};
+    NodeControlVolume volume;
+    volume.node = 0;
+    const auto add = [&](int j, int k, int zone)
+    {
+        BoundaryPiece piece;
+        piece.zone = zone;
+        piece.nPoints = 3;
+        piece.points = {MakeAverage(x, {0}), MakeAverage(x, {j}), MakeAverage(x, {k})};
+        piece.vectorMeasure = .5 * (x[j] - x[0]).cross(x[k] - x[0]);
+        piece.measure = piece.vectorMeasure.norm();
+        volume.boundaryPieces.push_back(piece);
+    };
+    add(1, 2, 1);
+    add(2, 3, 1);
+    add(3, 4, 1); // Perpendicular normal.
+    add(2, 1, 1); // Opposite normal.
+    add(1, 2, 2); // Same normal, distinct boundary data.
+    const auto faces = volume.BuildBoundaryMacroFaces();
+    REQUIRE(faces.size() == 4);
+    const auto &face = faces.front();
+    REQUIRE(face.weights.size() == 4);
+    CHECK(face.measure == doctest::Approx(1));
+    real integral = face.measure;
+    for (const auto &entry : face.weights)
+    {
+        const auto &point = x[entry.node];
+        const Vector3 gradient{2 * point.x() + 3 * point.y(), 2 + 3 * point.x(), 0};
+        integral += gradient.dot(entry.value);
+    }
+    CHECK(integral == doctest::Approx(37. / 12.).epsilon(2e-14));
+}
+
+TEST_CASE("NCFV P2 and quadrature volume sources give the same exact quadratic mean")
+{
+    using namespace DNDS::NCFV;
+    const std::vector<Vector3> x{{0,0,0}, {2,0,0}, {0,3,0}, {0,0,4}};
+    const std::vector<AffinePoint> points{MakeAverage(x, {0}), MakeAverage(x, {1}), MakeAverage(x, {2}), MakeAverage(x, {3})};
+    NodeControlVolume volume;
+    volume.moments.measure = 4;
+    for (const auto &w : DualGeometry::DifferentialWeights(points, 0, x[0], volume.moments.measure))
+        volume.pointRecoveryStencil.push_back({w.node, w.value / volume.moments.measure});
+    const auto value = [](const Vector3 &p) -> Eigen::Vector2d { return {1 + p.x() + p.z() * p.z(), 2.3}; };
+    const auto gradient = [&](DNDS::index node)
+    {
+        Eigen::Matrix<real, 3, 2> g = Eigen::Matrix<real, 3, 2>::Zero();
+        g.col(0) << 1, 0, 2 * x[node].z();
+        return g;
+    };
+    const Eigen::Vector2d expected{3.1, 2.3};
+    CHECK((volume.VolumeMean<3>(x[0], value, gradient) - expected).norm() < 1e-13);
+
+    volume.pointRecoveryStencil.clear();
+    DNDS::Geom::Elem::Quadrature quadrature(DNDS::Geom::Elem::Element{DNDS::Geom::Elem::Tet4}, 2);
+    for (int i = 0; i < quadrature.GetNumPoints(); ++i)
+    {
+        const auto [p, w] = quadrature.GetQuadraturePointInfo(i);
+        volume.volumeQuadrature.push_back({p[0] * x[1] + p[1] * x[2] + p[2] * x[3], 24 * w});
+    }
+    CHECK((volume.VolumeMean<3>(x[0], value, gradient) - expected).norm() < 1e-13);
+}
+
+TEST_CASE("NCFV wall flux satisfies the shock or expansion relation and differentiates the applied flux")
+{
+    using namespace DNDS::NCFV;
+    using State = Eigen::Vector<DNDS::real, 5>;
+    constexpr DNDS::real gamma = 1.4, rho = 1.2, pressure = 1.3, eps = 1e-5;
+    const DNDS::real sound = std::sqrt(gamma * pressure / rho);
+    const Vector3 normal = Vector3{2, -1, 3}.normalized();
+    const Vector3 tangent = .24 * normal.unitOrthogonal();
+    const State increment{.14, .2, -.13, .19, -.16};
+    for (const DNDS::real speed : {0., .09})
+        for (const DNDS::real relative : {-.7, .8})
+        {
+            const Vector3 velocity = tangent + (speed + relative) * normal;
+            State inside;
+            inside << rho, rho * velocity, pressure / (gamma - 1) + .5 * rho * velocity.squaredNorm();
+            const auto [flux, derivative] = WallCharacteristicFlux<3>(inside, increment, normal, gamma, speed);
+            // Subtract the normal convective momentum flux to recover the wall pressure.
+            const DNDS::real wallPressure = normal.dot(flux.segment<3>(1)) - speed * flux[0];
+            REQUIRE(wallPressure > 0);
+            DNDS::real wallRho;
+            if (relative > 0)
+            {
+                const DNDS::real beta = (gamma - 1) / (gamma + 1);
+                const DNDS::real jump = (wallPressure - pressure) *
+                    std::sqrt(2 / ((gamma + 1) * rho * (wallPressure + beta * pressure)));
+                CHECK(jump == doctest::Approx(relative).epsilon(1e-12));
+                wallRho = rho * (wallPressure + beta * pressure) / (beta * wallPressure + pressure);
+            }
+            else
+            {
+                wallRho = rho * std::pow(wallPressure / pressure, 1 / gamma);
+                const DNDS::real wallSound = std::sqrt(gamma * wallPressure / wallRho);
+                CHECK(2 * (wallSound - sound) / (gamma - 1) == doctest::Approx(relative).epsilon(1e-12));
+            }
+            const Vector3 wallVelocity = tangent + speed * normal;
+            State expected;
+            expected << wallRho * speed, wallRho * speed * wallVelocity + wallPressure * normal,
+                speed * (gamma * wallPressure / (gamma - 1) + .5 * wallRho * wallVelocity.squaredNorm());
+            CHECK((flux - expected).norm() < 2e-12);
+            const auto plus = WallCharacteristicFlux<3>(inside + eps * increment, State::Zero(), normal, gamma, speed).first;
+            const auto minus = WallCharacteristicFlux<3>(inside - eps * increment, State::Zero(), normal, gamma, speed).first;
+            CHECK((derivative - (plus - minus) / (2 * eps)).norm() < 2e-9);
+        }
+
+    const Vector3 separated = -2.1 * sound / (gamma - 1) * normal;
+    State vacuumInterior;
+    vacuumInterior << rho, rho * separated, pressure / (gamma - 1) + .5 * rho * separated.squaredNorm();
+    const auto vacuum = WallCharacteristicFlux<3>(vacuumInterior, increment, normal, gamma, 0);
+    CHECK(vacuum.first.isZero());
+    CHECK(vacuum.second.isZero());
+}
+
+TEST_CASE("NCFV pressure outlet selects acoustic and material data for each flow regime")
+{
+    using namespace DNDS::NCFV;
+    using State = Eigen::Vector<DNDS::real, 5>;
+    constexpr DNDS::real gamma = 1.4, rho = 1.2, pressure = 1.3, eps = 1e-5;
+    const Vector3 normal = Vector3{2, -1, 3}.normalized();
+    const State increment{.14, .2, -.13, .19, -.16};
+    BoundaryZoneSettings boundary;
+    boundary.mode = BoundaryMode::PressureOutlet;
+    boundary.staticPressure = 1.1;
+    boundary.primitive = {1.08, -.4, .3, -.5, .95};
+    const Eigen::Map<const Vector3> reservoir(boundary.primitive.data() + 1);
+    const DNDS::real sound = std::sqrt(gamma * pressure / rho);
+    for (const DNDS::real vn : {-1.8, -.82, .45, 1.8})
+    {
+        const Vector3 velocity = .24 * normal.unitOrthogonal() + vn * normal;
+        State inside;
+        inside << rho, rho * velocity, pressure / (gamma - 1) + .5 * rho * velocity.squaredNorm();
+        const auto [trace, derivative] = PressureOutletCharacteristicTrace<3>(inside, increment, normal, gamma, boundary);
+        if (vn > sound)
+        {
+            CHECK((trace - inside).norm() == 0);
+            CHECK((derivative - increment).norm() == 0);
+            continue;
+        }
+        const Vector3 u = trace.segment<3>(1) / trace[0];
+        const DNDS::real p = (gamma - 1) * (trace[4] - .5 * trace[0] * u.squaredNorm());
+        CHECK(p == doctest::Approx(boundary.staticPressure).epsilon(1e-12));
+        if (vn < -sound)
+        {
+            CHECK(trace[0] == doctest::Approx(boundary.primitive.front()).epsilon(1e-12));
+            CHECK((u - reservoir).norm() < 2e-12);
+            CHECK(derivative.isZero());
+            continue;
+        }
+        CHECK(u.dot(normal) + 2 * std::sqrt(gamma * p / trace[0]) / (gamma - 1) ==
+              doctest::Approx(vn + 2 * sound / (gamma - 1)).epsilon(1e-12));
+        const DNDS::real entropy = vn < 0 ? boundary.primitive.back() / std::pow(boundary.primitive.front(), gamma)
+                                         : pressure / std::pow(rho, gamma);
+        CHECK(p / std::pow(trace[0], gamma) == doctest::Approx(entropy).epsilon(1e-12));
+        const Vector3 expectedVelocity = vn < 0 ? Vector3(reservoir) : velocity;
+        const Vector3 difference = u - expectedVelocity;
+        CHECK((difference - normal * normal.dot(difference)).norm() < 2e-12);
+        const auto plus = PressureOutletCharacteristicTrace<3>(inside + eps * increment, State::Zero(), normal, gamma, boundary).first;
+        const auto minus = PressureOutletCharacteristicTrace<3>(inside - eps * increment, State::Zero(), normal, gamma, boundary).first;
+        CHECK((derivative - (plus - minus) / (2 * eps)).norm() < 2e-9);
+    }
+}
+
+TEST_CASE("NCFV exponential manufactured source equals U_t plus the divergence of the Euler flux")
+{
+    using MMS = DNDS::NCFV::ExponentialMMS;
+    for (real phase : {-.4, 0., .7, 1.5})
+    {
+        const auto basis = MMS::Powers(phase);
+        const real e = std::exp(phase), rho = 1 + .1 * e, drho = .1 * e;
+        const real p = 1.3 + 1.2 * e, dp = 1.2 * e;
+        const Vector3 dv = Vector3{.1,.2,.3} * e, v = Vector3{.2,.1,.3} + dv;
+        const real energy = p / .4 + .5 * rho * v.squaredNorm();
+        MMS::Basis state;
+        state << rho, rho * v, energy;
+        CHECK((MMS::State(basis) - state).norm() < 1e-13);
+        const Vector3 dm = drho * v + rho * dv;
+        const real dEnergy = dp / .4 + .5 * drho * v.squaredNorm() + rho * v.dot(dv);
+        MMS::Basis du;
+        du << drho, dm, dEnergy;
+        CHECK((MMS::State(MMS::PhaseDerivative(basis)) - du).norm() < 1e-13);
+        const Vector3 a{.75,.35,.65};
+        MMS::Basis divF;
+        divF << dm.dot(a), dm * v.dot(a) + rho * v * dv.dot(a) + dp * a,
+            (dEnergy + dp) * v.dot(a) + (energy + p) * dv.dot(a);
+        CHECK((MMS::sourceCoefficients.transpose() * basis - (.65 * du + divF)).norm() < 2e-13);
+    }
+}
+
+TEST_CASE("NCFV manufactured characteristic trace uses incoming data and reconstructed outgoing data")
+{
+    using MMS = DNDS::NCFV::ExponentialMMS;
+    using State = MMS::Basis;
+    constexpr DNDS::real gamma = 1.4, exponential = 1.7, dPhase = .37;
+    const State exact = MMS::State(MMS::PowersOf(exponential));
+    const State increment{.07, .03, -.08, .1, -.15};
+    State inside = exact;
+    inside += State{.06, -.18, .11, .04, -.26};
+
+    for (int sign : {-1, 1})
+    {
+        const Vector3 normal = sign * Vector3{.3, .4, .8}.normalized();
+        const Vector3 tangent = normal.unitOrthogonal();
+        const Vector3 bitangent = normal.cross(tangent);
+        const auto characteristics = [&](const State &state) -> State
+        {
+            const DNDS::real rho = state[0];
+            const Vector3 v = state.segment<3>(1) / rho;
+            const DNDS::real p = (gamma - 1) * (state[4] - .5 * rho * v.squaredNorm());
+            const DNDS::real un = normal.dot(v), a = std::sqrt(gamma * p / rho);
+            REQUIRE(std::abs(un) < a);
+            return {un + 2 * a / (gamma - 1), un - 2 * a / (gamma - 1),
+                    p / std::pow(rho, gamma), tangent.dot(v), bitangent.dot(v)};
+        };
+        const auto [trace, differential] = MMS::CharacteristicTrace(inside, increment, normal, exponential, dPhase);
+        CHECK((trace - MMS::CharacteristicTrace(inside, normal, exponential)).norm() < 1e-13);
+        const State computed = characteristics(trace);
+        const State inner = characteristics(inside), prescribed = characteristics(exact);
+        CHECK(std::abs(computed[0] - inner[0]) < 2e-12);
+        CHECK(std::abs(computed[1] - prescribed[1]) < 2e-12);
+        const State &material = sign < 0 ? prescribed : inner;
+        CHECK((computed.tail<3>() - material.tail<3>()).norm() < 2e-12);
+
+        constexpr DNDS::real eps = 1e-5;
+        const State plus = MMS::CharacteristicTrace(inside + eps * increment, normal, exponential * std::exp(eps * dPhase));
+        const State minus = MMS::CharacteristicTrace(inside - eps * increment, normal, exponential * std::exp(-eps * dPhase));
+        CHECK((differential - (plus - minus) / (2 * eps)).norm() < 1e-8);
+    }
+}
+
+TEST_CASE("NCFV two-dimensional reservoir trace switches all data at supersonic inflow and outflow")
+{
+    using State = Eigen::Vector<DNDS::real, 4>;
+    constexpr DNDS::real gamma = 1.4;
+    const std::vector<DNDS::real> reservoir{1.2, 2.1, .3, .9};
+    const State prescribed{1.2, 1.2 * 2.1, 1.2 * .3, .9 / (gamma - 1) + .6 * (2.1 * 2.1 + .3 * .3)};
+    const State inside{1, 3, .2, 1 / (gamma - 1) + .5 * (9 + .04)};
+    const State delta{.01, -.2, .08, .3};
+    for (int sign : {-1, 1})
+    {
+        const Eigen::Vector2d normal{static_cast<DNDS::real>(sign), 0};
+        const auto [trace, derivative] = DNDS::NCFV::ReservoirCharacteristicTrace<2>(inside, delta, normal, gamma, reservoir);
+        const State expectedDerivative = sign < 0 ? State::Zero().eval() : delta;
+        CHECK((trace - (sign < 0 ? prescribed : inside)).norm() < 1e-12);
+        CHECK((derivative - expectedDerivative).norm() < 1e-12);
+    }
 }
 
 TEST_CASE("NCFV variational reconstruction accepts both integration modes")

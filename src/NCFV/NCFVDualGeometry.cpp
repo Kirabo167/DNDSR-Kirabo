@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <iterator>
+#include <limits>
 
 namespace DNDS::NCFV
 {
@@ -980,6 +982,37 @@ namespace DNDS::NCFV
                     _ghostEdgeSurfaces[static_cast<std::size_t>(iGhost)]);
             }
         }
+    }
+
+    std::vector<BoundaryMacroFace> NodeControlVolume::BuildBoundaryMacroFaces() const
+    {
+        std::vector<BoundaryMacroFace> faces;
+        constexpr real normalTolerance = 128 * std::numeric_limits<real>::epsilon();
+        for (const auto &piece : boundaryPieces)
+        {
+            const Vector3 normal = piece.vectorMeasure / piece.measure;
+            // Every piece starts at this CV's primal node. Equal normals thus imply a common plane.
+            auto face = std::find_if(faces.begin(), faces.end(), [&](const BoundaryMacroFace &candidate)
+                                     { return candidate.zone == piece.zone &&
+                                              (candidate.normal - normal).norm() <= normalTolerance; });
+            if (face == faces.end())
+            {
+                faces.push_back({piece.zone, normal, 0, {}});
+                face = std::prev(faces.end());
+            }
+            face->measure += piece.measure;
+            const std::vector<AffinePoint> points(piece.points.begin(), piece.points.begin() + piece.nPoints);
+            for (const auto &entry : DualGeometry::DifferentialWeights(points, node, points.front().coordinate, piece.measure))
+            {
+                auto pos = std::lower_bound(face->weights.begin(), face->weights.end(), entry.node,
+                                            [](const SparseVectorWeight &w, index id) { return w.node < id; });
+                if (pos == face->weights.end() || pos->node != entry.node)
+                    face->weights.insert(pos, entry);
+                else
+                    pos->value += entry.value;
+            }
+        }
+        return faces;
     }
 
     void DualGeometry::BuildOwnedNodeVolumes()

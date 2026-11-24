@@ -1,11 +1,83 @@
 #pragma once
 
 #include "NCFVConfig.hpp"
+#include "NCFVCharacteristicBoundary.hpp"
 
 #include <cmath>
 
 namespace DNDS::NCFV
 {
+    /** @brief Smooth forced Euler solution of arXiv:2305.01466, Sec. 6.1.3 (gamma=1.4).
+     * The primitive field is [1+.1e,.2+.1e,.1+.2e,.3+.3e,1.3+1.2e],
+     * with e=exp(direction dot x + .65t). Rows of the two matrices are the
+     * coefficients of e^k in U and in S = U_t + div F(U), respectively. */
+    struct ExponentialMMS
+    {
+        using Basis = Eigen::Vector<real, 5>;
+        using Coefficients = Eigen::Matrix<real, 5, 5>;
+        inline static const Eigen::Vector3d direction{.75, .35, .65};
+        static constexpr real frequency = .65;
+        inline static const Coefficients stateCoefficients = (Coefficients() <<
+            1, .2, .1, .3, 3.32,
+            .1, .12, .21, .33, 3.137,
+            0, .01, .02, .03, .083,
+            0, 0, 0, 0, .007,
+            0, 0, 0, 0, 0).finished();
+        inline static const Coefficients sourceCoefficients = (Coefficients() <<
+            0, 0, 0, 0, 0,
+            .443, 1.0916, .6703, 1.2219, 5.25791,
+            .068, .1022, .184, .2862, 3.12014,
+            0, .0102, .0204, .0306, .10629,
+            0, 0, 0, 0, .00952).finished();
+
+        static Basis PowersOf(real e)
+        {
+            const real e2 = e * e;
+            return {1, e, e2, e2 * e, e2 * e2};
+        }
+
+        static Basis Powers(real phase) { return PowersOf(std::exp(phase)); }
+
+        static Basis PhaseDerivative(const Basis &basis)
+        {
+            return {0, basis[1], 2 * basis[2], 3 * basis[3], 4 * basis[4]};
+        }
+
+        static Basis State(const Basis &basis) { return stateCoefficients.transpose() * basis; }
+
+        /** Supply the incoming characteristic data for the manufactured open boundaries.
+         * exponential is exp(direction.dot(x) + frequency*t). phaseIncrement is
+         * direction.dot(displacement) at fixed stage time. The outgoing amplitudes
+         * and their directional increments come from the reconstructed interior. */
+        static std::pair<Basis, Basis> CharacteristicTrace(const Basis &inside, const Basis &insideIncrement,
+                                                           const Eigen::Vector3d &normal, real exponential,
+                                                           real phaseIncrement)
+        {
+            constexpr real gamma = 1.4;
+            return CharacteristicBoundary::Trace<3>(inside, insideIncrement, normal, gamma,
+                [&](bool needPlus, bool needConvected)
+                {
+                    const Eigen::Vector3d base{.2, .1, .3}, slope{.1, .2, .3};
+                    const real normalBase = base.dot(normal), normalSlope = slope.dot(normal);
+                    const real dExp = exponential * phaseIncrement;
+                    return CharacteristicBoundary::Prescribed<3>(
+                        {1 + .1 * exponential, .1 * dExp}, {1.3 + 1.2 * exponential, 1.2 * dExp},
+                        {normalBase + normalSlope * exponential, normalSlope * dExp}, gamma, needPlus, needConvected,
+                        [&](Eigen::Vector3d &tangent, Eigen::Vector3d &dTangent)
+                        {
+                            const Eigen::Vector3d tangentSlope = slope - normalSlope * normal;
+                            tangent = base - normalBase * normal + exponential * tangentSlope;
+                            dTangent = dExp * tangentSlope;
+                        });
+                });
+        }
+
+        static Basis CharacteristicTrace(const Basis &inside, const Eigen::Vector3d &normal, real exponential)
+        {
+            return CharacteristicTrace(inside, Basis::Zero(), normal, exponential, 0).first;
+        }
+    };
+
     /**
      * @brief Thesis (3-71), (3-72): exact Euler vortex and its conservative gradient.
      * The primitive background is nondimensional, rho=p=T=1, w=0.

@@ -326,7 +326,7 @@ def run(out, prepared, args):
                 overrides = {"/mesh/meshFile": str(inputs / f"mesh{cells}.cgns"),
                              "/mesh/periodicLengths": [1, 1, 1] if periodic else [0, 0, 0],
                              "/mesh/periodicBoundaryPairs": ["XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX"] if periodic else [],
-                             "/physics/boundaryZones": [{"name": side, "mode": "Periodic" if periodic else "SupersonicOutlet"}
+                             "/physics/boundaryZones": [{"name": side, "mode": "Periodic" if periodic else "Extrapolation"}
                                                         for side in ("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX")],
                              "/initialField/nodeFile": "" if periodic else str(inputs / f"oblique_initial{cells}.csv"),
                              "/initialField/expressions": smooth_expression(cells) if periodic else [],

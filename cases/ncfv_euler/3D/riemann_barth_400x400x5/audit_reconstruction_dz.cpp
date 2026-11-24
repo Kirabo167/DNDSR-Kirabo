@@ -113,7 +113,7 @@ int main(int argc, char **argv)
         cfg.mesh.periodicBoundaryPairs = flat ? std::vector<std::string>{"ZMIN", "ZMAX"} : std::vector<std::string>{};
         for (auto &zone : cfg.physics.boundaryZones)
             zone.mode = flat && (zone.name == "ZMIN" || zone.name == "ZMAX") ?
-                            DNDS::NCFV::BoundaryMode::Periodic : DNDS::NCFV::BoundaryMode::SupersonicOutlet;
+                            DNDS::NCFV::BoundaryMode::Periodic : DNDS::NCFV::BoundaryMode::Extrapolation;
         cfg.initialField.nodeFile.clear();
         cfg.initialField.expressions.clear();
         cfg.algorithm.mode = DNDS::NCFV::IntegrationMode::EfficientDifferential;

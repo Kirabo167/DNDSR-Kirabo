@@ -47,6 +47,8 @@ namespace DNDS::NCFV
                         {"ncfv_euler", "NCFV", "IdealGas", dimension + 2});
                     schema["properties"]["dimension"]["const"] = dimension;
                     schema["properties"]["dimension"]["default"] = dimension;
+                    if constexpr (dimension == 2)
+                        schema["properties"]["physics"]["properties"]["boundaryMode"]["enum"] = PhysicalBoundaryModeNames();
                     std::cout << schema.dump(4) << std::endl;
                 }
                 return 0;

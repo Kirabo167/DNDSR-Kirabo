@@ -772,6 +772,353 @@ TEST_CASE("NCFV 3-D efficient and traditional modes are MPI invariant")
     VerifyMode(IntegrationMode::TraditionalQuadrature);
 }
 
+TEST_CASE("NCFV prism MMS assembles stage-time sources and the selected boundary flux")
+{
+    using MMS = ExponentialMMS;
+    const auto cases = ProjectRoot() / "cases/ncfv_euler/3D";
+    auto cfg = LoadConfiguration((cases / "NCFV_exponential_mms_prism12.json").string(), {}, {}).configuration;
+    cfg.mesh.meshFile = (cases / "prism_n12_j0.1.cgns").string();
+    cfg.algorithm.retainMicroGeometry = false;
+    SUBCASE("prescribed exterior")
+    {
+        cfg.physics.boundaryMode = BoundaryMode::MMSExactExterior;
+    }
+    SUBCASE("far-field incoming characteristics")
+    {
+        cfg.physics.boundaryMode = BoundaryMode::FarField;
+    }
+    SUBCASE("incoming characteristics")
+    {
+        cfg.physics.boundaryMode = BoundaryMode::CharacteristicFarField;
+    }
+    cfg.time.iterations = 1;
+    cfg.time.endTime = .001; // The first physical step must be clipped to this time.
+    cfg.Validate();
+    Solver<3> solver(gMPI, cfg);
+    solver.Initialize();
+    const auto &mesh = solver.Mesh();
+    const auto &halo = solver.NodeCommunication();
+    SpatialOperator<3> spatial(gMPI, mesh, solver.EdgeTopology(), solver.Geometry(), solver.ReconstructionData(),
+                               solver.Boundaries(), cfg.algorithm.mode, cfg.reconstruction, cfg.physics, cfg.time, halo);
+    spatial.Initialize();
+    NodeStatePair state, rhs;
+    for (auto *field : {&state, &rhs})
+    {
+        field->InitPair(field == &state ? "NCFV.test.mmsMean" : "NCFV.test.mmsRhs", gMPI);
+        field->father->Resize(mesh->NumNode(), 5, 1);
+        field->son->Resize(halo.NumNodeGhost(), 5, 1);
+        field->BorrowSetup(halo.Layout());
+        field->trans.initPersistentPull();
+    }
+
+    // With constant interior means the interior flux divergence vanishes. Evaluate
+    // the forced RHS at a nonzero time and compare to direct nodal source gradients.
+    constexpr real time = .173;
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        state[node] << 1, .2, .1, .3, 3.32;
+    spatial.EvaluateRHS(state, rhs, true, false, time);
+    real localError = 0;
+    DNDS::index localInterior = 0;
+    for (const auto &volume : solver.Geometry().NodeVolumes())
+        if (volume.boundaryPieces.empty())
+        {
+            ++localInterior;
+            const auto basisAt = [&](DNDS::index node)
+            { return MMS::Powers(MMS::direction.dot(halo.Coordinate(node)) + MMS::frequency * time); };
+            MMS::Basis expected = MMS::sourceCoefficients.transpose() * basisAt(volume.node);
+            for (const auto &entry : volume.pointRecoveryStencil)
+                expected += MMS::direction.dot(entry.gradientWeight) *
+                            (MMS::sourceCoefficients.transpose() * MMS::PhaseDerivative(basisAt(entry.node)));
+            localError = std::max(localError, (rhs[volume.node] - expected).norm());
+        }
+    DNDS::index interior = 0;
+    MPI_Allreduce(&localInterior, &interior, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    CHECK(interior == 11 * 11 * 11);
+    CHECK(localError < 2e-10);
+
+    // Use explicitly prescribed nonautonomous SSPRK3 times as an independent driver.
+    const real dt = cfg.time.endTime;
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        state[node] = solver.StateField()[node];
+    spatial.EvaluateRHS(state, rhs, true, false, 0);
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        state[node] += dt * rhs[node];
+    spatial.EvaluateRHS(state, rhs, false, false, dt);
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        state[node] = .75 * solver.StateField()[node] + .25 * (state[node] + dt * rhs[node]);
+    spatial.EvaluateRHS(state, rhs, false, false, .5 * dt);
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        state[node] = (solver.StateField()[node] + 2 * (state[node] + dt * rhs[node])) / 3;
+    solver.Run();
+    CHECK(solver.SimulationTime() == doctest::Approx(dt));
+    localError = 0;
+    for (DNDS::index node = 0; node < mesh->NumNode(); ++node)
+        localError = std::max(localError, (solver.StateField()[node] - state[node]).norm());
+    CHECK(localError < 1e-12);
+    const DNDS::index localCalls = solver.LastStepRiemannSolverCalls();
+    DNDS::index calls = 0;
+    MPI_Allreduce(&localCalls, &calls, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    const DNDS::index boundaryCalls = cfg.physics.boundaryMode == BoundaryMode::MMSExactExterior ? 6 * 13 * 13 : 0;
+    CHECK(calls == 3 * (solver.EdgeTopology().NumEdgeGlobal() + boundaryCalls));
+}
+
+TEST_CASE("NCFV viscous macrofaces integrate wall pressure, shear work and heat flux")
+{
+    using State = Eigen::Vector<DNDS::real, 5>;
+    constexpr DNDS::real wallSpeed = .1;
+    constexpr DNDS::real wallTemperature = 1.4;
+    constexpr DNDS::real shear = .4;
+    constexpr DNDS::real energySlope = .6;
+    const auto velocity = [](DNDS::real z) { return .25 + shear * z; };
+    const auto energy = [](DNDS::real z) { return 3 + energySlope * z; };
+
+    auto cfg = MakeConfiguration(IntegrationMode::EfficientDifferential);
+    cfg.algorithm.macroFaceBoundary = true;
+    cfg.reconstruction.enableLimiter = false;
+    cfg.io.writeResolvedConfiguration = false;
+    auto &wall = cfg.physics.boundaryZones.front();
+    SUBCASE("slip") { wall.mode = BoundaryMode::SlipWall; }
+    SUBCASE("symmetry") { wall.mode = BoundaryMode::Symmetry; }
+    SUBCASE("adiabatic") { wall.mode = BoundaryMode::NoSlipAdiabaticWall; }
+    SUBCASE("isothermal") { wall.mode = BoundaryMode::NoSlipIsothermalWall; }
+    wall.wallVelocity = {wallSpeed, 0, 0};
+    wall.wallTemperature = wallTemperature;
+    wall.strongState = false;
+    cfg.Validate();
+    Solver<3> solver(gMPI, cfg);
+    solver.Initialize();
+    const auto &mesh = solver.Mesh();
+    const auto &halo = solver.NodeCommunication();
+    SpatialOperator<3> spatial(gMPI, mesh, solver.EdgeTopology(), solver.Geometry(), solver.ReconstructionData(),
+                               solver.Boundaries(), cfg.algorithm.mode, cfg.reconstruction, cfg.physics, cfg.time, halo);
+    spatial.Initialize();
+    NodeStatePair means, rhs;
+    for (auto *field : {&means, &rhs})
+    {
+        field->InitPair(field == &means ? "NCFV.test.wallMeans" : "NCFV.test.wallRhs", gMPI);
+        field->father->Resize(mesh->NumNode(), 5, 1);
+        field->son->Resize(halo.NumNodeGhost(), 5, 1);
+        field->BorrowSetup(halo.Layout());
+        field->trans.initPersistentPull();
+    }
+    for (const auto &volume : solver.Geometry().NodeVolumes())
+    {
+        const DNDS::real z = mesh->coords[volume.node].z() + volume.moments.first.z() / volume.moments.measure;
+        means[volume.node] << 1, velocity(z), 0, 0, energy(z);
+    }
+    spatial.EvaluateRHS(means, rhs);
+
+    const DNDS::real gm1 = cfg.physics.gamma - 1;
+    const auto &transport = cfg.physics.viscous;
+    const DNDS::real conductivity = transport.dynamicViscosity * transport.gasConstant *
+                                    cfg.physics.gamma / (gm1 * transport.prandtlNumber);
+    const auto pressure = [&](DNDS::real z) { return gm1 * (energy(z) - .5 * sqr(velocity(z))); };
+    DNDS::index localCounts[3]{spatial.RiemannSolverCallCount(), 0, 0}, counts[3]{};
+    for (const auto &volume : solver.Geometry().NodeVolumes())
+    {
+        const Vector3 x = mesh->coords[volume.node];
+        // Select face interiors; wall velocity is tangential on both y and z walls.
+        if (x.x() == 0 || x.x() == 1)
+            continue;
+        const bool yWall = x.y() == 0 || x.y() == 1;
+        const bool zWall = x.z() == 0 || x.z() == 1;
+        if (yWall == zWall)
+            continue;
+        ++localCounts[yWall ? 1 : 2];
+        State boundaryFlux = -volume.moments.measure * rhs[volume.node];
+        for (const auto &incidence : solver.EdgeTopology().Node2Edge(volume.node))
+            boundaryFlux -= incidence.outwardSign * State(spatial.EdgeFluxes()[incidence.edge]);
+
+        // The tangential flow transports no mass, tangential momentum or energy through these walls.
+        const int axis = yWall ? 1 : 2;
+        const DNDS::real sign = x[axis] == 0 ? -1 : 1;
+        const DNDS::real normalZ = zWall ? sign : 0;
+        const DNDS::real wallDistance = .5 * volume.lengthScale;
+        DNDS::real pressureIntegral = 0, tractionIntegral = 0, heatIntegral = 0;
+        for (const auto &piece : volume.boundaryPieces)
+        {
+            // Edge-midpoint quadrature integrates the convective quadratic pressure exactly.
+            for (int j = 0; j < 3; ++j)
+            {
+                const DNDS::real z = .5 * (piece.points[j].coordinate.z() + piece.points[(j + 1) % 3].coordinate.z());
+                pressureIntegral += piece.measure * pressure(z) / 3;
+            }
+            if (wall.mode == BoundaryMode::SlipWall || wall.mode == BoundaryMode::Symmetry)
+                continue;
+            // The conservative state is affine, so its viscous trace mean is its centroid
+            // value on each original triangle. Temperature of that mean varies on the y walls.
+            const DNDS::real z = (piece.points[0].coordinate.z() + piece.points[1].coordinate.z() +
+                                  piece.points[2].coordinate.z()) / 3;
+            tractionIntegral += piece.measure * transport.dynamicViscosity *
+                                (normalZ * shear + (wallSpeed - velocity(z)) / wallDistance);
+            if (wall.mode == BoundaryMode::NoSlipIsothermalWall)
+            {
+                const DNDS::real temperature = pressure(z) / transport.gasConstant;
+                const DNDS::real dTdz = gm1 * (energySlope - velocity(z) * shear) / transport.gasConstant;
+                heatIntegral -= piece.measure * conductivity *
+                                (normalZ * dTdz + (wallTemperature - temperature) / wallDistance);
+            }
+        }
+        CHECK(std::abs(boundaryFlux[0]) < 2e-12);
+        CHECK(std::abs(boundaryFlux[1 + axis] - sign * pressureIntegral) < 2e-12);
+        CHECK(std::abs(boundaryFlux[1] + tractionIntegral) < 2e-12);
+        CHECK(std::abs(boundaryFlux[4] - wallSpeed * boundaryFlux[1] - heatIntegral) < 2e-12);
+    }
+    MPI_Allreduce(localCounts, counts, 3, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    CHECK(counts[0] == solver.EdgeTopology().NumEdgeGlobal());
+    CHECK(counts[1] == 18);
+    CHECK(counts[2] == 18);
+}
+
+TEST_CASE("NCFV physical open boundaries integrate the prescribed and reconstructed data directly")
+{
+    using State = Eigen::Vector<DNDS::real, 5>;
+    IntegrationMode mode = IntegrationMode::EfficientDifferential;
+    BoundaryMode boundary = BoundaryMode::PressureOutlet;
+    bool useMacroFace = false;
+    bool supersonic = false;
+    SUBCASE("pressure outlet efficient nodal") {}
+    SUBCASE("pressure outlet efficient macroface") { useMacroFace = true; }
+    SUBCASE("pressure outlet traditional quadrature") { mode = IntegrationMode::TraditionalQuadrature; }
+    SUBCASE("supersonic inlet efficient macroface")
+    {
+        boundary = BoundaryMode::SupersonicInlet;
+        useMacroFace = true;
+        supersonic = true;
+    }
+    SUBCASE("supersonic outlet efficient macroface")
+    {
+        boundary = BoundaryMode::SupersonicOutlet;
+        useMacroFace = true;
+        supersonic = true;
+    }
+    SUBCASE("nominal inlet with subsonic flow switches waves on both x faces")
+    {
+        boundary = BoundaryMode::SupersonicInlet;
+        useMacroFace = true;
+    }
+    SUBCASE("nominal outlet with subsonic flow switches waves on both x faces")
+    {
+        boundary = BoundaryMode::SupersonicOutlet;
+        useMacroFace = true;
+    }
+
+    auto cfg = MakeConfiguration(mode);
+    cfg.algorithm.macroFaceBoundary = useMacroFace;
+    cfg.reconstruction.enableLimiter = false;
+    cfg.physics.viscous.enabled = false;
+    cfg.io.writeResolvedConfiguration = false;
+    cfg.time.iterations = 1;
+    cfg.time.useCFLTimeStep = false;
+    cfg.time.useLocalTimeStep = false;
+    cfg.time.timeStep = 1e-5;
+    constexpr DNDS::real rho = 1.2, v = .13, w = -.08, p = 1.4, outletPressure = 1.1;
+    const DNDS::real u = supersonic ? 2.4 : .45;
+    cfg.physics.initialPrimitive = {rho, u, v, w, p};
+    auto &zone = cfg.physics.boundaryZones.front();
+    zone.mode = boundary;
+    zone.primitive = {1.05, supersonic ? 2.1 : .3, v, w, .95};
+    zone.staticPressure = outletPressure;
+    zone.strongState = boundary == BoundaryMode::SupersonicInlet && !supersonic;
+    cfg.Validate();
+    Solver<3> solver(gMPI, cfg);
+    solver.Initialize();
+    solver.EvaluateResidual();
+
+    const DNDS::real gamma = cfg.physics.gamma;
+    const auto fluxX = [&](DNDS::real density, DNDS::real vx, DNDS::real pressure) -> State
+    {
+        const DNDS::real energy = pressure / (gamma - 1) + .5 * density * (vx * vx + v * v + w * w);
+        return {density * vx, density * vx * vx + pressure, density * vx * v,
+                density * vx * w, vx * (energy + pressure)};
+    };
+    const State interior = fluxX(rho, u, p);
+    const DNDS::real a = std::sqrt(gamma * p / rho);
+    const DNDS::real reservoirRho = zone.primitive.front(), reservoirP = zone.primitive.back();
+    const DNDS::real reservoirA = std::sqrt(gamma * reservoirP / reservoirRho);
+    DNDS::index checked = 0, globalChecked = 0;
+    for (const auto &volume : solver.Geometry().NodeVolumes())
+    {
+        const Vector3 x = solver.Mesh()->coords[volume.node];
+        if ((x.x() != 0 && x.x() != 1) || x.y() == 0 || x.y() == 1 || x.z() == 0 || x.z() == 1)
+            continue;
+        const DNDS::real normalX = x.x() == 0 ? -1 : 1;
+        State expected = interior;
+        if (boundary == BoundaryMode::PressureOutlet)
+        {
+            if (normalX < 0)
+                continue;
+            // J+, entropy and tangential velocities leave the positive-x subsonic outlet.
+            const DNDS::real outletRho = rho * std::pow(outletPressure / p, 1 / gamma);
+            const DNDS::real outletU = u + 2 / (gamma - 1) * (a - std::sqrt(gamma * outletPressure / outletRho));
+            expected = fluxX(outletRho, outletU, outletPressure);
+        }
+        else if (!supersonic)
+        {
+            // The same named zone is locally an inflow at x=0 and an outflow at x=1.
+            const DNDS::real jp = normalX * u + 2 * a / (gamma - 1);
+            const DNDS::real jm = normalX * zone.primitive[1] - 2 * reservoirA / (gamma - 1);
+            const DNDS::real ab = .25 * (gamma - 1) * (jp - jm);
+            const DNDS::real entropy = normalX < 0 ? reservoirP / std::pow(reservoirRho, gamma) : p / std::pow(rho, gamma);
+            const DNDS::real rb = std::pow(ab * ab / (gamma * entropy), 1 / (gamma - 1));
+            expected = fluxX(rb, normalX * .5 * (jp + jm), rb * ab * ab / gamma);
+        }
+        else if (normalX < 0)
+            expected = fluxX(reservoirRho, zone.primitive[1], reservoirP);
+        DNDS::real area = 0;
+        for (const auto &piece : volume.boundaryPieces)
+            area += piece.measure;
+        CHECK(area > 0);
+        // The uniform interior solution integrates exactly on internal edges.
+        const State actual = interior - (normalX * volume.moments.measure / area) * solver.ResidualField()[volume.node];
+        CHECK((actual - expected).norm() < 2e-11);
+        ++checked;
+    }
+    MPI_Allreduce(&checked, &globalChecked, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    CHECK(globalChecked == (boundary == BoundaryMode::PressureOutlet ? 9 : 18));
+    DNDS::index internalCalls = solver.EdgeTopology().NumEdge();
+    if (mode == IntegrationMode::TraditionalQuadrature)
+    {
+        internalCalls = 0;
+        for (const auto &surface : solver.Geometry().EdgeSurfaces())
+            internalCalls += static_cast<DNDS::index>(surface.quadrature.size());
+    }
+    solver.Run();
+    CHECK(solver.LastStepRiemannSolverCalls() == 3 * internalCalls);
+    if (zone.strongState)
+        for (const auto &volume : solver.Geometry().NodeVolumes())
+            if (!volume.boundaryPieces.empty())
+                CHECK(std::abs(solver.StateField()[volume.node](0) - rho) < 1e-3);
+}
+
+TEST_CASE("NCFV strong supersonic inlet constrains nodes only when all incident inlet normals are fully incoming")
+{
+    auto cfg = MakeConfiguration(IntegrationMode::EfficientDifferential);
+    cfg.io.writeResolvedConfiguration = false;
+    cfg.physics.initialPrimitive = {1.2, 2.4, .1, -.1, 1.4};
+    auto &zone = cfg.physics.boundaryZones.front();
+    zone.mode = BoundaryMode::SupersonicInlet;
+    zone.strongState = true;
+    zone.primitive = {1.05, 2.1, -.12, .14, .95};
+    cfg.Validate();
+    Solver<3> solver(gMPI, cfg);
+    solver.Initialize();
+    DNDS::index forced = 0, globalForced = 0;
+    for (const auto &volume : solver.Geometry().NodeVolumes())
+    {
+        const Vector3 x = solver.Mesh()->coords[volume.node];
+        const bool fullyIncoming = x.x() == 0 && x.y() > 0 && x.y() < 1 && x.z() > 0 && x.z() < 1;
+        const auto &w = fullyIncoming ? zone.primitive : cfg.physics.initialPrimitive;
+        const Vector3 u{w[1], w[2], w[3]};
+        Eigen::Vector<DNDS::real, 5> expected;
+        expected << w[0], w[0] * u, w[4] / (cfg.physics.gamma - 1) + .5 * w[0] * u.squaredNorm();
+        CHECK((solver.StateField()[volume.node] - expected).norm() < 2e-12);
+        forced += fullyIncoming;
+    }
+    MPI_Allreduce(&forced, &globalForced, 1, DNDS_MPI_INDEX, MPI_SUM, gMPI.comm);
+    CHECK(globalForced == 9);
+}
+
 TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topology")
 {
     for (IntegrationMode mode : {IntegrationMode::EfficientDifferential,
@@ -804,6 +1151,8 @@ TEST_CASE("NCFV exact sparse node halo preserves a truly paired periodic topolog
         CHECK(solver.EvaluateResidual() < 2e-11);
         Eigen::Vector<double, 5> initial = solver.StateField()[0];
         solver.Run();
+        if (mode == IntegrationMode::EfficientDifferential)
+            CHECK(solver.LastStepRiemannSolverCalls() == 3 * solver.EdgeTopology().NumEdge());
         DNDS::real localStateChange = 0;
         for (DNDS::index iNode = 0; iNode < solver.Mesh()->NumNode(); iNode++)
             localStateChange = std::max(
@@ -955,7 +1304,7 @@ TEST_CASE("NCFV z-only periodic topology supports limited efficient reconstructi
     configuration.mesh.periodicBoundaryPairs = {"bc-4", "bc-4-1"};
     for (auto &zone : configuration.physics.boundaryZones)
         if (zone.name != "bc-4" && zone.name != "bc-4-1")
-            zone.mode = BoundaryMode::SupersonicOutlet;
+            zone.mode = BoundaryMode::Extrapolation;
     configuration.reconstruction.enableLimiter = true;
     configuration.reconstruction.limitPointRecovery = true;
     configuration.physics.initialPrimitive = {1.0, 0, 0, 0.1, 1.0};
@@ -1297,8 +1646,8 @@ TEST_CASE("NCFV pressure limiting constrains recovered points and full macro int
     configuration.reconstruction.enableLimiter = true;
     configuration.reconstruction.limitPointRecovery = true;
     configuration.physics.viscous.enabled = false;
-    configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
-    configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
+    configuration.physics.boundaryMode = BoundaryMode::Extrapolation;
+    configuration.physics.boundaryZones.front().mode = BoundaryMode::Extrapolation;
     Solver<3> solver(gMPI, configuration);
     solver.Initialize();
     const auto &mesh = solver.Mesh();
@@ -1376,8 +1725,8 @@ TEST_CASE("NCFV limited efficient anchors stay physical without changing conserv
     configuration.reconstruction.enableLimiter = true;
     configuration.reconstruction.limitPointRecovery = limitRecovery;
     configuration.physics.viscous.enabled = false;
-    configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
-    configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
+    configuration.physics.boundaryMode = BoundaryMode::Extrapolation;
+    configuration.physics.boundaryZones.front().mode = BoundaryMode::Extrapolation;
     Solver<3> solver(gMPI, configuration);
     solver.Initialize();
     const auto &mesh = solver.Mesh();
@@ -1485,9 +1834,9 @@ TEST_CASE("NCFV binary Barth fallback preserves shared gradients and uses zeroth
     configuration.reconstruction.sharedGradientFaceSweep = false;
     configuration.reconstruction.limitFluxCorrection = false;
     configuration.physics.viscous.enabled = false;
-    configuration.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
+    configuration.physics.boundaryMode = BoundaryMode::Extrapolation;
     if (!periodic)
-        configuration.physics.boundaryZones.front().mode = BoundaryMode::SupersonicOutlet;
+        configuration.physics.boundaryZones.front().mode = BoundaryMode::Extrapolation;
     configuration.Validate();
     Solver<3> solver(gMPI, configuration);
     solver.Initialize();

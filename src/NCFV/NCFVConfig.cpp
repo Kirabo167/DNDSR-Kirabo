@@ -82,6 +82,10 @@ namespace DNDS::NCFV
                               "NCFV dimension must be 2 or 3");
         DNDS_check_throw_info(!mesh.meshFile.empty(),
                               "NCFV mesh.meshFile must name a CGNS mesh");
+        DNDS_check_throw_info(!algorithm.macroFaceBoundary ||
+                                  (algorithm.mode == IntegrationMode::EfficientDifferential &&
+                                   !reconstruction.enableLimiter && !reconstruction.limitFluxCorrection),
+                              "NCFV macroFaceBoundary requires EfficientDifferential integration with reconstruction and flux limiters disabled");
         DNDS_check_throw_info(!reconstruction.limitPointRecovery ||
                                   (reconstruction.enableLimiter && algorithm.mode == IntegrationMode::EfficientDifferential),
                               "NCFV limitPointRecovery requires efficient mode with the limiter enabled");
@@ -131,6 +135,26 @@ namespace DNDS::NCFV
                 periodicAxisCount++;
         }
         const bool periodic = periodicAxisCount > 0;
+        DNDS_check_throw_info(physics.boundaryMode != BoundaryMode::MMSExactExterior || physics.exponentialMMS,
+                              "NCFV MMSExactExterior requires physics.exponentialMMS=true");
+        if (physics.exponentialMMS)
+        {
+            DNDS_check_throw_info(dimension == 3 && std::abs(physics.gamma - 1.4) < 1e-14 &&
+                                      !physics.viscous.enabled && !periodic,
+                                  "NCFV exponentialMMS requires nonperiodic 3-D Euler with gamma=1.4");
+            DNDS_check_throw_info(!time.useCFLTimeStep || !time.useLocalTimeStep,
+                                  "NCFV exponentialMMS requires a global physical time step");
+            DNDS_check_throw_info(!reconstruction.limitFluxCorrection,
+                                  "NCFV flux correction assumes a source-free Euler update");
+            DNDS_check_throw_info((physics.boundaryMode == BoundaryMode::FarField ||
+                                   physics.boundaryMode == BoundaryMode::CharacteristicFarField ||
+                                   physics.boundaryMode == BoundaryMode::MMSExactExterior) &&
+                                      physics.boundaryZones.empty() && !physics.requireBoundaryZoneCoverage,
+                                  "NCFV exponentialMMS requires a global FarField, CharacteristicFarField, or MMSExactExterior boundary");
+            DNDS_check_throw_info(!initialField.isentropicVortex && initialField.nodeFile.empty() &&
+                                      initialField.expressions.empty() && initialField.boxes.empty() && initialField.planes.empty(),
+                                  "NCFV exponentialMMS supplies the initial control-volume means");
+        }
         if (periodic)
         {
             DNDS_check_throw_info(dimension == 3,
@@ -232,6 +256,8 @@ namespace DNDS::NCFV
         std::set<std::string> boundaryNames;
         for (const auto &boundary : physics.boundaryZones)
         {
+            DNDS_check_throw_info(boundary.mode != BoundaryMode::MMSExactExterior,
+                                  "NCFV MMSExactExterior must be selected globally through physics.boundaryMode");
             DNDS_check_throw_info(!boundary.name.empty(),
                                   "NCFV boundary-zone names must not be empty");
             DNDS_check_throw_info(boundaryNames.insert(boundary.name).second,

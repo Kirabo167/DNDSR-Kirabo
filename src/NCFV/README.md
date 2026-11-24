@@ -485,17 +485,55 @@ schema 位于对应维度目录中；旧版被禁用的 `Roe_M2` 配置已迁移
 然后在 \(\widetilde q\) 处用链式法则转换为原始变量梯度。宏面黏性通量乘
 标量面积 \(S_{ij}=\sum_k S_{ij,k}\)，而不是合成有向面积向量的模。
 
-`physics.boundaryZones` 按区分大小写的 CGNS 名称配置：`FarField`、
-`SlipWall`、`Symmetry`、`NoSlipAdiabaticWall`、`NoSlipIsothermalWall`、
-`SupersonicInlet`、`SupersonicOutlet`、`PressureOutlet`。远场采用指定外侧
-状态的黎曼通量，压力出口使用给定静压；尚非全特征无反射边界。
-无滑移壁可设置 `wallVelocity`，等温壁还需 `wallTemperature`；
-`strongState=true` 在初始时刻和每个 RK 子步施加入口/壁面节点条件。
-角点处入口优先于壁面，同优先级按区 ID 确定。建议启用
-`requireBoundaryZoneCoverage=true` 防止漏配。
-高效模式边界无粘通量按论文第 4.3.2 节先在边界格点调用边界通量求解器，
-再把通量线性插值到边中点和面顶点并精确积分；不会先插值守恒量再调用
-非线性边界通量函数。
+物理边界按 CGNS 名称在 `physics.boundaryZones` 中配置。在每个重构位置，令
+\(n\) 为外法向，\(v=u_L\cdot n\)，\(a_L\) 为域内声速，\(K=p/\rho^\gamma\)。
+
+| 边界模式 | 施加的对流边界条件 |
+|---|---|
+| `FarField`、`CharacteristicFarField`、`SupersonicInlet`、`SupersonicOutlet` | 按当地 \(v-a_L,v,v+a_L\) 的符号选取特征数据。出射量及零速量取域内，入射量取分区 `primitive` 或默认 `farFieldPrimitive`。同一分区可同时出现流入、流出及回流。 |
+| `PressureOutlet` | 亚声速出流保留域内 \(J_+,K,u_\tau\)，给定 `staticPressure`。亚声速回流保留域内 \(J_+\)，从分区储库取 \(K,u_\tau\)。超声速出流取全部内态；超声速回流取储库的密度和速度及给定静压。 |
+| `Extrapolation` | 对所有局部马赫数直接使用域内重构态和梯度。需要纯外推的旧算例将原 `SupersonicOutlet` 改为此模式。 |
+| `SlipWall`、`Symmetry` | 用重构内态与零法向速度求壁压 \(p_b\)，通量为 \((0,p_b n,0)\)。 |
+| `NoSlipAdiabaticWall`、`NoSlipIsothermalWall` | 对流壁压由域内重构与给定法向壁速确定。壁速、剪切功、绝热或等温约束同时进入逐片黏性通量。 |
+| `Periodic` | 周期节点配对后，共享内部界面通量，两侧分别使用自己的重构。 |
+
+静压亚声速出口用 \(p_b=p_{\rm set}\)、\(\rho_b=(p_b/K_b)^{1/\gamma}\)、
+\(v_b=J_{+,L}-2a_b/(\gamma-1)\) 恢复边界迹。
+壁面按相对法向马赫数 \(M=(v-w_n)/a_L\) 选择一侧波关系。压缩时，
+\(p_b/p_L=1+\gamma M(\sqrt{1+z^2}+z)\)，\(z=(\gamma+1)M/4\)；
+膨胀时 \(p_b/p_L=[1+(\gamma-1)M/2]^{2\gamma/(\gamma-1)}\)，达到真空时通量为零。
+固定网格上的切向移动壁仍给出零对流质量通量。无滑移壁若配置非零法向壁速 \(w_n\)，
+求解器取 \(u_b=u_L+(w_n-v)n\)。以 \(P=p_b/p_L\)、\(\beta=(\gamma-1)/(\gamma+1)\)
+计，压缩侧 \(\rho_b/\rho_L=(P+\beta)/(1+\beta P)\)，膨胀侧 \(\rho_b/\rho_L=P^{1/\gamma}\)。
+固定控制面上的通量为 \((\rho_bw_n,\rho_bw_nu_b+p_bn,(\rho E_b+p_b)w_n)\)，包括法向质量输运。
+
+`strongState=true` 另外约束初始及每个 RK 子步的节点均值。对 `SupersonicInlet`，
+仅当本节点所有开启强施加的入口面按当前均值均为严格超声速流入时，才给定整个节点状态。
+其余流态由边界通量施加。符合条件的强入口优先于无滑移壁，同优先级取区 ID 最小者。
+壁面之间的弱通量分别用各自法向求值。`limitFluxCorrection=true` 仍用对偶均值构造一阶 LLF
+边界通量、许可状态界及 CFL 波速；该路径给固定壁使用反射外态以维持正性限制器的通量分解。
+
+传统格式在每个求积点计算边界通量。高效格式默认按支撑节点的积分权重累加通量。
+光滑 Euler 或层流 Navier–Stokes 算例可设置 `algorithm.macroFaceBoundary=true`，
+并关闭 `reconstruction.enableLimiter` 和 `reconstruction.limitFluxCorrection`。
+此时同一节点控制体内同分区、同向共面的微面合为宏面。设 \(H\) 为上表确定的向外通量，
+则利用对二次多项式精确的几何权重计算
+\[
+I_B=A_B H_i+\sum_j D_{w_{Bj}} H_j .
+\]
+沿面微分包括域内重构梯度，随位置变化的入射边界数据还贡献自己的方向导数。
+物理宏面的对流项直接由此给出。单独的 `MMSExactExterior` 制造解对照使用内外双态和一次配置的黎曼通量。
+三阶面均值估计适用于光滑且特征类型稳定的面片。
+
+当 `physics.viscous.enabled=true` 时，宏面公式给出对流项。每个原始边界片用本片的内侧平均态、
+重构梯度和单位外法向计算黏性通量，再按面积从对流项中扣除。
+`NoSlipAdiabaticWall` 令法向导热为零，移动壁面仍有剪切应力做功。
+`NoSlipIsothermalWall` 使用分区的 `wallTemperature` 构造壁面状态并计算热通量。
+具体取内侧原始变量 \(W_L=(\rho_L,u_L,p_L)\)，无滑移壁的黏性状态取
+\(W_w=(\rho_L,w,p_L)\)（绝热）或 \(W_w=(\rho_L,w,\rho_L R T_w)\)（等温）。
+程序给原始变量梯度加上法向修正 \(n(W_w-W_L)^T/d_w\)，\(d_w\) 取控制体长度尺度的一半。
+绝热壁再去除温度梯度的法向分量；等温壁用壁面状态计算输运系数及热流。
+滑移壁与对称面返回零黏性通量，开放边界用内侧状态及梯度计算黏性通量。
 
 `time.useCFLTimeStep=true` 时，`dt_i=CFL*V_i/sum(lambda_conv+lambda_visc)`。
 `useLocalTimeStep=true` 为稳态局部伪时间，输出时间记为各步最小步长的累加；
@@ -553,6 +591,173 @@ owner/ghost 通信，边通量仍按 edge owner 唯一计算。每个 rank 不�
 ```bash
 cd build
 mpirun --oversubscribe -np 4 ./app/ncfv_euler3D.exe ../cases/ncfv_euler/3D/NCFV_iv40.json
+```
+
+### 非周期三棱柱制造解
+
+`physics.exponentialMMS=true` 启用三维非周期理想气体 Euler 制造解，取 \(\gamma=1.4\)。
+令 \(e=\exp(0.75x+0.35y+0.65z+0.65t)\)，原始变量
+\((\rho,u,v,w,p)=(1+0.1e,\ 0.2+0.1e,\ 0.1+0.2e,\ 0.3+0.3e,\ 1.3+1.2e)\)。
+制造解给定初始守恒均值和 \(S=\partial_tU+\nabla\cdot F(U)\)。
+`FarField` 和 `CharacteristicFarField` 使用域内重构的出射量，制造解只给定入射特征。
+在此三维制造解上，可将全局 `physics.boundaryMode` 设为 `MMSExactExterior`，
+通过完整解析外态和双态黎曼通量复算历史对照组。
+重启读取文件中的守恒均值和物理时刻。
+制造解使用全域物理步长。三次 SSPRK3 残差使用 \(t_n,t_n+\Delta t,t_n+\Delta t/2\)，
+其中 \(\Delta t\) 为当前尝试实际采用的步长。[原文 §6.1.3](https://arxiv.org/abs/2305.01466)
+
+两种积分都组装 \(d\bar U_i/dt=-\sum F_{\rm out}/V_i+\bar S_i\)。
+高效格式用节点源值和源项一阶导数，
+\(\bar S_i=S(x_i,t)+\sum_j\nabla S(x_j,t)^T w^V_{ij}\)。
+`pointRecoveryStencil` 中的 \(w^V\) 已除以控制体体积。传统格式在体积求积点累加 \(S\)，再除以体积。
+`NodeControlVolume::VolumeMean` 同时支持这两种规则，可用于其他给定值和空间梯度的源项。
+制造解把空间指数基的控制体均值预先算好，每个子步只更新对应的时间系数。
+
+随附的 \(n=12\) 网格按 gs 验证使用的规则重建，在单位立方体内将每个砖块分成两个 O1 三棱柱，
+只对内部节点施加每分量最大 \(0.1/n\) 的扰动，NumPy 随机种子为 \(230501466+n\)。
+共有 2,197 个节点、3,456 个棱柱和六个平面边界分区。示例采用 Roe、32 点 SVD 重构目标、
+\(\Delta t=0.05/n\)、\(t_{\rm end}=0.5\)。[算例配置](../../cases/ncfv_euler/3D/NCFV_exponential_mms_prism12.json)
+
+在计算节点的 `build` 目录可以使用同一网格比较边界和积分方法。随附算例默认使用特征宏面边界。
+
+```bash
+casefile=../cases/ncfv_euler/3D/NCFV_exponential_mms_prism12.json
+mpiexec -n 8 ./app/ncfv_euler3D.exe "$casefile"
+mpiexec -n 8 ./app/ncfv_euler3D.exe "$casefile" -k /physics/boundaryMode -v MMSExactExterior
+mpiexec -n 8 ./app/ncfv_euler3D.exe "$casefile" -k /algorithm/macroFaceBoundary -v false -k /algorithm/mode -v TraditionalQuadrature
+```
+
+`retainMicroGeometry=true` 时，程序结束后用每个微四面体上的 24 点六次求积独立计算参考均值，
+输出 `rho_mean_L2_Q6` 和 `rho_source_mean_L2_Q6`，分别度量密度解和连续方程源项的体积加权均方根误差。
+效率比较可关闭几何保留，随之跳过这次诊断。用 gs 的 \(n=16,20,24\) 网格复验时，
+对应设置 `mesh.meshFile`、`time.timeStep=0.05/n`、`time.iterations=10*n`。
+相邻两级的观测阶为 \(\log(E_n/E_m)/\log(m/n)\)。
+
+随附的历史 CSV 保留当时的配置名，其中 `FarField` 行来自旧版完整解析外态对照组。
+用原始日志重新汇总该表时，给收敛脚本传入
+`--summarize-only --mode CharacteristicFarField FarField`。
+新一轮计算默认保存 `CharacteristicFarField` 和 `MMSExactExterior` 两组日志。
+
+目标机器也可以单独运行三棱柱 MPI 回归。该用例检查内部均匀场上的源项注入、末步截短时
+三个子步的时刻及黎曼调用次数。每次残差的特征边界方案调用次数等于全局内部棱数，
+解析外态对照组另有 \(6(n+1)^2\) 次边界调用。
+
+```bash
+mpiexec -n 2 ./test/cpp/ncfv_test_parallel --test-case='NCFV prism MMS*'
+```
+
+### 三棱柱制造解的特征边界与 P2 面积分
+
+在上述算例中取外法向 \(n\)，记 \(v=u\cdot n\)、\(a=\sqrt{\gamma p/\rho}\)、
+\(P_\tau=I-nn^T\)、\(K=p/\rho^\gamma\)。法向 Euler 通量的声学左特征向量给出
+\(dv\pm dp/(\rho a)\)。沿等熵线 \(dp/(\rho a)=2\,da/(\gamma-1)\)，对应的声学变量为
+\(J_\pm=v\pm2a/(\gamma-1)\)。三维强迫制造解中熵随位置变化，这里用
+\((J_+,J_-,K,P_\tau u)\) 构造边界迹。时间演化仍使用完整三维方程及体源项。
+
+在每个面上的重构位置，按内态特征速度 \(v+a,v-a,v\) 的符号决定数据来源。
+整个测试期间 \(|v|/a\le 0.925\)，三个低坐标面流入，三个高坐标面流出。
+
+| 特征量 | 亚声速入口 | 亚声速出口 |
+|---|---|---|
+| \(J_+\) | 域内重构 | 域内重构 |
+| \(J_-\) | 给定 \(g_-\) | 给定 \(g_-\) |
+| \(K,P_\tau u\) | 给定 \(g_K,g_\tau\) | 域内重构 |
+
+令 \(b=(0.2,0.1,0.3)\)、\(c=(0.1,0.2,0.3)\)、\(r=1+0.1e\)、\(p_g=1.3+1.2e\)，
+其中 \(e\) 是前述时空指数。入射函数为
+
+\[
+g_- = n\cdot b+(n\cdot c)e - \frac{2}{\gamma-1}\sqrt{\gamma p_g/r},\qquad
+g_K=p_g/r^\gamma,\qquad g_\tau=P_\tau b+(P_\tau c)e .
+\]
+
+程序按需计算这些函数及其沿面导数。将选出的特征量还原为单一的边界迹 \(U_b\)：
+
+\[
+v_b=(J_++J_-)/2,\qquad a_b=(\gamma-1)(J_+-J_-)/4,\qquad
+\rho_b=\left(\frac{a_b^2}{\gamma K_b}\right)^{1/(\gamma-1)},\quad
+p_b=\rho_b a_b^2/\gamma,\quad u_b=P_\tau u_b+v_bn .
+\]
+
+若域内迹取精确值，上式逐点恢复制造解的物理通量。实际计算中，入口和出口的
+出射数据均取自数值重构，并在每个 SSPRK3 子步更新。角点按各自面法向分别处理。
+令 \(B(U_L,g)\) 表示这一特征组合，\(H=F_n(B(U_L,g))\)。特征宏面向外的通量积分为
+
+\[
+I_B=A_B H_i+\sum_j (D_w H)_j,\qquad
+D_w H=F'_n(U_b)\left[B_{U_L}(\nabla U_L\,w)+B_g\,D_wg\right],
+\quad w=w_{Bj}.
+\]
+
+例如 \(D_we=e(0.75,0.35,0.65)\cdot w\)。显式的 \(D_wg\) 项使时空变化的入口数据
+也参与 P2 修正。积分只需数值内态梯度和入射函数的方向导数。每个特征边界宏面调用
+零次黎曼求解器，内部棱继续用 Roe。
+
+在光滑且远离声速转换的面上，\(B\) 与 \(F_n\) 的导数有界。若重构点值误差为
+\(O(h^3)\)、梯度误差为 \(O(h^2)\)，上述链式法则保持这两个阶。形状规则的网格上
+\(\sum_j|w_{Bj}|/A_B=O(h)\)，因此 P2 积分后的**面平均通量误差为 \(O(h^3)\)**。
+推进后的对偶均值还取决于完整空间残差与时间积分，须另做网格加密验证。
+
+#### 误差度量与复算
+
+在 \(n=12,16,20,24,32,48\) 上分别运行特征边界和完整解析外态对照组。每一级两组共用网格、
+体源、内部 Roe 通量和时间步 \(\Delta t=0.05/n\)，推进至 \(t=0.5\)。两组均按六次精确的
+微四面体求积取得参考对偶均值。全域和贴边两组误差分别取
+\(E_D=(\sum_{i\in D}V_i|\bar U_i-\bar U_i^{\rm ref}|^2/\sum_{i\in D}V_i)^{1/2}\)。
+贴边集合只计有物理边界片的控制体，角点只计一次。
+
+独立的边界通量测试在 \(t=0.5\) 将高精度参考对偶均值送入求解器，再由数值重构得到内态及梯度。
+用实际组装的残差恢复每个贴边控制体的总边界通量
+\(\Phi_i=V_i(\bar S_i-\mathrm{RHS}_i)-\sum_e s_{ie}\Phi_e\)。
+对照值 \(\Phi_i^*\) 用该控制体各外侧微三角上的六次求积直接积分解析物理通量。
+设 \(A_i\) 为这些三角形的总面积，报告每个分量的
+\((\sum_i|\Phi_i-\Phi_i^*|^2/A_i\,/\,\sum_i A_i)^{1/2}\)。
+两处参考求积仅用于初始化测试输入和独立计误差。
+
+下表的阶数取六级网格上 \(\log E\) 对 \(\log(1/n)\) 的最小二乘斜率。通量列用上述独立测试；
+均值列用实际 SSPRK3 推进结果。最后一列给出原解析外态方案在相同条件下的全域均值阶数。
+
+| 分量 | 特征边界通量 | 特征方案全域均值 | 特征方案贴边均值 | 解析外态全域均值 |
+|---|---:|---:|---:|---:|
+| 密度 / 质量通量 | 2.937 | 2.844 | 2.738 | 2.742 |
+| \(x\) 动量 | 3.032 | 2.991 | 2.954 | 2.878 |
+| \(y\) 动量 | 2.948 | 2.890 | 2.835 | 2.873 |
+| \(z\) 动量 | 2.991 | 2.899 | 2.828 | 2.922 |
+| 总能量 | 2.982 | 2.818 | 2.768 | 2.885 |
+
+从 \(n=12\) 到 \(48\)，质量通量误差由 \(9.93\times10^{-5}\) 降至 \(1.71\times10^{-6}\)。
+最细网格上，特征方案与解析外态对照组的全域密度误差分别为 \(5.68\times10^{-7}\) 和
+\(5.93\times10^{-7}\)，贴边密度误差分别为 \(1.13\times10^{-6}\) 和 \(6.92\times10^{-7}\)。
+特征方案在最后两级上的全域、贴边密度阶分别为 2.893 和 2.828。\(n=24\) 时将时间步减半，
+五个守恒量的全域和贴边误差变化均小于 0.30%。边界通量测试支持三阶；
+有限网格上推进解的各分量观测阶仍有差异。
+[边界通量误差](../../cases/ncfv_euler/3D/diagnostics/prism_mms_boundary_flux.csv) ·
+[两种边界的逐级均值误差和观测阶](../../cases/ncfv_euler/3D/diagnostics/prism_mms_characteristic_convergence.csv)
+
+从仓库根目录，用项目的 Python 环境执行以下命令。脚本生成网格并保存每一级的原始日志、
+全域和贴边误差以及相邻加密阶。最后一条命令单独验证边界通量。
+
+```bash
+d=cases/ncfv_euler/3D/diagnostics
+out=/tmp/ncfv-prism-convergence
+python "$d/run_prism_mms_convergence.py" --solver build/app/ncfv_euler3D.exe --output "$out" --ranks 8 --sizes 12 16 20 24 32
+python "$d/run_prism_mms_convergence.py" --solver build/app/ncfv_euler3D.exe --output "$out" --ranks 16 --sizes 48
+python "$d/run_prism_mms_convergence.py" --summarize-only --output "$out" --sizes 12 16 20 24 32 48
+python "$d/compile_reconstruction_probe.py" --source "$d/prism_mms_boundary_flux.cpp" --output "$out/flux_probe"
+OMP_NUM_THREADS=1 mpiexec -n 4 "$out/flux_probe" cases/ncfv_euler/3D/NCFV_exponential_mms_prism12.json \
+    "$out/boundary_flux.csv" "$out"/prism_n{12,16,20,24,32,48}_j0.1.cgns
+```
+
+同一程序的 `--wall-outlet` 模式使用独立的光滑场快照。四个侧壁的法向速度为零，
+\(x=1\) 出口的静压为 1.35。从一次实际残差中提取各面内部控制体的通量，
+与六次面求积比较，棱边、角点不参与此项误差统计。\(n=12,16,24,32\) 四级拟合得到
+壁压 3.033 阶，出口质量、三个动量、能量通量分别为 2.893、2.871、2.857、2.866、2.891 阶。
+各级壁面对流质量和能量通量的均方根误差都在 \(10^{-16}\) 以内。
+[滑移壁和静压出口通量误差](../../cases/ncfv_euler/3D/diagnostics/prism_wall_pressure_outlet_flux.csv)
+
+```bash
+OMP_NUM_THREADS=1 mpiexec -n 8 "$out/flux_probe" --wall-outlet cases/ncfv_euler/3D/NCFV_exponential_mms_prism12.json \
+    "$out/wall_outlet.csv" "$out"/prism_n{12,16,24,32}_j0.1.cgns
 ```
 
 ## 7. 测试与当前边界

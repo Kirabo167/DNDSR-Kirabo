@@ -141,6 +141,11 @@
                         "TraditionalQuadrature"
                     ]
                 },
+                "macroFaceBoundary": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Integrate the reconstructed physical boundary flux with P2 moments on each coplanar node/zone face. Viscous fluxes use each original boundary piece."
+                },
                 "quadratureOrder": {
                     "type": "integer",
                     "default": 4,
@@ -344,6 +349,11 @@
                     "description": "Ideal-gas heat-capacity ratio",
                     "minimum": 1.0
                 },
+                "exponentialMMS": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "3-D exponential manufactured Euler solution with initial means, a volume source, and prescribed incoming characteristics. MMSExactExterior selects the full analytic exterior comparison."
+                },
                 "riemannSolver": {
                     "type": "string",
                     "default": "Roe",
@@ -375,7 +385,10 @@
                         "SupersonicInlet",
                         "SupersonicOutlet",
                         "PressureOutlet",
-                        "Periodic"
+                        "Periodic",
+                        "CharacteristicFarField",
+                        "MMSExactExterior",
+                        "Extrapolation"
                     ]
                 },
                 "initialPrimitive": {
@@ -427,7 +440,9 @@
                                     "SupersonicInlet",
                                     "SupersonicOutlet",
                                     "PressureOutlet",
-                                    "Periodic"
+                                    "Periodic",
+                                    "CharacteristicFarField",
+                                    "Extrapolation"
                                 ]
                             },
                             "primitive": {

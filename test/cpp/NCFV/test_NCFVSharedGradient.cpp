@@ -32,13 +32,13 @@ namespace
         c.reconstruction.enableLimiter = true;
         c.physics.initialPrimitive = {1, 0, 0, 0, 1};
         c.physics.farFieldPrimitive = c.physics.initialPrimitive;
-        c.physics.boundaryMode = BoundaryMode::SupersonicOutlet;
+        c.physics.boundaryMode = BoundaryMode::Extrapolation;
         c.physics.requireBoundaryZoneCoverage = true;
         for (const std::string name : {"bc-2", "bc-2-1", "bc-3", "bc-3-1", "bc-4", "bc-4-1"})
         {
             BoundaryZoneSettings zone;
             zone.name = name;
-            zone.mode = name.find("bc-4") == 0 ? BoundaryMode::Periodic : BoundaryMode::SupersonicOutlet;
+            zone.mode = name.find("bc-4") == 0 ? BoundaryMode::Periodic : BoundaryMode::Extrapolation;
             c.physics.boundaryZones.push_back(zone);
         }
         c.time.iterations = 0;

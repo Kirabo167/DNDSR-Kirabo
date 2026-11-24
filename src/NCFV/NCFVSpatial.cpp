@@ -264,60 +264,149 @@ namespace DNDS::NCFV
 
     template <int dimension>
     typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::BoundaryExterior(
-        const State &inside,
-        const SpatialVector &unitNormal,
-        const BoundaryZoneSettings &boundary) const
+    SpatialOperator<dimension>::LowOrderBoundaryExterior(
+        const State &inside, const SpatialVector &unitNormal, const BoundaryZoneSettings &boundary) const
+    {
+        if (BoundaryRegistry::IsWall(boundary.mode))
+        {
+            // The LLF update also uses this same ghost in its bar-state bounds and CFL.
+            const SpatialVector momentum = inside.template segment<dimension>(1);
+            State outside = inside;
+            if (boundary.mode == BoundaryMode::SlipWall || boundary.mode == BoundaryMode::Symmetry)
+            {
+                outside.template segment<dimension>(1) = momentum - 2 * momentum.dot(unitNormal) * unitNormal;
+                return outside;
+            }
+            const SpatialVector reflected = 2 * inside[0] * Eigen::Map<const SpatialVector>(boundary.wallVelocity.data()) - momentum;
+            outside.template segment<dimension>(1) = reflected;
+            outside[dimension + 1] += .5 * (reflected.squaredNorm() - momentum.squaredNorm()) / inside[0];
+            return outside;
+        }
+        return OpenBoundaryTrace(inside, State::Zero(), unitNormal, boundary, 0, 0).first;
+    }
+
+    template <int dimension>
+    auto SpatialOperator<dimension>::OpenBoundaryTrace(
+        const State &inside, const State &increment, const SpatialVector &normal,
+        const BoundaryZoneSettings &boundary, real mmsExponential, real phaseIncrement) const
+        -> std::pair<State, State>
     {
         switch (boundary.mode)
         {
         case BoundaryMode::FarField:
+        case BoundaryMode::CharacteristicFarField:
         case BoundaryMode::SupersonicInlet:
-            return PrimitiveToConservative(boundary.primitive);
         case BoundaryMode::SupersonicOutlet:
-        case BoundaryMode::Periodic:
-            return inside;
+            if constexpr (dimension == 3)
+                if (_physics.exponentialMMS)
+                    return ExponentialMMS::CharacteristicTrace(inside, increment, normal, mmsExponential, phaseIncrement);
+            return ReservoirCharacteristicTrace<dimension>(inside, increment, normal, _physics.gamma, boundary.primitive);
         case BoundaryMode::PressureOutlet:
+            return PressureOutletCharacteristicTrace<dimension>(inside, increment, normal, _physics.gamma, boundary);
+        case BoundaryMode::Extrapolation:
+            return {inside, increment};
+        default:
+            DNDS_check_throw_info(false, "NCFV open trace requires an inlet, outlet, extrapolation or far-field boundary");
+            return {inside, increment};
+        }
+    }
+
+    template <int dimension>
+    template <bool derivative>
+    typename SpatialOperator<dimension>::State
+    SpatialOperator<dimension>::ReconstructedBoundaryFlux(
+        const State &inside, const State &increment, const SpatialVector &normal,
+        const BoundaryZoneSettings &boundary, real mmsExponential, real phaseIncrement) const
+    {
+        if (BoundaryRegistry::IsWall(boundary.mode))
         {
-            State primitive = ConservativeToPrimitive(inside);
-            primitive(dimension + 1) = boundary.staticPressure;
-            return PrimitiveToConservative(
-                std::vector<real>(primitive.data(), primitive.data() + primitive.size()));
+            real wallNormalSpeed = 0;
+            if (boundary.mode == BoundaryMode::NoSlipAdiabaticWall || boundary.mode == BoundaryMode::NoSlipIsothermalWall)
+                wallNormalSpeed = normal.dot(Eigen::Map<const SpatialVector>(boundary.wallVelocity.data()));
+            const auto flux = WallCharacteristicFlux<dimension>(inside, increment, normal, _physics.gamma, wallNormalSpeed);
+            return derivative ? flux.second : flux.first;
         }
-        case BoundaryMode::SlipWall:
-        case BoundaryMode::Symmetry:
-        {
-            State outside = inside;
-            SpatialVector momentum = inside.template segment<dimension>(1);
-            momentum -= 2.0 * momentum.dot(unitNormal) * unitNormal;
-            outside.template segment<dimension>(1) = momentum;
-            return outside;
-        }
-        case BoundaryMode::NoSlipAdiabaticWall:
-        case BoundaryMode::NoSlipIsothermalWall:
-        {
-            State primitive = ConservativeToPrimitive(inside);
-            for (int i = 0; i < dimension; i++)
-                primitive(1 + i) =
-                    2.0 * boundary.wallVelocity[static_cast<std::size_t>(i)] -
-                    primitive(1 + i);
-            return PrimitiveToConservative(
-                std::vector<real>(primitive.data(), primitive.data() + primitive.size()));
-        }
-        }
-        DNDS_check_throw_info(false, "NCFV boundary mode is invalid");
-        return inside;
+        const auto [trace, change] = OpenBoundaryTrace(inside, increment, normal, boundary, mmsExponential, phaseIncrement);
+        if constexpr (derivative)
+            return PhysicalFluxIncrement(trace, change, normal);
+        else
+            return PhysicalFlux(trace, normal);
     }
 
     template <int dimension>
     typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::BoundaryNumericalFlux(
-        const State &inside,
-        const SpatialVector &unitNormal,
-        const BoundaryZoneSettings &boundary) const
+    SpatialOperator<dimension>::BoundaryPointFlux(const State &inside, const SpatialVector &normal,
+                                                 const BoundaryZoneSettings &boundary, real mmsExponential) const
     {
-        return NumericalFlux(
-            inside, BoundaryExterior(inside, unitNormal, boundary), unitNormal);
+        if constexpr (dimension == 3)
+            if (boundary.mode == BoundaryMode::MMSExactExterior)
+                return NumericalFlux(inside, ExponentialMMS::State(ExponentialMMS::PowersOf(mmsExponential)), normal);
+        return ReconstructedBoundaryFlux<false>(inside, State::Zero(), normal, boundary, mmsExponential, 0);
+    }
+
+    template <int dimension>
+    typename SpatialOperator<dimension>::State
+    SpatialOperator<dimension>::PhysicalFluxIncrement(const State &state, const State &increment,
+                                                     const SpatialVector &normal) const
+    {
+        const SpatialVector velocity = state.template segment<dimension>(1) / state[0];
+        const SpatialVector gridVelocity = SpatialVector::Zero();
+        SpatialVector velocityIncrement;
+        real pressureIncrement;
+        Euler::Gas::IdealGasUIncrement<dimension>(state, increment, velocity, _physics.gamma, velocityIncrement, pressureIncrement);
+        State fluxIncrement;
+        Euler::Gas::GasInviscidFluxFacialIncrement<dimension>(state, increment, normal, velocity, velocityIncrement,
+                                                              gridVelocity, pressureIncrement, Pressure(state), fluxIncrement);
+        return fluxIncrement;
+    }
+
+    template <int dimension>
+    typename SpatialOperator<dimension>::State
+    SpatialOperator<dimension>::BoundaryMacroInviscidFlux(index node, const BoundaryMacroFace &face, real mmsTimeFactor) const
+    {
+        const SpatialVector normal = face.normal.template head<dimension>();
+        const auto &boundary = _boundaries.Get(face.zone);
+        if (boundary.mode == BoundaryMode::Periodic)
+            return State::Zero();
+        const auto exponential = [&](index support)
+        { return _physics.exponentialMMS ? _mmsNodalExponential[support] * mmsTimeFactor : 0; };
+        const State anchor = _pointValues[node];
+
+        if constexpr (dimension == 3)
+            if (boundary.mode == BoundaryMode::MMSExactExterior)
+            {
+                // Reproduce the two-state P2/Roe control used in the prism study.
+                const State exact = ExponentialMMS::State(ExponentialMMS::PowersOf(exponential(node)));
+                State leftIntegral = face.measure * anchor, rightIntegral = face.measure * exact;
+                State fluxSum = face.measure * (PhysicalFlux(anchor, normal) + PhysicalFlux(exact, normal));
+                for (const auto &entry : face.weights)
+                {
+                    const State left = _pointValues[entry.node];
+                    const State dl = _stateGradients[entry.node].transpose() * entry.value;
+                    const auto basis = ExponentialMMS::PowersOf(exponential(entry.node));
+                    const State right = ExponentialMMS::State(basis);
+                    const State dr = ExponentialMMS::direction.dot(entry.value) *
+                                     ExponentialMMS::State(ExponentialMMS::PhaseDerivative(basis));
+                    leftIntegral += dl;
+                    rightIntegral += dr;
+                    fluxSum += PhysicalFluxIncrement(left, dl, normal) + PhysicalFluxIncrement(right, dr, normal);
+                }
+                const State leftMean = PreservePhysical(leftIntegral / face.measure, anchor);
+                const State rightMean = PreservePhysical(rightIntegral / face.measure, exact);
+                return .5 * fluxSum + face.measure * (NumericalFlux(leftMean, rightMean, normal) -
+                                                       .5 * (PhysicalFlux(leftMean, normal) + PhysicalFlux(rightMean, normal)));
+            }
+
+        State integral = face.measure * ReconstructedBoundaryFlux<false>(
+            anchor, State::Zero(), normal, boundary, exponential(node), 0);
+        for (const auto &entry : face.weights)
+        {
+            const State increment = _stateGradients[entry.node].transpose() * entry.value.template head<dimension>();
+            const real phaseIncrement = _physics.exponentialMMS ? ExponentialMMS::direction.dot(entry.value) : 0;
+            integral += ReconstructedBoundaryFlux<true>(
+                State(_pointValues[entry.node]), increment, normal, boundary, exponential(entry.node), phaseIncrement);
+        }
+        return integral;
     }
 
     template <int dimension>
@@ -658,7 +747,7 @@ namespace DNDS::NCFV
                 if (boundary.mode == BoundaryMode::Periodic)
                     continue;
                 const SpatialVector normal = piece.vectorMeasure.template head<dimension>() / piece.measure;
-                const State other = BoundaryExterior(self, normal, boundary);
+                const State other = LowOrderBoundaryExterior(self, normal, boundary);
                 const real speed = LowOrderSpeed(self, other, normal);
                 include(other);
                 include(.5 * (self + other) -
@@ -933,10 +1022,18 @@ namespace DNDS::NCFV
 
     template <int dimension>
     typename SpatialOperator<dimension>::State
-    SpatialOperator<dimension>::EvaluateOwnedBoundaryFlux(index iNode, const NodeStatePair &means) const
+    SpatialOperator<dimension>::EvaluateOwnedBoundaryFlux(index iNode, const NodeStatePair &means, real mmsTimeFactor) const
     {
         State total = State::Zero();
         const auto &controlVolume = _geometry.NodeVolume(iNode);
+        if (controlVolume.boundaryPieces.empty())
+            return total;
+        const auto nodalFlux = [&](const State &inside, const SpatialVector &normal,
+                                   const BoundaryZoneSettings &boundary, index node)
+        {
+            const real exponential = _physics.exponentialMMS ? _mmsNodalExponential[node] * mmsTimeFactor : 0;
+            return BoundaryPointFlux(inside, normal, boundary, exponential);
+        };
         if (_reconstructionSettings.limitFluxCorrection)
         {
             const State inside = means[iNode];
@@ -946,7 +1043,7 @@ namespace DNDS::NCFV
                 if (boundary.mode == BoundaryMode::Periodic)
                     continue;
                 const SpatialVector normal = piece.vectorMeasure.template head<dimension>() / piece.measure;
-                total += LowOrderFlux(inside, BoundaryExterior(inside, normal, boundary), normal, piece.measure);
+                total += LowOrderFlux(inside, LowOrderBoundaryExterior(inside, normal, boundary), normal, piece.measure);
             }
             return total;
         }
@@ -962,7 +1059,9 @@ namespace DNDS::NCFV
                     const SpatialVector unitNormal =
                         point.vectorWeight.template head<dimension>() / point.weight;
                     const State inside = EvaluateTraditionalState(iNode, point.coordinate);
-                    State flux = BoundaryNumericalFlux(inside, unitNormal, boundary);
+                    const real exponential = _physics.exponentialMMS
+                        ? std::exp(ExponentialMMS::direction.dot(point.coordinate)) * mmsTimeFactor : 0;
+                    State flux = BoundaryPointFlux(inside, unitNormal, boundary, exponential);
                     if (_physics.viscous.enabled)
                         flux -= BoundaryViscousFlux(
                             inside,
@@ -972,6 +1071,15 @@ namespace DNDS::NCFV
                 }
             }
             return total;
+        }
+
+        const bool macroFaceBoundary = _geometry.UsesMacroFaceBoundary();
+        if (macroFaceBoundary)
+        {
+            for (const auto &face : _boundaryMacroFaces.at(iNode))
+                total += BoundaryMacroInviscidFlux(iNode, face, mmsTimeFactor);
+            if (!_physics.viscous.enabled)
+                return total;
         }
 
         // No Gaussian points: the initialization-built stencil already merges
@@ -990,12 +1098,14 @@ namespace DNDS::NCFV
             const auto &boundary = _boundaries.Get(piece.zone);
             if (boundary.mode == BoundaryMode::Periodic)
                 continue;
+            if (macroFaceBoundary && (boundary.mode == BoundaryMode::SlipWall || boundary.mode == BoundaryMode::Symmetry))
+                continue; // These pieces have zero viscous flux.
             const SpatialVector unitNormal =
                 piece.vectorMeasure.template head<dimension>() / piece.measure;
             if (_reconstructionSettings.barthZeroOrderFallback &&
                 _limiterFactors[iNode](0, 0) == 0)
             {
-                total += piece.measure * BoundaryNumericalFlux(State(means[iNode]), unitNormal, boundary);
+                total += piece.measure * nodalFlux(State(means[iNode]), unitNormal, boundary, iNode);
                 continue;
             }
             State insideIntegral = State::Zero();
@@ -1006,10 +1116,10 @@ namespace DNDS::NCFV
                 insideIntegral += entry.integrationWeight * nodalState;
                 // Thesis section 4.3.2 interpolates already evaluated nodal
                 // numerical fluxes, so the same precomputed value weight is
-                // applied after BoundaryNumericalFlux().
-                inviscidIntegral += entry.integrationWeight *
-                                    BoundaryNumericalFlux(
-                                        nodalState, unitNormal, boundary);
+                // applied after evaluating the numerical flux.
+                if (!macroFaceBoundary)
+                    inviscidIntegral += entry.integrationWeight *
+                                        nodalFlux(nodalState, unitNormal, boundary, entry.node);
             }
             const State candidate = insideIntegral / piece.measure;
             if (_reconstructionSettings.barthZeroOrderFallback &&
@@ -1020,18 +1130,21 @@ namespace DNDS::NCFV
                 // Neighboring recovered points may have changed after the
                 // initial Barth test. Check the actual boundary mean once
                 // more and use a constant side when it is outside the bounds.
-                total += piece.measure * BoundaryNumericalFlux(State(means[iNode]), unitNormal, boundary);
+                total += piece.measure * nodalFlux(State(means[iNode]), unitNormal, boundary, iNode);
                 continue;
             }
             const State insideMean = PreservePhysical(candidate, State(_pointValues[iNode]));
             total += inviscidIntegral;
             if (_physics.viscous.enabled)
+            {
+                // Wall stresses and heat flux use each original piece's interior trace and normal.
                 total -= piece.measure * BoundaryViscousFlux(
                                              insideMean,
                                              EfficientBoundarySurfaceGradient(
                                                  iNode, piece),
                                              unitNormal, boundary,
                                              controlVolume.lengthScale);
+            }
         }
         return total;
     }
@@ -1051,7 +1164,7 @@ namespace DNDS::NCFV
             const SpatialVector normal =
                 piece.vectorMeasure.template head<dimension>() / piece.measure;
             total += _reconstructionSettings.limitFluxCorrection ?
-                         piece.measure * LowOrderSpeed(state, BoundaryExterior(state, normal, boundary), normal) :
+                         piece.measure * LowOrderSpeed(state, LowOrderBoundaryExterior(state, normal, boundary), normal) :
                          SurfaceSpectralRadius(state, normal, piece.measure, controlVolume.lengthScale);
         }
         return total;
@@ -1141,6 +1254,31 @@ namespace DNDS::NCFV
     template <int dimension>
     void SpatialOperator<dimension>::Initialize()
     {
+        if (_geometry.UsesMacroFaceBoundary())
+        {
+            _boundaryMacroFaces.clear();
+            for (const auto &volume : _geometry.NodeVolumes())
+                if (!volume.boundaryPieces.empty())
+                    _boundaryMacroFaces.emplace(volume.node, volume.BuildBoundaryMacroFaces());
+        }
+        if constexpr (dimension == 3)
+            if (_physics.exponentialMMS)
+            {
+                const auto spatialBasis = [](const Vector3 &x)
+                { return ExponentialMMS::Powers(ExponentialMMS::direction.dot(x)); };
+                if (_mode == IntegrationMode::EfficientDifferential)
+                {
+                    _mmsNodalExponential.resize(_mesh->NumNode() + _nodeHalo.NumNodeGhost());
+                    for (index node = 0; node < static_cast<index>(_mmsNodalExponential.size()); ++node)
+                        _mmsNodalExponential[node] = std::exp(ExponentialMMS::direction.dot(_nodeHalo.Coordinate(node)));
+                }
+                _mmsBasisMeans.resize(_mesh->NumNode());
+                for (const auto &volume : _geometry.NodeVolumes())
+                    _mmsBasisMeans[volume.node] = volume.VolumeMean<3>(
+                        _nodeHalo.Coordinate(volume.node), spatialBasis, [&](index node) -> Eigen::Matrix<real, 3, 5>
+                        { return ExponentialMMS::direction * ExponentialMMS::PhaseDerivative(
+                                  ExponentialMMS::PowersOf(_mmsNodalExponential[node])).transpose(); });
+            }
         AllocateNodeMatrix(_stateGradients, "NCFV.stateGradients", dimension);
         if (_mode == IntegrationMode::EfficientDifferential)
         {
@@ -1432,43 +1570,56 @@ namespace DNDS::NCFV
     {
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
-            const BoundaryZoneSettings *selected = nullptr;
-            int selectedPriority = -1;
-            Geom::t_index selectedZone = std::numeric_limits<Geom::t_index>::max();
+            const BoundaryZoneSettings *inlet = nullptr, *wall = nullptr;
+            Geom::t_index inletZone = std::numeric_limits<Geom::t_index>::max();
+            Geom::t_index wallZone = inletZone;
+            bool allInletFacesIncoming = true;
             for (const auto &piece : _geometry.NodeVolume(iNode).boundaryPieces)
             {
                 const auto &candidate = _boundaries.Get(piece.zone);
                 if (!candidate.strongState ||
                     !BoundaryRegistry::IsStrongType(candidate.mode))
                     continue;
-                const int priority = candidate.mode == BoundaryMode::SupersonicInlet
-                                         ? 2
-                                         : 1;
-                if (priority > selectedPriority ||
-                    (priority == selectedPriority && piece.zone < selectedZone))
+                if (candidate.mode == BoundaryMode::SupersonicInlet)
                 {
-                    selected = &candidate;
-                    selectedPriority = priority;
-                    selectedZone = piece.zone;
+                    // Only prescribe the entire updated dual mean when every strong inlet
+                    // normal at this node has five (four in 2-D) strictly incoming waves.
+                    const State mean = state[iNode];
+                    if (allInletFacesIncoming && IsPhysical(mean))
+                    {
+                        const real normalMomentum = mean.template segment<dimension>(1).dot(
+                            piece.vectorMeasure.template head<dimension>()) / piece.measure;
+                        allInletFacesIncoming = normalMomentum < -std::sqrt(_physics.gamma * mean[0] * Pressure(mean));
+                    }
+                    else
+                        allInletFacesIncoming = false;
+                    if (piece.zone < inletZone)
+                    {
+                        inlet = &candidate;
+                        inletZone = piece.zone;
+                    }
+                }
+                else if (piece.zone < wallZone)
+                {
+                    wall = &candidate;
+                    wallZone = piece.zone;
                 }
             }
-            if (!selected)
-                continue;
-
-            if (selected->mode == BoundaryMode::SupersonicInlet)
+            if (inlet && allInletFacesIncoming)
             {
-                state[iNode] = PrimitiveToConservative(selected->primitive);
+                state[iNode] = PrimitiveToConservative(inlet->primitive);
                 continue;
             }
-
+            if (!wall)
+                continue;
             State primitive = ConservativeToPrimitive(State(state[iNode]));
             for (int i = 0; i < dimension; i++)
                 primitive(1 + i) =
-                    selected->wallVelocity[static_cast<std::size_t>(i)];
-            if (selected->mode == BoundaryMode::NoSlipIsothermalWall)
+                    wall->wallVelocity[static_cast<std::size_t>(i)];
+            if (wall->mode == BoundaryMode::NoSlipIsothermalWall)
                 primitive(dimension + 1) =
                     primitive(0) * _physics.viscous.gasConstant *
-                    selected->wallTemperature;
+                    wall->wallTemperature;
             state[iNode] = PrimitiveToConservative(
                 std::vector<real>(primitive.data(),
                                   primitive.data() + primitive.size()));
@@ -1480,9 +1631,11 @@ namespace DNDS::NCFV
         NodeStatePair &means,
         NodeStatePair &rhs,
         bool updateTimeSteps,
-        bool computeResidualNorm)
+        bool computeResidualNorm,
+        real physicalTime)
     {
         _lastRhsTiming = {};
+        const real mmsTimeFactor = _physics.exponentialMMS ? std::exp(ExponentialMMS::frequency * physicalTime) : 1;
         const double totalStart = MPI_Wtime();
         double phaseStart = MPI_Wtime();
         Reconstruct(means);
@@ -1542,12 +1695,20 @@ namespace DNDS::NCFV
         phaseStart = MPI_Wtime();
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
-            State residual = EvaluateOwnedBoundaryFlux(iNode, means);
+            State residual = EvaluateOwnedBoundaryFlux(iNode, means, mmsTimeFactor);
             for (const auto &incidence : _topology.Node2Edge(iNode))
                 residual += incidence.outwardSign * State(_edgeFlux[incidence.edge]);
             const real volume = _geometry.NodeVolume(iNode).moments.measure;
             rhs[iNode] = -residual / volume;
         }
+        if constexpr (dimension == 3)
+            if (_physics.exponentialMMS)
+            {
+                const ExponentialMMS::Coefficients sourceAtTime = ExponentialMMS::sourceCoefficients.transpose() *
+                    ExponentialMMS::PowersOf(mmsTimeFactor).asDiagonal();
+                for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+                    rhs[iNode].noalias() += sourceAtTime * _mmsBasisMeans[iNode];
+            }
         _lastRhsTiming.residualAssemblySeconds = MPI_Wtime() - phaseStart;
 
         real residualNorm = 0;

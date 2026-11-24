@@ -98,6 +98,8 @@ namespace DNDS::NCFV
          *     time.
          */
         void WriteVortexDiagnostics(bool initial);
+        /** @brief Compare evolved dual means with independent Q6 references over all and boundary-adjacent duals. */
+        void ReportManufacturedErrors() const;
         /**
          * @brief Apply configured box, plane, and expression initializers to owned-node state entries.
          * @details Later configured assignments may replace values selected by earlier initializers.
@@ -213,7 +215,7 @@ namespace DNDS::NCFV
          * @return Volume-weighted global RMS conservative residual from the spatial operator.
          * @pre Initialize() has completed; all ranks participate.
          */
-        real EvaluateResidual() { return _spatial->EvaluateRHS(_state, _rhs); }
+        real EvaluateResidual() { return _spatial->EvaluateRHS(_state, _rhs, true, true, _simulationTime); }
         /**
          * @brief Enable intrusive internal-edge flux timing after Initialize().
          * @param enabled True to collect intrusive internal-edge kernel timings; false to retain ordinary phase

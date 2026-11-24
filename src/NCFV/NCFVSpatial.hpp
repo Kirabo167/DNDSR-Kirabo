@@ -5,11 +5,12 @@
 #pragma once
 
 #include "NCFVBoundary.hpp"
+#include "NCFVAnalytic.hpp"
 #include "NCFVReconstruction.hpp"
 #include "NCFVSharedGradientLimiter.hpp"
 
 #include "Euler/Gas.hpp"
-
+#include <unordered_map>
 
 
 namespace DNDS::NCFV
@@ -165,6 +166,9 @@ namespace DNDS::NCFV
         PhysicsSettings _physics;
         TimeSettings _time;
         const NodeHalo &_nodeHalo;
+        std::unordered_map<index, std::vector<BoundaryMacroFace>> _boundaryMacroFaces;
+        std::vector<real> _mmsNodalExponential; ///< exp(direction dot x) at efficient owned and halo nodes.
+        std::vector<ExponentialMMS::Basis> _mmsBasisMeans;
         real _maximumStep = veryLargeReal;
         bool _detailedFluxTiming = false;
         State _interiorInviscidCorrectionScales = State::Ones();
@@ -267,27 +271,35 @@ namespace DNDS::NCFV
             const State &right,
             const SpatialVector &unitNormal) const;
         /**
-         * @brief Construct an exterior conservative trace for one normalized boundary condition.
-         * @param inside Admissible conservative trace reconstructed from the interior.
+         * @brief Construct the LLF exterior state shared by the low-order flux, bar bounds and CFL.
+         * @param inside Admissible conservative dual mean.
          * @param unitNormal Outward unit normal in the active spatial dimension.
          * @param boundary Normalized per-zone primitive/wall/pressure boundary settings.
-         * @return Exterior state paired with the interior trace by the boundary Riemann solve.
+         * @return Boundary state paired with the interior mean in the LLF update.
          */
-        State BoundaryExterior(
+        State LowOrderBoundaryExterior(
             const State &inside,
             const SpatialVector &unitNormal,
             const BoundaryZoneSettings &boundary) const;
         /**
-         * @brief Evaluate the inviscid flux for a physical boundary, including any wall specialization.
-         * @param inside Admissible conservative trace reconstructed from the interior.
-         * @param unitNormal Outward unit normal in the active spatial dimension.
-         * @param boundary Normalized per-zone primitive/wall/pressure boundary settings.
-         * @return Outward conservative numerical flux per unit boundary measure.
+         * @brief Open-boundary trace and its variation along a fixed face integration weight.
          */
-        State BoundaryNumericalFlux(
-            const State &inside,
-            const SpatialVector &unitNormal,
-            const BoundaryZoneSettings &boundary) const;
+        std::pair<State, State> OpenBoundaryTrace(
+            const State &inside, const State &increment, const SpatialVector &normal,
+            const BoundaryZoneSettings &boundary,
+            real mmsExponential, real phaseIncrement) const;
+
+        /// Physical boundary flux or its directional derivative for the P2 moment rule.
+        template <bool derivative>
+        State ReconstructedBoundaryFlux(
+            const State &inside, const State &increment, const SpatialVector &normal,
+            const BoundaryZoneSettings &boundary, real mmsExponential, real phaseIncrement) const;
+
+        State BoundaryPointFlux(const State &inside, const SpatialVector &normal,
+                                const BoundaryZoneSettings &boundary, real mmsExponential) const;
+
+        State PhysicalFluxIncrement(const State &state, const State &increment, const SpatialVector &normal) const;
+        State BoundaryMacroInviscidFlux(index node, const BoundaryMacroFace &face, real mmsTimeFactor) const;
 
         /**
          * @brief Evaluate the traditional quadratic reconstruction at a physical integration point.
@@ -446,7 +458,7 @@ namespace DNDS::NCFV
          * @param means Conservative dual-volume means [rho,rho*u...,rho*E] in the NCFV node-halo layout.
          * @return Sum of outward inviscid-minus-viscous boundary-piece flux integrals for this node.
          */
-        State EvaluateOwnedBoundaryFlux(index iNode, const NodeStatePair &means) const;
+        State EvaluateOwnedBoundaryFlux(index iNode, const NodeStatePair &means, real mmsTimeFactor) const;
         /**
          * @brief Evaluate the owned-node physical-boundary contribution.
          * @param iNode Owned primal-node index.
@@ -573,6 +585,12 @@ namespace DNDS::NCFV
          *     halo mappings.
          */
         void Initialize();
+
+        /** @brief Spatially averaged exponential basis at a given time, for initial data and diagnostics. */
+        [[nodiscard]] ExponentialMMS::Basis ManufacturedBasisMean(index iNode, real physicalTime) const
+        {
+            return _mmsBasisMeans.at(iNode).cwiseProduct(ExponentialMMS::Powers(ExponentialMMS::frequency * physicalTime));
+        }
         /**
          * @brief Set an additional time-step cap for subsequent CFL updates.
          * @param step Positive maximum allowed interval, typically the remaining time before a physical end time.
@@ -619,18 +637,20 @@ namespace DNDS::NCFV
          *         computeResidualNorm is false.
          * @param [in,out] means Conservative dual-volume means [rho,rho*u...,rho*E] in the NCFV node-halo layout.
          *     Owned values are retained; required ghost values are pulled.
-         * @param [out] rhs Allocated derivative field -sum(outward integrated flux)/dual volume, filled on owned
+         * @param [out] rhs Allocated derivative field -sum(outward integrated flux)/dual volume + mean source, filled on owned
          *     nodes.
          * @param updateTimeSteps Refresh cached fixed/CFL steps when true; false reuses earlier-stage steps.
          * @param computeResidualNorm Reduce and return the global volume-weighted RMS when true; false skips that
          *     reduction and returns zero.
+         * @param physicalTime Physical time of this RK stage for boundary and volume data.
          * @note Collective; refreshes reconstruction, node/edge halos, phase timings, and flux diagnostics.
          */
         real EvaluateRHS(
             NodeStatePair &means,
             NodeStatePair &rhs,
             bool updateTimeSteps = true,
-            bool computeResidualNorm = true);
+            bool computeResidualNorm = true,
+            real physicalTime = 0);
 
         /**
          *  @brief Apply configured strong inlet/no-slip conditions to owned nodes.

@@ -4,6 +4,7 @@
 #include "DNDS/Errors.hpp"
 #include "DNDS/ExprtkWrapper.hpp"
 #include "DNDS/OMP.hpp"
+#include "Geom/Quadrature.hpp"
 
 #include <algorithm>
 #include <array>
@@ -431,6 +432,10 @@ namespace DNDS::NCFV
         ReadInitialNodeFile();
         if (_configuration.initialField.isentropicVortex)
             InitializeVortex();
+        if constexpr (dimension == 3)
+            if (_configuration.physics.exponentialMMS)
+                for (index iNode = 0; iNode < _mesh->NumNode(); ++iNode)
+                    _state[iNode] = ExponentialMMS::State(_spatial->ManufacturedBasisMean(iNode, 0));
         _currentIteration = 0;
         _simulationTime = 0;
     }
@@ -448,24 +453,64 @@ namespace DNDS::NCFV
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
             const auto &volume = _geometry->NodeVolume(iNode);
-            if (_configuration.algorithm.mode == IntegrationMode::EfficientDifferential)
-            {
-                _state[iNode] = IsentropicVortex<dimension>(_configuration, _mesh->coords[iNode], 0).first;
-                for (const auto &entry : volume.pointRecoveryStencil)
+            _state[iNode] = volume.VolumeMean<dimension>(_nodeHalo->Coordinate(iNode),
+                [&](const Vector3 &x) { return IsentropicVortex<dimension>(_configuration, x, 0).first; },
+                [&](index node) { return IsentropicVortex<dimension>(_configuration, _nodeHalo->Coordinate(node), 0).second; });
+        }
+    }
+
+    template <int dimension>
+    void Solver<dimension>::ReportManufacturedErrors() const
+    {
+        if (!_configuration.physics.exponentialMMS || !_configuration.algorithm.retainMicroGeometry)
+            return;
+        Geom::Elem::Quadrature quadrature(Geom::Elem::Element{Geom::Elem::Tet4}, 6);
+        constexpr int nConserved = 5;
+        // Columns accumulate all owned duals and the subset incident on a physical boundary.
+        // Rows hold squared conservative-mean errors, the volume and the squared density-source error.
+        using Sums = Eigen::Matrix<real, nConserved + 2, 2>;
+        Sums local = Sums::Zero(), global;
+        for (const auto &volume : _geometry->NodeVolumes())
+        {
+            ExponentialMMS::Basis reference = ExponentialMMS::Basis::Zero();
+            for (const auto &tet : volume.microVolumes)
+                for (int q = 0; q < quadrature.GetNumPoints(); ++q)
                 {
-                    const Vector3 coordinate = _nodeHalo->Coordinate(entry.node);
-                    _state[iNode] += IsentropicVortex<dimension>(
-                        _configuration, coordinate, 0).second.transpose() *
-                        entry.gradientWeight.head(dimension);
+                    const auto [p, weight] = quadrature.GetQuadraturePointInfo(q);
+                    const auto &x = tet.points;
+                    const Vector3 point = x[0] + p[0] * (x[1] - x[0]) + p[1] * (x[2] - x[0]) + p[2] * (x[3] - x[0]);
+                    reference += (6 * tet.measure * weight) * ExponentialMMS::Powers(
+                        ExponentialMMS::direction.dot(point) + ExponentialMMS::frequency * _simulationTime);
                 }
-            }
-            else
+            const real measure = volume.moments.measure;
+            reference /= measure;
+            const auto basis = _spatial->ManufacturedBasisMean(volume.node, _simulationTime);
+            const real sourceError = ExponentialMMS::sourceCoefficients.col(0).dot(basis - reference);
+            Eigen::Vector<real, nConserved + 2> contribution;
+            contribution.head<nConserved>() = (_state[volume.node] - ExponentialMMS::State(reference)).array().square();
+            contribution[nConserved] = 1;
+            contribution[nConserved + 1] = sqr(sourceError);
+            contribution *= measure;
+            local.col(0) += contribution;
+            if (!volume.boundaryPieces.empty())
+                local.col(1) += contribution;
+        }
+        MPI_Reduce(local.data(), global.data(), static_cast<int>(local.size()), DNDS_MPI_REAL, MPI_SUM, 0, _mpi.comm);
+        if (_mpi.rank == 0)
+        {
+            auto &out = log();
+            out << std::setprecision(12) << "NCFV exponential MMS t=" << _simulationTime
+                << ", rho_mean_L2_Q6=" << std::sqrt(global(0, 0) / global(nConserved, 0))
+                << ", rho_source_mean_L2_Q6=" << std::sqrt(global(nConserved + 1, 0) / global(nConserved, 0));
+            constexpr std::array<const char *, nConserved> names{"rho", "rhou", "rhov", "rhow", "rhoE"};
+            for (int i = 0; i < nConserved; ++i)
             {
-                _state[iNode].setZero();
-                for (const auto &point : volume.volumeQuadrature)
-                    _state[iNode] += point.weight / volume.moments.measure *
-                        IsentropicVortex<dimension>(_configuration, point.coordinate, 0).first;
+                if (i != 0)
+                    out << ", " << names[i] << "_mean_L2_Q6=" << std::sqrt(global(i, 0) / global(nConserved, 0));
+                if (global(nConserved, 1) > 0)
+                    out << ", " << names[i] << "_boundary_mean_L2_Q6=" << std::sqrt(global(i, 1) / global(nConserved, 1));
             }
+            out << std::endl;
         }
     }
 
@@ -859,7 +904,7 @@ namespace DNDS::NCFV
                 const auto advance = [&]() -> bool
                 {
                     _spatial->ResetRiemannSolverCallCount();
-                    _spatial->EvaluateRHS(_state, _rhs, true, false);
+                    _spatial->EvaluateRHS(_state, _rhs, true, false, _simulationTime);
                     _lastStepTiming.rhs += _spatial->LastRhsTiming();
                     physicalStep = _spatial->LastMinimumTimeStep();
                     std::vector<real> stepSize(static_cast<std::size_t>(_mesh->NumNode()));
@@ -877,7 +922,7 @@ namespace DNDS::NCFV
                         return false;
                     _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
 
-                    _spatial->EvaluateRHS(_stageState, _rhs, false, false);
+                    _spatial->EvaluateRHS(_stageState, _rhs, false, false, _simulationTime + physicalStep);
                     _lastStepTiming.rhs += _spatial->LastRhsTiming();
                     stageUpdateStart = MPI_Wtime();
                     for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
@@ -890,7 +935,7 @@ namespace DNDS::NCFV
                         return false;
                     _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
 
-                    residual = _spatial->EvaluateRHS(_stageState, _rhs, false, true);
+                    residual = _spatial->EvaluateRHS(_stageState, _rhs, false, true, _simulationTime + .5 * physicalStep);
                     _lastStepTiming.rhs += _spatial->LastRhsTiming();
                     stageUpdateStart = MPI_Wtime();
                     for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
@@ -962,6 +1007,8 @@ namespace DNDS::NCFV
         }
 
         WriteVortexDiagnostics(false);
+        if constexpr (dimension == 3)
+            ReportManufacturedErrors();
 
         if (additionalIterations == 0 && _mpi.rank == 0)
             log() << "NCFV initialization-only residual RMS="

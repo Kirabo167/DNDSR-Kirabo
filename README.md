@@ -232,6 +232,18 @@ physical-flux gradients are computed once per local/ghost support node and
 then contracted through precomputed geometry weights. This production path is
 always active in efficient mode and has no separate compatibility switch.
 
+For smooth flows with unlimited efficient reconstruction, `algorithm.macroFaceBoundary=true`
+integrates the convective boundary flux with quadratic-exact moments. Far fields and
+named inlets and outlets use the local normal Mach number to select incoming data.
+Pressure outlets impose the configured static pressure at subsonic speeds. Walls
+pair the interior reconstruction with the normal wall velocity to compute wall pressure.
+`Extrapolation` takes the full reconstructed interior trace at every Mach number.
+In viscous runs, each original boundary piece supplies its own wall stress and heat flux.
+The 3-D exponential manufactured solution adds a volume-averaged source
+and supplies incoming characteristic data or a prescribed exterior state at each SSPRK3 stage time. The example
+includes a perturbed unit-cube prism mesh and reports the final density and
+source errors against degree-six quadrature. [Prism case](cases/ncfv_euler/3D/NCFV_exponential_mms_prism12.json) · [NCFV boundary and source integration](src/NCFV/README.md#非周期三棱柱制造解)
+
 For distributed runs, periodic node pairs are merged into the global topology
 before partitioning. Initialization then builds a point-neighbour-complete
 geometry cell halo and a dependency-exact sparse `NodeHalo` for reconstruction

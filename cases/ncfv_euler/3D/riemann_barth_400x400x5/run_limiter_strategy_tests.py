@@ -329,7 +329,7 @@ def main():
                 overrides = {"/mesh/meshFile": str(inputs / f"mesh{cells}.cgns"),
                              "/mesh/periodicLengths": [1, 1, DEPTH] if fully_periodic else [0, 0, DEPTH],
                              "/mesh/periodicBoundaryPairs": ["XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX"] if fully_periodic else ["ZMIN", "ZMAX"],
-                             "/physics/boundaryZones": [{"name": name, "mode": "Periodic" if fully_periodic or name.startswith("Z") else "SupersonicOutlet"}
+                             "/physics/boundaryZones": [{"name": name, "mode": "Periodic" if fully_periodic or name.startswith("Z") else "Extrapolation"}
                                                         for name in ("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX")],
                              "/initialField/nodeFile": "" if fully_periodic else str(inputs / ("RP1.csv" if problem == "RP1" else "shock.csv")),
                              "/initialField/expressions": transport_expression(problem, cells) if fully_periodic else [],

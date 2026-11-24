@@ -5,6 +5,7 @@
 #pragma once
 
 #include "NCFVConfig.hpp"
+#include "NCFVCharacteristicBoundary.hpp"
 #include "NCFVTopology.hpp"
 
 #include <unordered_map>

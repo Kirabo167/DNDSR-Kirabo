@@ -12,7 +12,7 @@
 
 域为 `[0,1] × [0,1] × [0,0.0125]`，各方向间距为 0.0025。
 共有 800,000 个 HEXA_8 单元、964,806 个节点。
-网格侧边为零梯度透射，上下展向边界为 SlipWall。
+网格侧边使用 `Extrapolation`，上下展向边界为 SlipWall。
 采用原对话最终的 EfficientDifferential 积分模式、SVDLeastSquares 二次重构、
 Roe 通量、SSPRK3、γ=1.4，启用单系数 Barth–Jespersen 限制器。
 全域 CFL=0.5，最大时间步 1e-4，不使用局部时间步。
@@ -35,6 +35,13 @@ $PY "$CASE/run_cases.py" --ranks 64 --jobs 4 --render
 生成器拒绝覆盖已有网格、初值和结果。已有完整结果可用
 `run_cases.py --skip-completed --render` 核验后跳过。求解器从 `build/` 运行。
 批处理固定使用结果目录 `inputs/` 中的二进制和配置副本，并记录输入哈希。
+
+历史四象限实验中，专用冻结程序用 `SupersonicOutlet` 表示纯外推。该名称在现行求解器中
+会按当地法向马赫数判断入射和出射。用现行求解器读取兼容的旧输入时，在工作副本中将
+`physics.boundaryMode` 以及 `XMIN`、`XMAX`、`YMIN`、`YMAX` 四个分区的
+`mode` 从 `SupersonicOutlet` 改为 `Extrapolation`，其余分区按原配置施加。
+带 `instrumented/`、`frozen_inputs/` 或独立 `audit_build/` 的研究用例可用随附运行器和匹配的原始配置复现。
+
 四组各 64 个 MPI 进程并发，总计 256 进程。2026-10-15 核实当前主机名为
 `cpu704`，账户上级 cgroup 的 `cpu.max=6400000 100000`，即共享 64 核配额；
 进程数不会提高配额，且同账户其他计算也共享它。实际运行资源见

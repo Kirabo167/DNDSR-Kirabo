@@ -139,6 +139,9 @@ def main():
     executable = inputs / source_executable.name
     shutil.copy2(source_executable, executable)
     shutil.copytree(source_executable.parent / "solver_sources", inputs / "solver_sources")
+    schema = json.loads(subprocess.check_output([str(executable), "--emit-schema"], cwd=ROOT / "build", env=environment))
+    frozen_modes = schema["properties"]["physics"]["properties"]["boundaryMode"]["enum"]
+    extrapolation = "Extrapolation" if "Extrapolation" in frozen_modes else "SupersonicOutlet"
     for source in HERE.glob("*.py"):
         shutil.copy2(source, inputs / source.name)
     state = dict(status="preparing", created_at=now(), controller_pid=os.getpid(), target_time=TARGET,
@@ -154,7 +157,7 @@ def main():
             case = output / name
             case.mkdir()
             config = inputs / (name + ".json")
-            shutil.copy2(HERE / config.name, config)
+            config.write_text((HERE / config.name).read_text().replace('"Extrapolation"', json.dumps(extrapolation)))
             current = json.loads(config.read_text())
             baseline_path = Path(previous["cases"][name]["configuration"])
             baseline = json.loads(baseline_path.read_text())

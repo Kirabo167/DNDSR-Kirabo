@@ -12,6 +12,7 @@
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Quadratures/QuadratureBase.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,9 @@ namespace DNDS::NCFV
         SupersonicOutlet,
         PressureOutlet,
         Periodic,
+        CharacteristicFarField,
+        MMSExactExterior,
+        Extrapolation,
     };
 
     DNDS_DEFINE_ENUM_JSON(
@@ -96,7 +100,18 @@ namespace DNDS::NCFV
             {BoundaryMode::SupersonicOutlet, "SupersonicOutlet"},
             {BoundaryMode::PressureOutlet, "PressureOutlet"},
             {BoundaryMode::Periodic, "Periodic"},
+            {BoundaryMode::CharacteristicFarField, "CharacteristicFarField"},
+            {BoundaryMode::MMSExactExterior, "MMSExactExterior"},
+            {BoundaryMode::Extrapolation, "Extrapolation"},
         })
+
+    /** @brief Physical boundary choices available on an individual CGNS zone. */
+    inline std::vector<std::string> PhysicalBoundaryModeNames()
+    {
+        auto names = DNDS_ENUM_ALLOWED_VALUES(BoundaryMode);
+        names.erase(std::remove(names.begin(), names.end(), "MMSExactExterior"), names.end());
+        return names;
+    }
 
     enum class ViscosityModel
     {
@@ -150,6 +165,7 @@ namespace DNDS::NCFV
     struct AlgorithmSettings
     {
         IntegrationMode mode = IntegrationMode::EfficientDifferential;
+        bool macroFaceBoundary = false;
         int quadratureOrder = 4;
         int surfaceQuadratureOrder = 3;
         bool retainMicroGeometry = true;
@@ -172,6 +188,7 @@ namespace DNDS::NCFV
         {
             DNDS_FIELD(mode, "NCFV integration implementation",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(IntegrationMode)));
+            DNDS_FIELD(macroFaceBoundary, "Integrate the reconstructed physical boundary flux with P2 moments on each coplanar node/zone face. Viscous fluxes use each original boundary piece.");
             DNDS_FIELD(quadratureOrder, "Traditional volume Gauss/Hammer integration order",
                        DNDS::Config::range(2, Geom::Elem::INT_ORDER_MAX));
             DNDS_FIELD(surfaceQuadratureOrder,
@@ -314,7 +331,7 @@ namespace DNDS::NCFV
         {
             DNDS_FIELD(name, "CGNS boundary-zone name (case-sensitive)");
             DNDS_FIELD(mode, "Boundary-condition model",
-                       DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(BoundaryMode)));
+                       DNDS::Config::enum_values(PhysicalBoundaryModeNames()));
             DNDS_FIELD(primitive, "Prescribed primitive state [rho,u,(v,w),p]; empty uses far field");
             DNDS_FIELD(wallVelocity, "Wall velocity [u,v,(w)]; empty means a stationary wall");
             DNDS_FIELD(wallTemperature, "Isothermal-wall temperature",
@@ -328,6 +345,7 @@ namespace DNDS::NCFV
     struct PhysicsSettings
     {
         real gamma = 1.4;
+        bool exponentialMMS = false;
         Euler::Gas::RiemannSolverType riemannSolver = Euler::Gas::Roe;
         BoundaryMode boundaryMode = BoundaryMode::FarField;
         std::vector<real> initialPrimitive{1.0, 0.1, 0.0, 1.0};
@@ -339,6 +357,7 @@ namespace DNDS::NCFV
         DNDS_DECLARE_CONFIG(PhysicsSettings)
         {
             DNDS_FIELD(gamma, "Ideal-gas heat-capacity ratio", DNDS::Config::range(1.0));
+            DNDS_FIELD(exponentialMMS, "3-D exponential manufactured Euler solution with initial means, a volume source, and prescribed incoming characteristics. MMSExactExterior selects the full analytic exterior comparison.");
             DNDS_FIELD(
                 riemannSolver,
                 "NCFV inviscid Riemann solver; Roe uses Harten--Yee H2 entropy fixing",

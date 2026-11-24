@@ -186,6 +186,15 @@ namespace DNDS::NCFV
         }
     };
 
+    /** @brief Coplanar pieces belonging to one node control volume and one boundary zone. */
+    struct BoundaryMacroFace
+    {
+        Geom::t_index zone;
+        Vector3 normal;
+        real measure = 0;
+        std::vector<SparseVectorWeight> weights; ///< Integral weights, with units of area times length in 3-D.
+    };
+
     /**
      * @brief A physical-boundary simplex closing one owned node's dual volume.
      * @details Efficient mode retains affine support/integration weights; traditional mode
@@ -228,6 +237,29 @@ namespace DNDS::NCFV
         std::vector<MicroVolume> microVolumes; ///< Optional retained simplex decomposition.
         std::vector<VolumeQuadraturePoint> volumeQuadrature; ///< Traditional volume integration samples.
         std::vector<BoundaryPiece> boundaryPieces; ///< Physical-boundary pieces closing this dual volume.
+
+        /** @brief Integrate a vector field as a dual-volume mean using this volume's configured rule.
+         *  valueAt takes a physical coordinate. gradientAt takes a synchronized support-node index
+         *  and returns a matrix with one row per spatial direction. */
+        template <int dimension, class ValueAt, class GradientAt>
+        auto VolumeMean(const Vector3 &anchor, ValueAt valueAt, GradientAt gradientAt) const
+        {
+            using Value = typename decltype(valueAt(anchor))::PlainObject;
+            if (!volumeQuadrature.empty())
+            {
+                Value integral = Value::Zero();
+                for (const auto &point : volumeQuadrature)
+                    integral.noalias() += point.weight * valueAt(point.coordinate);
+                return Value(integral / moments.measure);
+            }
+            Value mean = valueAt(anchor);
+            for (const auto &entry : pointRecoveryStencil)
+                mean.noalias() += gradientAt(entry.node).transpose() * entry.gradientWeight.template head<dimension>();
+            return mean;
+        }
+
+        /** @brief Group same-zone, co-oriented boundary pieces about this volume's common anchor. */
+        [[nodiscard]] std::vector<BoundaryMacroFace> BuildBoundaryMacroFaces() const;
     };
 
     /**
@@ -508,6 +540,7 @@ namespace DNDS::NCFV
          * @return Read-only median-dual control-volume geometry for owned nodes.
          */
         [[nodiscard]] const std::vector<NodeControlVolume> &NodeVolumes() const { return _nodeVolumes; }
+        [[nodiscard]] bool UsesMacroFaceBoundary() const { return _settings.macroFaceBoundary; }
         /**
          * @brief Return read-only macro-surfaces for owned edges; private ghost surfaces are excluded.
          * @return Read-only macro-surfaces for owned edges; private ghost surfaces are excluded.

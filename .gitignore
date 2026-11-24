@@ -177,9 +177,13 @@ workspace
 !/cases/ncfv_euler/**/*.hpp
 !/cases/ncfv_euler/**/*.yaml
 !/cases/ncfv_euler/**/*.md
+!/cases/ncfv_euler/3D/diagnostics/prism_mms_characteristic_convergence.csv
+!/cases/ncfv_euler/3D/diagnostics/prism_mms_boundary_flux.csv
+!/cases/ncfv_euler/3D/diagnostics/prism_wall_pressure_outlet_flux.csv
 # Preserve original meshes and ship the periodic regression fixtures.
 !/cases/ncfv_euler/3D/iv*_dnds.cgns
 !/cases/ncfv_euler/3D/iv40_3d_1.cgns
 !/cases/ncfv_euler/3D/generated_periodic_meshes/*.cgns
+!/cases/ncfv_euler/3D/prism_n12_j0.1.cgns
 # The 107 MiB Tet4 N=80 fixture is regenerated with the documented CGNS tool.
 /cases/ncfv_euler/3D/generated_periodic_meshes/periodic_tet_iv80.cgns

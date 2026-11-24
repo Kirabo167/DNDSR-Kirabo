@@ -290,7 +290,7 @@ NCFV读取O1 CGNS网格，在节点构建对偶控制体，采用二次多项式
 
 初值基准为 `physics.initialPrimitive`，二维 `[rho,u,v,p]`、三维 `[rho,u,v,w,p]`。`initialField` 可配置CSV节点场、解析等熵涡、盒、半空间和ExprTk规则。CSV首列为全局节点编号，编号基数由 `nodeFileIndexBase` 指定；其后按Primitive或Conservative顺序给值，不能在Conservative中写速度和压力。
 
-边界逐区域配置在 `physics.boundaryZones`。支持 FarField、SlipWall、Symmetry、NoSlipAdiabaticWall、NoSlipIsothermalWall、SupersonicInlet、SupersonicOutlet、PressureOutlet、Periodic。`requireBoundaryZoneCoverage=true` 要求CGNS所有外区域均覆盖。`strongState` 在每个RK阶段后强制节点入口/壁面状态。
+边界逐区域配置在 `physics.boundaryZones`。`FarField`、`CharacteristicFarField`、`SupersonicInlet` 和 `SupersonicOutlet` 根据当地法向马赫数施加进出特征，`PressureOutlet` 施加静压条件。`Extrapolation` 在任何流态下均从域内外推。壁面可选 `SlipWall`、`Symmetry`、`NoSlipAdiabaticWall` 或 `NoSlipIsothermalWall`，平移周期面使用 `Periodic`。`requireBoundaryZoneCoverage=true` 要求 CGNS 所有外区域均覆盖。[各模式的详细定义](../../src/NCFV/README.md)
 
 周期平移由 `mesh.periodicLengths` 与 `periodicBoundaryPairs` 给定；配对列表必须主/从成对。空列表按Periodic区域条目顺序推断。零长度不自动形成一个非零周期。
 
@@ -1558,7 +1558,7 @@ ACM新入口的initialState长度、闭合模型、transportSubsteps及黏性开
 | --- | --- | --- | --- |
 | `gamma` | `1.4` | 实数 | 理想气体比热比。 schema约束：≥1。 |
 | `riemannSolver` | `"Roe"` | 字符串 | 无黏Riemann通量；Roe采用Harten–Yee H2熵修正，Roe_M2不支持。 schema约束：枚举："Roe"、"HLLC"、"HLLEP"、"HLLEP_V1"、"Roe_M1"、"Roe_M3"、"Roe_M4"、"Roe_M5"、"Roe_M6"、"Roe_M7"、"Roe_M8"。 |
-| `boundaryMode` | `"FarField"` | 字符串 | 未显式配置边界区域时采用的物理条件。 schema约束：枚举："FarField"、"SlipWall"、"Symmetry"、"NoSlipAdiabaticWall"、"NoSlipIsothermalWall"、"SupersonicInlet"、"SupersonicOutlet"、"PressureOutlet"、"Periodic"。 |
+| `boundaryMode` | `"FarField"` | 字符串 | 未显式配置的分区采用的默认条件。物理选项见 13.8 的 `mode`。三维指数制造解还支持全局 `MMSExactExterior`，用完整解析外态作对照。 |
 | `initialPrimitive` | `[1, 0.1, 0, 1]` | 数组 | 均匀原始变量初值：二维[rho,u,v,p]，三维[rho,u,v,w,p]。 |
 | `farFieldPrimitive` | `[1, 0.1, 0, 1]` | 数组 | 远场原始变量数组，顺序同initialPrimitive。 |
 | `requireBoundaryZoneCoverage` | `false` | 布尔 | 要求每个CGNS外边界区域都有显式boundaryZones条目。 |
@@ -1570,7 +1570,7 @@ ACM新入口的initialState长度、闭合模型、transportSubsteps及黏性开
 | 参数 | 默认参考 | 类型 | 中文含义与约束 |
 | --- | --- | --- | --- |
 | `name` | `""` | 字符串 | CGNS边界区域名称，区分大小写。 |
-| `mode` | `"FarField"` | 字符串 | 该区域的边界条件类型。 schema约束：枚举："FarField"、"SlipWall"、"Symmetry"、"NoSlipAdiabaticWall"、"NoSlipIsothermalWall"、"SupersonicInlet"、"SupersonicOutlet"、"PressureOutlet"、"Periodic"。 |
+| `mode` | `"FarField"` | 字符串 | 该区域可选 FarField、CharacteristicFarField、SupersonicInlet、SupersonicOutlet、PressureOutlet、Extrapolation、SlipWall、Symmetry、NoSlipAdiabaticWall、NoSlipIsothermalWall 或 Periodic。 |
 | `primitive` | `[]` | 数组 | 给定原始变量数组；空值使用远场值。 |
 | `wallVelocity` | `[]` | 数组 | 壁面速度，二维2分量、三维3分量；空值静止壁。 |
 | `wallTemperature` | `1` | 实数 | 等温壁温，与气体常数和代码单位一致。 schema约束：≥0。 |
