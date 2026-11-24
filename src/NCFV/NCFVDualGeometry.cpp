@@ -594,7 +594,8 @@ namespace DNDS::NCFV
             controlVolume.upperOffset = controlVolume.upperOffset.cwiseMax(offset);
         }
 
-        if (_settings.mode == IntegrationMode::EfficientDifferential)
+        const bool efficient = _settings.mode == IntegrationMode::EfficientDifferential;
+        if (efficient)
         {
             std::vector<Vector3> localCoordinates;
             localCoordinates.reserve(coordinates.size());
@@ -616,7 +617,7 @@ namespace DNDS::NCFV
                 _integrationInitializationTiming.volumeCalls++;
             }
         }
-        else
+        if (!efficient || _retainSourceQuadrature)
         {
             const auto simplexElement = dimension == 2
                                             ? Geom::Elem::Element{Geom::Elem::Tri3}
@@ -643,16 +644,17 @@ namespace DNDS::NCFV
                     appendQuadraturePoint(quadrature, iG);
                 _integrationInitializationTiming.volumeSeconds += MPI_Wtime() - quadratureStart;
                 _integrationInitializationTiming.volumeCalls++;
-                for (std::size_t iPoint = firstPoint;
-                     iPoint < controlVolume.volumeQuadrature.size(); iPoint++)
-                {
-                    const auto &point = controlVolume.volumeQuadrature[iPoint];
-                    const Vector3 offset = point.coordinate - anchorCoordinate;
-                    controlVolume.moments.measure += point.weight;
-                    controlVolume.moments.first += point.weight * offset;
-                    controlVolume.moments.second +=
-                        point.weight * offset * offset.transpose();
-                }
+                if (!efficient)
+                    for (std::size_t iPoint = firstPoint;
+                         iPoint < controlVolume.volumeQuadrature.size(); iPoint++)
+                    {
+                        const auto &point = controlVolume.volumeQuadrature[iPoint];
+                        const Vector3 offset = point.coordinate - anchorCoordinate;
+                        controlVolume.moments.measure += point.weight;
+                        controlVolume.moments.first += point.weight * offset;
+                        controlVolume.moments.second +=
+                            point.weight * offset * offset.transpose();
+                    }
             }
             else
             {
@@ -660,12 +662,15 @@ namespace DNDS::NCFV
                 for (int iG = 0; iG < quadrature.GetNumPoints(); iG++)
                 {
                     appendQuadraturePoint(quadrature, iG);
-                    const auto &point = controlVolume.volumeQuadrature.back();
-                    const Vector3 offset = point.coordinate - anchorCoordinate;
-                    controlVolume.moments.measure += point.weight;
-                    controlVolume.moments.first += point.weight * offset;
-                    controlVolume.moments.second +=
-                        point.weight * offset * offset.transpose();
+                    if (!efficient)
+                    {
+                        const auto &point = controlVolume.volumeQuadrature.back();
+                        const Vector3 offset = point.coordinate - anchorCoordinate;
+                        controlVolume.moments.measure += point.weight;
+                        controlVolume.moments.first += point.weight * offset;
+                        controlVolume.moments.second +=
+                            point.weight * offset * offset.transpose();
+                    }
                 }
             }
         }
@@ -1146,8 +1151,8 @@ namespace DNDS::NCFV
                                       "Efficient NCFV point-recovery stencil is empty");
                 CheckStencilNodes(
                     controlVolume.pointRecoveryStencil, _mesh->NumNodeProc());
-                DNDS_check_throw_info(controlVolume.volumeQuadrature.empty(),
-                                      "Efficient NCFV unexpectedly stored volume Gauss points");
+                DNDS_check_throw_info(controlVolume.volumeQuadrature.empty() == !_retainSourceQuadrature,
+                                      "Efficient NCFV volume Gauss points do not match source integration setup");
             }
             else
             {

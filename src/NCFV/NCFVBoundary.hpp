@@ -88,6 +88,7 @@ namespace DNDS::NCFV
          * @return True for slip, symmetry, no-slip adiabatic, or no-slip isothermal walls.
          */
         [[nodiscard]] static bool IsWall(BoundaryMode mode);
+        [[nodiscard]] static bool IsNoSlipWall(BoundaryMode mode);
         /**
          * @brief Identify boundary families eligible for direct owned-node state constraints.
          * @param mode Boundary-condition family to inspect.

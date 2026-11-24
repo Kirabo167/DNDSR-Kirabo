@@ -117,14 +117,16 @@ namespace DNDS::NCFV
     {
         return mode == BoundaryMode::SlipWall ||
                mode == BoundaryMode::Symmetry ||
-               mode == BoundaryMode::NoSlipAdiabaticWall ||
-               mode == BoundaryMode::NoSlipIsothermalWall;
+               IsNoSlipWall(mode);
+    }
+
+    bool BoundaryRegistry::IsNoSlipWall(BoundaryMode mode)
+    {
+        return mode == BoundaryMode::NoSlipAdiabaticWall || mode == BoundaryMode::NoSlipIsothermalWall;
     }
 
     bool BoundaryRegistry::IsStrongType(BoundaryMode mode)
     {
-        return mode == BoundaryMode::SupersonicInlet ||
-               mode == BoundaryMode::NoSlipAdiabaticWall ||
-               mode == BoundaryMode::NoSlipIsothermalWall;
+        return mode == BoundaryMode::SupersonicInlet || IsNoSlipWall(mode);
     }
 }

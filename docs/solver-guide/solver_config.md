@@ -27,7 +27,7 @@ for `euler2D`, rather than a complete simulation configuration:
 | Euler/CFV | `Euler`, `CFV`; model selects NS, SA, 2EQ or EX | `cases/euler/{2D,3D}`, with `SA`, `2EQ`, `EX` subdirectories |
 | Constant-density ACM | `ACM`, `CFV`; `ConstantDensity2D` / `ConstantDensity3D`; four variables | `cases/acm/{2D,3D}` |
 | Variable-density ACM | `ACMVariable`, `CFV`; `VariableDensity2D` / `VariableDensity3D`; five variables | `cases/acm/{2D,3D}/variable_density` |
-| NCFV Euler | `ncfv_euler`, `NCFV`, `IdealGas`; `dimension + 2` variables | `cases/ncfv_euler/{2D,3D}` |
+| NCFV | `ncfv_euler`, `NCFV`, `IdealGas` with `dimension + 2` flow variables plus the selected turbulence variables | `cases/ncfv_euler/{2D,3D}` |
 
 `euler` retains the upstream NS convention: two-dimensional geometry with
 three velocity components and five conserved variables. `euler2D` uses
@@ -71,7 +71,7 @@ Use the actual field names below. A generic top-level `meshFile`, `dt` or
 | Purpose | Euler/CFV | ACM / ACMVariable | NCFV Euler |
 | --- | --- | --- | --- |
 | Mesh and partitioning | `dataIOControl` | `meshSettings` | `mesh` |
-| Physical model | `eulerSettings` | `acmSettings`, `turbulenceSettings` | `physics`, including `viscous` |
+| Physical model | `eulerSettings` | `acmSettings`, `turbulenceSettings` | `physics.viscous`, `physics.turbulence` |
 | Initial field | `eulerSettings` initializers and state values | `initialState` and family-specific controls | `initialField`, `physics.initialPrimitive` |
 | Spatial reconstruction | `vfvSettings`, `implicitReconstructionControl`, `limiterControl` | `reconstructionSettings`, `vfvSettings` | `algorithm`, `reconstruction` |
 | Time integration | `timeMarchControl`, `implicitCFLControl`, `convergenceControl` | `timeMarchSettings` | `time` |
@@ -95,8 +95,11 @@ changing integrators. `restartSettings` belongs to constant-density ACM;
 ACMVariable currently has result output without restart loading.
 
 NCFV uses `mesh.meshFile`, `time.iterations`, `time.timeStep` and
-`io.outputPrefix`. Primitive states are `[rho,u,v,p]` in 2D and
-`[rho,u,v,w,p]` in 3D; conserved states end in total energy density.
+`io.outputPrefix`. The flow primitives are `[rho,u,v,p]` in 2D and
+`[rho,u,v,w,p]` in 3D. `physics.turbulence.model` selects `none`, `SA`,
+`KOmegaWilcox`, `KOmegaSST`, or `RealizableKE`. Append the model's specific
+turbulence variables after pressure in primitive inputs and their conservative
+counterparts after total energy density in conservative inputs.
 `algorithm.mode` selects `EfficientDifferential` or `TraditionalQuadrature`.
 The legacy disabled `Roe_M2` selector was replaced by `Roe` in migrated cases;
 historical timing/error results need recomputation. See the

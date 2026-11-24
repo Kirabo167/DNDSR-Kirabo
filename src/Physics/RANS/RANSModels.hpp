@@ -359,7 +359,7 @@ namespace DNDS::Physics::RANS
         Eigen::Matrix<real, dim, dim> SS = diffU + diffU.transpose() - (2. / 3.) * diffU.trace() * Eigen::Matrix<real, dim, dim>::Identity();
         real rho = UMeanXy(0);
         real k = std::max(UMeanXy(I4 + 1) / rho, verySmallReal_4);
-        real epsilon = std::max(UMeanXy(I4 + 1) / rho, verySmallReal_4);
+        real epsilon = std::max(UMeanXy(I4 + 2) / rho, verySmallReal_4);
         real Ret = rho * sqr(k) / (muf * epsilon) + verySmallReal_4;
         real S = std::sqrt(SS.squaredNorm() / 2) + verySmallReal_4;
         real fmu = (1 - std::exp(-0.01 * Ret)) / std::max(1 - exp(-std::sqrt(Ret)), verySmallReal_4) * std::max(1., std::sqrt(2 / Ret));
@@ -1160,6 +1160,7 @@ namespace DNDS::Physics::RANS
      *        0.5*(gradU.transpose()-gradU), in the caller's component frame.
      *        Null means the supplied gradients already use absolute velocity.
      *        Frame policy belongs to the caller, not this constitutive kernel.
+     * @param hWallNormal Optional wall-normal cell spacing for IDDES and WMLES.
      */
     template <int dim, class TU, class TDiffU, class TSource, bool Diagnose = true>
     DNDS_DEVICE_CALLABLE void GetSource_SAWithVorticity(TU &&UMeanXy, TDiffU &&DiffUxy, real muRef, real mufPhy, real gamma,
@@ -1169,7 +1170,8 @@ namespace DNDS::Physics::RANS
                                                         int DESMode,
                                                         TSource &source, int rotCor, int mode,
                                                         const SAConfig &saConfig,
-                                                        int SAVersion, const Eigen::Matrix<real, dim, dim> *vorticityCorrection)
+                                                        int SAVersion, const Eigen::Matrix<real, dim, dim> *vorticityCorrection,
+                                                        real hWallNormal = 0)
     {
         const auto I4 = dim + 1;
 
@@ -1244,7 +1246,7 @@ namespace DNDS::Physics::RANS
                 psiSqr = std::min(100.0, (1 - cb1 / (cw1 * sqr(kappa) * fwStar) * (ft2 + (1 - ft2) * fnu2)) /
                                              (fnu1 * std::max(smallReal, 1 - ft2)));
             real psi = std::sqrt(std::max(psiSqr, 1.0));
-            lDES = GetLength_SA_DES(d, hMax, cDES, DESMode, nuTur, nufPhy, diffUNorm, psi);
+            lDES = GetLength_SA_DES(d, hMax, cDES, DESMode, nuTur, nufPhy, diffUNorm, psi, hWallNormal);
         }
         d = lDES; //! super subs
 

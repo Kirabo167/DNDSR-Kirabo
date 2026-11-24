@@ -3,6 +3,7 @@
 #include "NCFVPressureLimiter.hpp"
 #include "NCFVReconstruction.hpp"
 #include "NCFVSharedGradientSchedule.hpp"
+#include "NCFVState.hpp"
 
 #include <algorithm>
 #include <array>
@@ -26,11 +27,12 @@ namespace DNDS::NCFV
      * Changing the partition or rank count can change that ordering and result.
      * One pass does not guarantee that later events preserve earlier bounds.
      */
-    template <int dimension>
+    template <int dimension, int nTurbulence = 0>
     class SharedGradientFaceSweep
     {
-        static constexpr int NVars = dimension + 2;
-        using State = Eigen::Vector<real, NVars>;
+        using Layout = StateLayout<dimension, nTurbulence>;
+        static constexpr int NVars = Layout::Size;
+        using State = typename Layout::State;
 
         /** @brief One source-gradient contribution to a face-side mean-minus-conservative-mean trace. */
         struct Entry
@@ -189,8 +191,7 @@ namespace DNDS::NCFV
          */
         real Pressure(const State &state, real gamma) const
         {
-            return (gamma - 1) *
-                   (state(NVars - 1) - .5 * state.template segment<dimension>(1).squaredNorm() / state(0));
+            return Layout::Pressure(state, gamma);
         }
 
         /**
@@ -201,7 +202,7 @@ namespace DNDS::NCFV
          */
         bool IsPhysical(const State &state, real gamma) const
         {
-            return state.allFinite() && state(0) > 1e-12 && Pressure(state, gamma) > 1e-12;
+            return Layout::IsPhysical(state, gamma);
         }
 
         /**
@@ -254,7 +255,8 @@ namespace DNDS::NCFV
             }
             if (limitPressure)
                 factor = LimitIdealGasPressureFactor<dimension>(
-                    mean, candidate, gamma, data(NVars, 1), data(NVars, 2), factor);
+                    mean.template head<Layout::FlowSize>(), candidate.template head<Layout::FlowSize>(),
+                    gamma, data(NVars, 1), data(NVars, 2), factor);
             return factor;
         }
 
@@ -644,12 +646,12 @@ namespace DNDS::NCFV
                     const auto physicalBox = [&](real t)
                     {
                         const State low = mean - t * negative, high = mean + t * positive;
-                        if (low(0) <= 1e-12)
+                        if (low(0) <= 1e-12 || !Layout::TurbulenceAdmissible(low))
                             return false;
                         real momentumSquared = 0;
                         for (int d = 1; d <= dimension; d++)
                             momentumSquared += std::max(low(d) * low(d), high(d) * high(d));
-                        return (gamma - 1) * (low(NVars - 1) - .5 * momentumSquared / low(0)) > 1e-12;
+                        return (gamma - 1) * (low(dimension + 1) - .5 * momentumSquared / low(0)) > 1e-12;
                     };
                     if (!physicalBox(factor))
                     {

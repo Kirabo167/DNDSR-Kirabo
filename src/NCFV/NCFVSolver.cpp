@@ -17,8 +17,8 @@
 
 namespace DNDS::NCFV
 {
-    template <int dimension>
-    void Solver<dimension>::BroadcastBoundaryNameMap()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::BroadcastBoundaryNameMap()
     {
         std::string packed;
         if (_mpi.rank == 0)
@@ -45,8 +45,8 @@ namespace DNDS::NCFV
         }
     }
 
-    template <int dimension>
-    void Solver<dimension>::ReadMesh()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::ReadMesh()
     {
         DNDS_MAKE_SSP(_mesh, _mpi, dimension);
         DNDS_MAKE_SSP(_reader, _mesh, 0);
@@ -161,56 +161,32 @@ namespace DNDS::NCFV
                   << geometryCellLayers << std::endl;
     }
 
-    template <int dimension>
-    typename Solver<dimension>::State
-    Solver<dimension>::PrimitiveToConservative(
+    template <int dimension, int nTurbulence>
+    typename Solver<dimension, nTurbulence>::State
+    Solver<dimension, nTurbulence>::PrimitiveToConservative(
         const std::vector<real> &primitive) const
     {
-        State conservative = State::Zero();
-        const real density = primitive[0];
-        Eigen::Vector<real, dimension> velocity;
-        for (int i = 0; i < dimension; i++)
-            velocity(i) = primitive[static_cast<std::size_t>(i + 1)];
-        const real pressure = primitive[static_cast<std::size_t>(dimension + 1)];
-        conservative(0) = density;
-        conservative.template segment<dimension>(1) = density * velocity;
-        conservative(dimension + 1) =
-            pressure / (_configuration.physics.gamma - 1.0) +
-            0.5 * density * velocity.squaredNorm();
-        return conservative;
+        return Layout::ToConservative(Eigen::Map<const State>(primitive.data()), _configuration.physics.gamma,
+                                      _configuration.physics.turbulence.viscosityReference);
     }
 
-    template <int dimension>
-    typename Solver<dimension>::State
-    Solver<dimension>::ConservativeToPrimitive(
+    template <int dimension, int nTurbulence>
+    typename Solver<dimension, nTurbulence>::State
+    Solver<dimension, nTurbulence>::ConservativeToPrimitive(
         const State &conservative) const
     {
-        State primitive = State::Zero();
-        primitive(0) = conservative(0);
-        primitive.template segment<dimension>(1) =
-            conservative.template segment<dimension>(1) / conservative(0);
-        primitive(dimension + 1) =
-            (_configuration.physics.gamma - 1.0) *
-            (conservative(dimension + 1) -
-             0.5 * conservative.template segment<dimension>(1).squaredNorm() /
-                 conservative(0));
-        return primitive;
+        return Layout::ToPrimitive(conservative, _configuration.physics.gamma,
+                                   _configuration.physics.turbulence.viscosityReference);
     }
 
-    template <int dimension>
-    bool Solver<dimension>::StateIsPhysical(const State &state) const
+    template <int dimension, int nTurbulence>
+    bool Solver<dimension, nTurbulence>::StateIsPhysical(const State &state) const
     {
-        if (!state.allFinite() || state(0) <= 1e-12)
-            return false;
-        const real pressure = (_configuration.physics.gamma - 1.0) *
-                              (state(dimension + 1) -
-                               0.5 * state.template segment<dimension>(1).squaredNorm() /
-                                   state(0));
-        return pressure > 1e-12;
+        return Layout::IsPhysical(state, _configuration.physics.gamma);
     }
 
-    template <int dimension>
-    index Solver<dimension>::CountNonphysicalOwnedStates(const NodeStatePair &state) const
+    template <int dimension, int nTurbulence>
+    index Solver<dimension, nTurbulence>::CountNonphysicalOwnedStates(const NodeStatePair &state) const
     {
         index localBad = 0;
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
@@ -221,8 +197,8 @@ namespace DNDS::NCFV
         return globalBad;
     }
 
-    template <int dimension>
-    void Solver<dimension>::CheckOwnedState(
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::CheckOwnedState(
         const NodeStatePair &state,
         const std::string &where) const
     {
@@ -233,16 +209,16 @@ namespace DNDS::NCFV
                         globalBad, where));
     }
 
-    template <int dimension>
-    void Solver<dimension>::AllocateFields()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::AllocateFields()
     {
         const auto allocateCommunicated = [&](NodeStatePair &field,
                                                const std::string &name)
         {
             field.InitPair(name, _mpi);
-            field.father->Resize(_mesh->NumNode(), dimension + 2, 1);
+            field.father->Resize(_mesh->NumNode(), StateSize, 1);
             field.son->Resize(
-                _nodeHalo->NumNodeGhost(), dimension + 2, 1);
+                _nodeHalo->NumNodeGhost(), StateSize, 1);
             field.BorrowSetup(_nodeHalo->Layout());
             field.trans.initPersistentPull();
             field.trans.initPersistentPush();
@@ -250,10 +226,10 @@ namespace DNDS::NCFV
         allocateCommunicated(_state, "NCFV.state");
         allocateCommunicated(_stageState, "NCFV.stageState");
         CFV::BuildUDofOnMesh(
-            _baseState, "NCFV.baseState", _mpi, _mesh, dimension + 2,
+            _baseState, "NCFV.baseState", _mpi, _mesh, StateSize,
             false, false, Geom::MeshLoc::Node);
         CFV::BuildUDofOnMesh(
-            _rhs, "NCFV.rhs", _mpi, _mesh, dimension + 2,
+            _rhs, "NCFV.rhs", _mpi, _mesh, StateSize,
             false, false, Geom::MeshLoc::Node);
         for (index iNode = 0; iNode < _state.Size(); iNode++)
             _state[iNode].setZero();
@@ -266,8 +242,8 @@ namespace DNDS::NCFV
         }
     }
 
-    template <int dimension>
-    void Solver<dimension>::ApplyInitialRegions()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::ApplyInitialRegions()
     {
         for (const auto &box : _configuration.initialField.boxes)
         {
@@ -301,7 +277,7 @@ namespace DNDS::NCFV
             evaluator.AddScalar("inRegion");
             evaluator.AddScalar("globalNode");
             evaluator.AddVector("x", 3);
-            evaluator.AddVector("UPrim", dimension + 2);
+            evaluator.AddVector("UPrim", StateSize);
             evaluator.Compile(expression.GetProgram());
             for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
             {
@@ -312,7 +288,7 @@ namespace DNDS::NCFV
                     static_cast<real>(_mesh->node2nodeOrig(iNode, 0));
                 for (int i = 0; i < 3; i++)
                     evaluator.VarVec("x", i) = point(i);
-                for (int i = 0; i < dimension + 2; i++)
+                for (int i = 0; i < StateSize; i++)
                     evaluator.VarVec("UPrim", i) = primitive(i);
                 const real returnCode = evaluator.Evaluate();
                 DNDS_check_throw_info(
@@ -321,8 +297,8 @@ namespace DNDS::NCFV
                         expression.GetProgram());
                 if (evaluator.Var("inRegion") == 0)
                     continue;
-                std::vector<real> values(static_cast<std::size_t>(dimension + 2));
-                for (int i = 0; i < dimension + 2; i++)
+                std::vector<real> values(static_cast<std::size_t>(StateSize));
+                for (int i = 0; i < StateSize; i++)
                     values[static_cast<std::size_t>(i)] =
                         evaluator.VarVec("UPrim", i);
                 const State value = PrimitiveToConservative(values);
@@ -335,8 +311,8 @@ namespace DNDS::NCFV
         }
     }
 
-    template <int dimension>
-    void Solver<dimension>::ReadInitialNodeFile()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::ReadInitialNodeFile()
     {
         const auto &settings = _configuration.initialField;
         if (settings.nodeFile.empty())
@@ -370,14 +346,14 @@ namespace DNDS::NCFV
             const index globalNode =
                 fileNode - static_cast<index>(settings.nodeFileIndexBase);
             const auto found = globalToLocal.find(globalNode);
-            std::vector<real> values(static_cast<std::size_t>(dimension + 2));
+            std::vector<real> values(static_cast<std::size_t>(StateSize));
             bool complete = true;
             for (real &value : values)
                 complete = complete && static_cast<bool>(parser >> value);
             DNDS_check_throw_info(
                 complete,
                 fmt::format("NCFV initial node field line {} has fewer than {} values",
-                            lineNumber, dimension + 2));
+                            lineNumber, StateSize));
             if (found == globalToLocal.end())
                 continue;
             const index iNode = found->second;
@@ -389,7 +365,7 @@ namespace DNDS::NCFV
             if (settings.nodeFileVariables == InitialFieldVariables::Primitive)
                 value = PrimitiveToConservative(values);
             else
-                for (int i = 0; i < dimension + 2; i++)
+                for (int i = 0; i < StateSize; i++)
                     value(i) = values[static_cast<std::size_t>(i)];
             DNDS_check_throw_info(
                 StateIsPhysical(value),
@@ -421,8 +397,8 @@ namespace DNDS::NCFV
                   << ", loaded owned nodes=" << globalLoaded << std::endl;
     }
 
-    template <int dimension>
-    void Solver<dimension>::InitializeFreshField()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::InitializeFreshField()
     {
         const State initial = PrimitiveToConservative(
             _configuration.physics.initialPrimitive);
@@ -432,7 +408,7 @@ namespace DNDS::NCFV
         ReadInitialNodeFile();
         if (_configuration.initialField.isentropicVortex)
             InitializeVortex();
-        if constexpr (dimension == 3)
+        if constexpr (dimension == 3 && nTurbulence == 0)
             if (_configuration.physics.exponentialMMS)
                 for (index iNode = 0; iNode < _mesh->NumNode(); ++iNode)
                     _state[iNode] = ExponentialMMS::State(_spatial->ManufacturedBasisMean(iNode, 0));
@@ -440,15 +416,15 @@ namespace DNDS::NCFV
         _simulationTime = 0;
     }
 
-    template <int dimension>
-    void Solver<dimension>::SynchronizeState(NodeStatePair &state)
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::SynchronizeState(NodeStatePair &state)
     {
         state.trans.startPersistentPull();
         state.trans.waitPersistentPull();
     }
 
-    template <int dimension>
-    void Solver<dimension>::InitializeVortex()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::InitializeVortex()
     {
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
         {
@@ -459,8 +435,8 @@ namespace DNDS::NCFV
         }
     }
 
-    template <int dimension>
-    void Solver<dimension>::ReportManufacturedErrors() const
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::ReportManufacturedErrors() const
     {
         if (!_configuration.physics.exponentialMMS || !_configuration.algorithm.retainMicroGeometry)
             return;
@@ -487,7 +463,8 @@ namespace DNDS::NCFV
             const auto basis = _spatial->ManufacturedBasisMean(volume.node, _simulationTime);
             const real sourceError = ExponentialMMS::sourceCoefficients.col(0).dot(basis - reference);
             Eigen::Vector<real, nConserved + 2> contribution;
-            contribution.head<nConserved>() = (_state[volume.node] - ExponentialMMS::State(reference)).array().square();
+            contribution.head<nConserved>() =
+                (_state[volume.node].template head<nConserved>() - ExponentialMMS::State(reference)).array().square();
             contribution[nConserved] = 1;
             contribution[nConserved + 1] = sqr(sourceError);
             contribution *= measure;
@@ -514,8 +491,8 @@ namespace DNDS::NCFV
         }
     }
 
-    template <int dimension>
-    void Solver<dimension>::WriteVortexDiagnostics(bool initial)
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::WriteVortexDiagnostics(bool initial)
     {
         if (!_configuration.initialField.isentropicVortex)
             return;
@@ -532,7 +509,7 @@ namespace DNDS::NCFV
         {
             const real volume = _geometry->NodeVolume(i).moments.measure;
             const State recovered = _spatial->PointValues()[i];
-            const State exact = IsentropicVortex<dimension>(_configuration, _mesh->coords[i], _simulationTime).first;
+            const auto exact = IsentropicVortex<dimension>(_configuration, _mesh->coords[i], _simulationTime).first;
             const real error = recovered(0) - exact(0);
             const Vector3 coordinate = _mesh->coords[i];
             nodeOutput << _mesh->node2nodeOrig(i, 0) << ',' << coordinate(0) << ',' << coordinate(1) << ','
@@ -572,8 +549,8 @@ namespace DNDS::NCFV
         }
     }
 
-    template <int dimension>
-    std::string Solver<dimension>::StampedName(
+    template <int dimension, int nTurbulence>
+    std::string Solver<dimension, nTurbulence>::StampedName(
         const std::string &prefix,
         index iteration) const
     {
@@ -583,8 +560,8 @@ namespace DNDS::NCFV
         return result.str();
     }
 
-    template <int dimension>
-    void Solver<dimension>::WriteRestart(const std::string &baseName)
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::WriteRestart(const std::string &baseName)
     {
         const auto [fileName, displayName] =
             _configuration.io.restartSerializer.ModifyFilePath(
@@ -618,8 +595,8 @@ namespace DNDS::NCFV
             log() << "NCFV wrote restart: " << displayName << std::endl;
     }
 
-    template <int dimension>
-    void Solver<dimension>::ReadRestart(const std::string &baseName)
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::ReadRestart(const std::string &baseName)
     {
         const auto [fileName, displayName] =
             _configuration.io.restartSerializer.ModifyFilePath(
@@ -641,6 +618,16 @@ namespace DNDS::NCFV
         DNDS_check_throw_info(
             std::abs(storedGamma - _configuration.physics.gamma) < 1e-13,
             "NCFV restart gamma differs from the current configuration");
+        std::string storedConfiguration;
+        serializer->ReadString("configuration", storedConfiguration);
+        const auto storedPhysics = nlohmann::json::parse(storedConfiguration).at("physics");
+        const auto storedTurbulence = storedPhysics.value("turbulence", nlohmann::json::object());
+        const auto &turbulence = _configuration.physics.turbulence;
+        DNDS_check_throw_info(storedTurbulence.value("model", std::string("none")) == turbulence.model,
+                              "NCFV restart turbulence model differs from the current configuration");
+        if constexpr (nTurbulence == 1)
+            DNDS_check_throw_info(storedTurbulence.value("viscosityReference", 1.0) == turbulence.viscosityReference,
+                                  "NCFV restart SA viscosityReference differs from the current configuration");
 
         if (serializer->IsPerRank())
         {
@@ -659,7 +646,7 @@ namespace DNDS::NCFV
                 /*includePIG*/ false, /*includeSon*/ false);
             DNDS_check_throw_info(
                 readState.father->Size() == _state.father->Size() &&
-                    readState.father->MatRowSize() == dimension + 2,
+                    readState.father->MatRowSize() == StateSize,
                 "NCFV JSON restart requires the same MPI partition and variable count");
             _state.CopyFather(readState);
         }
@@ -679,8 +666,8 @@ namespace DNDS::NCFV
                   << ", time=" << _simulationTime << std::endl;
     }
 
-    template <int dimension>
-    void Solver<dimension>::WriteOutput(const std::string &baseName)
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::WriteOutput(const std::string &baseName)
     {
         NodeStatePair meshState;
         NodeStatePair meshTimeStep;
@@ -688,8 +675,8 @@ namespace DNDS::NCFV
         const NodeStatePair *timeStepForOutput =
             &_spatial->LocalTimeSteps();
         meshState.InitPair("NCFV.outputMeshState", _mpi);
-        meshState.father->Resize(_mesh->NumNode(), dimension + 2, 1);
-        meshState.son->Resize(_mesh->NumNodeGhost(), dimension + 2, 1);
+        meshState.father->Resize(_mesh->NumNode(), StateSize, 1);
+        meshState.son->Resize(_mesh->NumNodeGhost(), StateSize, 1);
         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
             meshState[iNode] = _state[iNode];
         meshState.BorrowAndPull(_mesh->coords);
@@ -706,9 +693,16 @@ namespace DNDS::NCFV
         _reader->SetASCIIPrecision(_configuration.io.asciiPrecision);
         _reader->SetVTKFloatEncodeMode(_configuration.io.vtkFloatEncoding);
 
-        const std::array<std::string, 6> scalarNames{
+        std::array<std::string, 6 + nTurbulence> scalarNames{
             "Density", "Pressure", "Temperature", "Mach",
             "TotalEnergy", "LocalTimeStep"};
+        if constexpr (nTurbulence == 1)
+            scalarNames[6] = "NuTilde";
+        if constexpr (nTurbulence == 2)
+        {
+            scalarNames[6] = "TurbulentKineticEnergy";
+            scalarNames[7] = _configuration.physics.turbulence.model == "RealizableKE" ? "Epsilon" : "Omega";
+        }
         const auto scalarValue = [&](int field, index iNode)
         {
             const State conservative = (*stateForOutput)[iNode];
@@ -735,7 +729,7 @@ namespace DNDS::NCFV
             case 5:
                 return (*timeStepForOutput)[iNode](0, 0);
             default:
-                return 0.0;
+                return primitive(FlowSize + field - 6);
             }
         };
 
@@ -763,8 +757,8 @@ namespace DNDS::NCFV
                   << ".pvtu" << std::endl;
     }
 
-    template <int dimension>
-    void Solver<dimension>::WriteResolvedConfiguration() const
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::WriteResolvedConfiguration() const
     {
         const auto &io = _configuration.io;
         if (!io.writeResolvedConfiguration ||
@@ -783,10 +777,12 @@ namespace DNDS::NCFV
         MPI_Barrier(_mpi.comm);
     }
 
-    template <int dimension>
-    void Solver<dimension>::Initialize()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::Initialize()
     {
         _configuration.Validate();
+        DNDS_check_throw_info(Physics::RANS::Model(_configuration.physics.turbulence).ComponentNumber() == nTurbulence,
+                              "NCFV configured turbulence model does not match the solver state layout");
         ReadMesh();
 
         _topology = std::make_unique<Topology>(_mpi, _mesh);
@@ -794,7 +790,7 @@ namespace DNDS::NCFV
         _geometry = std::make_unique<DualGeometry>(
             _mpi, _mesh, *_topology, _configuration.algorithm,
             _configuration.reconstruction.enableLimiter || _configuration.reconstruction.limitFluxCorrection,
-            &_configuration.mesh);
+            &_configuration.mesh, nTurbulence > 0);
         _geometry->Build();
         _nodeHalo = std::make_unique<NodeHalo>(
             _mpi, _mesh, _configuration.mesh);
@@ -826,7 +822,7 @@ namespace DNDS::NCFV
             _boundaryNameToID, *_topology, _configuration.physics);
 
         AllocateFields();
-        _spatial = std::make_unique<SpatialOperator<dimension>>(
+        _spatial = std::make_unique<SpatialOperator<dimension, nTurbulence>>(
             _mpi, _mesh, *_topology, *_geometry, *_reconstruction,
             *_boundaries, _configuration.algorithm.mode,
             _configuration.reconstruction,
@@ -854,11 +850,12 @@ namespace DNDS::NCFV
                   << ", global cells=" << _mesh->NumCellGlobal()
                   << ", global edges=" << _topology->NumEdgeGlobal()
                   << ", viscous=" << _configuration.physics.viscous.enabled
+                  << ", turbulence=" << _configuration.physics.turbulence.model
                   << std::endl;
     }
 
-    template <int dimension>
-    void Solver<dimension>::Run()
+    template <int dimension, int nTurbulence>
+    void Solver<dimension, nTurbulence>::Run()
     {
         const index additionalIterations = _configuration.time.iterations;
         WriteVortexDiagnostics(true);
@@ -1007,7 +1004,7 @@ namespace DNDS::NCFV
         }
 
         WriteVortexDiagnostics(false);
-        if constexpr (dimension == 3)
+        if constexpr (dimension == 3 && nTurbulence == 0)
             ReportManufacturedErrors();
 
         if (additionalIterations == 0 && _mpi.rank == 0)
@@ -1027,5 +1024,5 @@ namespace DNDS::NCFV
                 _configuration.io.restartPrefix, _currentIteration));
     }
 
-    template class Solver<DNDS_NCFV_INSTANTIATION_DIM>;
+    template class Solver<DNDS_NCFV_INSTANTIATION_DIM, DNDS_NCFV_INSTANTIATION_RANS>;
 }

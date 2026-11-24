@@ -63,7 +63,13 @@ namespace DNDS::NCFV
 
     void Configuration::Validate() const
     {
-        const std::size_t requiredPrimitiveSize = static_cast<std::size_t>(dimension + 2);
+        DNDS_check_throw_info(dimension == 2 || dimension == 3,
+                              "NCFV dimension must be 2 or 3");
+        const Physics::RANS::Model turbulence(physics.turbulence);
+        const int nTurbulence = turbulence.ComponentNumber();
+        DNDS_check_throw_info(nTurbulence == 0 || physics.viscous.enabled,
+                              "NCFV turbulence requires physics.viscous.enabled=true");
+        const auto requiredPrimitiveSize = static_cast<std::size_t>(dimension + 2 + nTurbulence);
         const auto checkPrimitive = [&](const std::vector<real> &primitive,
                                         const std::string &name,
                                         bool allowEmpty = false)
@@ -71,15 +77,21 @@ namespace DNDS::NCFV
             if (allowEmpty && primitive.empty())
                 return;
             DNDS_check_throw_info(primitive.size() == requiredPrimitiveSize,
-                                  name + " must contain [rho,u,(v,w),p]");
-            DNDS_check_throw_info(primitive.front() > 0 && primitive.back() > 0,
+                                  fmt::format("{} requires {} entries for turbulence model {}",
+                                              name, requiredPrimitiveSize, physics.turbulence.model));
+            DNDS_check_throw_info(primitive.front() > 0 && primitive[dimension + 1] > 0,
                                   name + " density and pressure must be positive");
             for (real value : primitive)
                 DNDS_check_throw_info(std::isfinite(value), name + " must contain finite values");
+            if (nTurbulence == 2)
+                DNDS_check_throw_info(primitive[dimension + 2] > 0 && primitive[dimension + 3] > 0,
+                                      name + " requires positive k and omega or epsilon");
+#ifndef USE_NS_SA_NEGATIVE_MODEL
+            if (nTurbulence == 1)
+                DNDS_check_throw_info(primitive[dimension + 2] >= 0, name + " requires nonnegative nuTilde");
+#endif
         };
 
-        DNDS_check_throw_info(dimension == 2 || dimension == 3,
-                              "NCFV dimension must be 2 or 3");
         DNDS_check_throw_info(!mesh.meshFile.empty(),
                               "NCFV mesh.meshFile must name a CGNS mesh");
         DNDS_check_throw_info(!algorithm.macroFaceBoundary ||

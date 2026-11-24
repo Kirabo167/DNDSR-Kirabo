@@ -235,7 +235,7 @@ namespace DNDS::NCFV
         real lengthScale = 0; ///< pow(volume,1/dimension), used for CFL/viscous distance estimates.
         std::vector<EfficientPointRecoveryNode> pointRecoveryStencil; ///< Volume-normalized recovery weights.
         std::vector<MicroVolume> microVolumes; ///< Optional retained simplex decomposition.
-        std::vector<VolumeQuadraturePoint> volumeQuadrature; ///< Traditional volume integration samples.
+        std::vector<VolumeQuadraturePoint> volumeQuadrature; ///< Traditional integration or nonlinear volume-source samples.
         std::vector<BoundaryPiece> boundaryPieces; ///< Physical-boundary pieces closing this dual volume.
 
         /** @brief Integrate a vector field as a dual-volume mean using this volume's configured rule.
@@ -307,6 +307,7 @@ namespace DNDS::NCFV
         const Topology &_topology;
         AlgorithmSettings _settings;
         bool _buildGhostEdgeSurfaces = false;
+        bool _retainSourceQuadrature = false;
         Vector3 _periodicLengths = Vector3::Zero();
         bool _nodeIndicesRemapped = false;
 
@@ -454,6 +455,7 @@ namespace DNDS::NCFV
          *     when true.
          * @param meshSettings Optional three periodic lengths for minimum-image geometry; nullptr disables
          *     periodic wrapping.
+         * @param retainSourceQuadrature Retain volume Gauss points for nonlinear sources in efficient mode.
          */
         DualGeometry(
             const MPIInfo &mpi,
@@ -461,9 +463,10 @@ namespace DNDS::NCFV
             const Topology &topology,
             const AlgorithmSettings &settings,
             bool buildGhostEdgeSurfaces = false,
-            const MeshSettings *meshSettings = nullptr)
+            const MeshSettings *meshSettings = nullptr,
+            bool retainSourceQuadrature = false)
             : _mpi(mpi), _mesh(mesh), _topology(topology), _settings(settings),
-              _buildGhostEdgeSurfaces(buildGhostEdgeSurfaces)
+              _buildGhostEdgeSurfaces(buildGhostEdgeSurfaces), _retainSourceQuadrature(retainSourceQuadrature)
         {
             if (meshSettings)
             {
@@ -475,6 +478,8 @@ namespace DNDS::NCFV
                         meshSettings->periodicLengths[static_cast<std::size_t>(d)];
             }
         }
+
+        [[nodiscard]] bool RetainsSourceQuadrature() const { return _retainSourceQuadrature; }
 
         /**
          * @brief Build median-dual volumes, macro-surfaces, moments, integration data, and communication fields.

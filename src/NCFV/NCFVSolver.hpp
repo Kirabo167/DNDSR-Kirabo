@@ -34,12 +34,16 @@ namespace DNDS::NCFV
      * sample. Runtime node fields follow the exact finalized dependency halo; geometry and
      * edge ownership remain separate. Initialize() builds these layouts before Run() uses them.
      */
-    template <int dimension>
+    template <int dimension, int nTurbulence = 0>
     class Solver
     {
         static_assert(dimension == 2 || dimension == 3);
 
-        using State = Eigen::Vector<real, dimension + 2>;
+        static_assert(nTurbulence >= 0 && nTurbulence <= 2);
+        using Layout = StateLayout<dimension, nTurbulence>;
+        static constexpr int FlowSize = Layout::FlowSize;
+        static constexpr int StateSize = Layout::Size;
+        using State = typename Layout::State;
 
         MPIInfo _mpi;
         Configuration _configuration;
@@ -51,7 +55,7 @@ namespace DNDS::NCFV
         std::unique_ptr<NodeHalo> _nodeHalo;
         std::unique_ptr<Reconstruction> _reconstruction;
         std::unique_ptr<BoundaryRegistry> _boundaries;
-        std::unique_ptr<SpatialOperator<dimension>> _spatial;
+        std::unique_ptr<SpatialOperator<dimension, nTurbulence>> _spatial;
 
         NodeStatePair _state; ///< Authoritative conservative dual means [rho,rho*u...,rho*E].
         NodeStatePair _baseState; ///< Start-of-step state retained for RK combinations and rejected-step recovery.
@@ -318,5 +322,9 @@ namespace DNDS::NCFV
     };
 
     extern template class Solver<2>;
+    extern template class Solver<2, 1>;
+    extern template class Solver<2, 2>;
     extern template class Solver<3>;
+    extern template class Solver<3, 1>;
+    extern template class Solver<3, 2>;
 }

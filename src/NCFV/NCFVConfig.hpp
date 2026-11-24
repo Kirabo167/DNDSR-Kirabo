@@ -11,6 +11,7 @@
 #include "Euler/Gas.hpp"
 #include "Geom/Mesh/Mesh.hpp"
 #include "Geom/Quadratures/QuadratureBase.hpp"
+#include "Physics/RANS/Model.hpp"
 
 #include <algorithm>
 #include <string>
@@ -189,7 +190,7 @@ namespace DNDS::NCFV
             DNDS_FIELD(mode, "NCFV integration implementation",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(IntegrationMode)));
             DNDS_FIELD(macroFaceBoundary, "Integrate the reconstructed physical boundary flux with P2 moments on each coplanar node/zone face. Viscous fluxes use each original boundary piece.");
-            DNDS_FIELD(quadratureOrder, "Traditional volume Gauss/Hammer integration order",
+            DNDS_FIELD(quadratureOrder, "Gauss/Hammer volume integration order for traditional geometry and RANS sources",
                        DNDS::Config::range(2, Geom::Elem::INT_ORDER_MAX));
             DNDS_FIELD(surfaceQuadratureOrder,
                        "Traditional interface/boundary integration order; order 3 is exact for quadratic traces",
@@ -299,7 +300,7 @@ namespace DNDS::NCFV
 
         DNDS_DECLARE_CONFIG(ViscousSettings)
         {
-            DNDS_FIELD(enabled, "Enable laminar Navier--Stokes viscous and heat fluxes");
+            DNDS_FIELD(enabled, "Enable Navier--Stokes viscous and heat fluxes");
             DNDS_FIELD(model, "Molecular viscosity law",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(ViscosityModel)));
             DNDS_FIELD(dynamicViscosity, "Constant/reference dynamic viscosity",
@@ -332,7 +333,7 @@ namespace DNDS::NCFV
             DNDS_FIELD(name, "CGNS boundary-zone name (case-sensitive)");
             DNDS_FIELD(mode, "Boundary-condition model",
                        DNDS::Config::enum_values(PhysicalBoundaryModeNames()));
-            DNDS_FIELD(primitive, "Prescribed primitive state [rho,u,(v,w),p]; empty uses far field");
+            DNDS_FIELD(primitive, "Reservoir [rho,u,v,(w),p] followed by turbulence primitives; empty uses far field");
             DNDS_FIELD(wallVelocity, "Wall velocity [u,v,(w)]; empty means a stationary wall");
             DNDS_FIELD(wallTemperature, "Isothermal-wall temperature",
                        DNDS::Config::range(0.0));
@@ -353,6 +354,7 @@ namespace DNDS::NCFV
         bool requireBoundaryZoneCoverage = false;
         std::vector<BoundaryZoneSettings> boundaryZones;
         ViscousSettings viscous;
+        Physics::RANS::ModelSettings turbulence;
 
         DNDS_DECLARE_CONFIG(PhysicsSettings)
         {
@@ -367,13 +369,14 @@ namespace DNDS::NCFV
                      "Roe_M8"}));
             DNDS_FIELD(boundaryMode, "Boundary model applied to all external zones",
                        DNDS::Config::enum_values(DNDS_ENUM_ALLOWED_VALUES(BoundaryMode)));
-            DNDS_FIELD(initialPrimitive, "Uniform primitive state [rho,u,(v,w),p]");
-            DNDS_FIELD(farFieldPrimitive, "Far-field primitive state [rho,u,(v,w),p]");
+            DNDS_FIELD(initialPrimitive, "Uniform [rho,u,v,(w),p] followed by turbulence primitives [nuTilde], [k,omega], or [k,epsilon]");
+            DNDS_FIELD(farFieldPrimitive, "Far-field [rho,u,v,(w),p] followed by turbulence primitives [nuTilde], [k,omega], or [k,epsilon]");
             DNDS_FIELD(requireBoundaryZoneCoverage,
                        "Require every CGNS external zone to have an explicit boundaryZones entry");
             config.template field_array_of<BoundaryZoneSettings>(
                 &T::boundaryZones, "boundaryZones", "Per-CGNS-zone boundary conditions");
-            config.field_section(&T::viscous, "viscous", "Laminar viscous and heat-flux model");
+            config.field_section(&T::viscous, "viscous", "Molecular viscous and heat-flux model");
+            config.field_section(&T::turbulence, "turbulence", "Shared RANS closure and hybrid length-scale controls");
         }
     };
 
@@ -456,7 +459,7 @@ namespace DNDS::NCFV
         DNDS_DECLARE_CONFIG(InitialFieldSettings)
         {
             DNDS_FIELD(nodeFile,
-                       "Optional CSV/text field: globalNode,rho,u,(v,w),p-or-rhoE");
+                       "Optional CSV/text field with globalNode, flow components, then turbulence variables");
             DNDS_FIELD(isentropicVortex, "Initialize dual means using the analytic isentropic vortex");
             DNDS_FIELD(vortexStrength, "Isentropic vortex beta");
             DNDS_FIELD(vortexCenter, "Initial vortex center [x,y,z]");
@@ -492,7 +495,7 @@ namespace DNDS::NCFV
         {
             DNDS_FIELD(iterations, "Number of explicit SSPRK3 steps", DNDS::Config::range(0));
             DNDS_FIELD(timeStep, "Fixed physical/pseudo time step", DNDS::Config::range(0.0));
-            DNDS_FIELD(useCFLTimeStep, "Derive the explicit step from convective/viscous spectra");
+            DNDS_FIELD(useCFLTimeStep, "Derive the explicit step from convective/viscous spectra and turbulence source destruction");
             DNDS_FIELD(useLocalTimeStep, "Use one CFL step per dual control volume");
             DNDS_FIELD(cfl, "Explicit CFL number", DNDS::Config::range(0.0));
             DNDS_FIELD(minimumTimeStep, "Lower time-step clamp", DNDS::Config::range(0.0));
@@ -552,7 +555,7 @@ namespace DNDS::NCFV
     /**
      * @brief Complete typed input for the node-centered ideal-gas Euler/Navier--Stokes solver.
      * @details solver metadata and dimension must agree with the executable; states have
-     * dimension+2 entries. Section objects separate mesh/integration/reconstruction setup,
+     * dimension+2 flow entries plus the selected turbulence equations. Section objects separate mesh/integration/reconstruction setup,
      * physical and initial data, time integration, and output/restart policy.
      */
     struct Configuration

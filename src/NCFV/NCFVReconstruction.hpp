@@ -79,6 +79,12 @@ namespace DNDS::NCFV
         ReconstructionSettings _settings;
         const NodeHalo &_nodeHalo;
 
+        bool UsesGradientOnly() const
+        {
+            return _mode == IntegrationMode::EfficientDifferential &&
+                   _settings.method != ReconstructionMethod::Variational && !_geometry.RetainsSourceQuadrature();
+        }
+
         std::vector<std::vector<index>> _nodeGraph;
         std::vector<std::vector<index>> _nodeGraphGlobals;
         std::vector<ReconstructionOperator> _operators;

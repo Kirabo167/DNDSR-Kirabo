@@ -16,7 +16,7 @@ EulerP path has separate modules and build options; see @ref building.
 | Extended/multi-species Euler | `eulerEX` | `eulerEX3D` | Euler dimension directory, `EX/` |
 | Constant-density ACM | `acm2D` | `acm3D` | `cases/acm/{2D,3D}` |
 | Variable-density ACM | `acmVariable2D` | `acmVariable3D` | ACM dimension directory, `variable_density/` |
-| NCFV Euler / laminar viscous flow | `ncfv_euler2D` | `ncfv_euler3D` | `cases/ncfv_euler/{2D,3D}` |
+| NCFV Euler / Navier–Stokes / RANS | `ncfv_euler2D` | `ncfv_euler3D` | `cases/ncfv_euler/{2D,3D}` |
 
 `ACM` is a compatibility target for constant-density 3D ACM. `euler` retains
 upstream's five-variable NS model on 2D geometry; `euler2D` uses the four-variable

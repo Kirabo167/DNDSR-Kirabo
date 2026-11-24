@@ -100,6 +100,51 @@ TEST_CASE("RANS adapter dispatch retains source and destruction diagonal convent
     }
 }
 
+TEST_CASE("Realizable k-epsilon source takes dissipation from the epsilon transport equation")
+{
+    R::ModelSettings settings;
+    settings.model = "RealizableKE";
+    const R::Model model(settings);
+    auto point = Fixture();
+    point.gradient.setZero();
+    const double rho = point.state[0], k = .2;
+    point.state[5] = rho * k;
+    for (const double epsilon : {.015, .045})
+    {
+        point.state[6] = rho * epsilon;
+        const auto source = model.TrySource(point);
+        const auto diagonal = model.TrySource(point, 1);
+        REQUIRE(source);
+        REQUIRE(diagonal);
+        const double timeScale = k / epsilon + DNDS::smallReal;
+        Near(source.value[0], -rho * epsilon);
+        Near(source.value[1], -1.92 * rho * epsilon / timeScale);
+        Near(diagonal.value[1], 1.92 / timeScale);
+    }
+}
+
+TEST_CASE("SA hybrid source receives the supplied wall-normal grid spacing")
+{
+    R::ModelSettings settings;
+    settings.model = "SA";
+    settings.desScale = .65;
+    settings.desMode = 2;
+    const R::Model model(settings);
+    auto point = Fixture();
+    point.wallDistance = .35;
+    point.cellLength = .1;
+    point.state[5] = .004;
+    const auto unmodified = model.TrySource(point);
+    point.wallNormalCellLength = .09;
+    const auto modified = model.TrySource(point);
+    REQUIRE(unmodified);
+    REQUIRE(modified);
+    CHECK(std::abs(modified.value[0] - unmodified.value[0]) > 1e-6);
+    Near(model.Source(point)[0], modified.value[0]);
+    point.wallNormalCellLength = -1;
+    CHECK(model.TrySource(point).status.code == DNDS::NumericalError::InvalidInput);
+}
+
 TEST_CASE("RANS transport source and diffusion are independent of Cartesian frame orientation")
 {
     const auto point = Fixture();

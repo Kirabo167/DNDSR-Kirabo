@@ -37,9 +37,13 @@
                 "fieldNVariables": {
                     "type": "integer",
                     "default": 4,
-                    "description": "Runtime state size for dynamic Euler models NS_EX and NS_EX_3D",
+                    "description": "dim+2 flow components plus zero, one (SA), or two turbulence components",
                     "minimum": 1.0,
-                    "const": 4
+                    "enum": [
+                        4,
+                        5,
+                        6
+                    ]
                 }
             }
         },
@@ -149,7 +153,7 @@
                 "quadratureOrder": {
                     "type": "integer",
                     "default": 4,
-                    "description": "Traditional volume Gauss/Hammer integration order",
+                    "description": "Gauss/Hammer volume integration order for traditional geometry and RANS sources",
                     "minimum": 2.0,
                     "maximum": 6.0
                 },
@@ -398,7 +402,7 @@
                         0.0,
                         1.0
                     ],
-                    "description": "Uniform primitive state [rho,u,(v,w),p]"
+                    "description": "Uniform [rho,u,v,(w),p] followed by turbulence primitives [nuTilde], [k,omega], or [k,epsilon]"
                 },
                 "farFieldPrimitive": {
                     "type": "array",
@@ -408,7 +412,7 @@
                         0.0,
                         1.0
                     ],
-                    "description": "Far-field primitive state [rho,u,(v,w),p]"
+                    "description": "Far-field [rho,u,v,(w),p] followed by turbulence primitives [nuTilde], [k,omega], or [k,epsilon]"
                 },
                 "requireBoundaryZoneCoverage": {
                     "type": "boolean",
@@ -447,7 +451,7 @@
                             "primitive": {
                                 "type": "array",
                                 "default": [],
-                                "description": "Prescribed primitive state [rho,u,(v,w),p]; empty uses far field"
+                                "description": "Reservoir [rho,u,v,(w),p] followed by turbulence primitives; empty uses far field"
                             },
                             "wallVelocity": {
                                 "type": "array",
@@ -476,12 +480,12 @@
                 },
                 "viscous": {
                     "type": "object",
-                    "description": "Laminar viscous and heat-flux model",
+                    "description": "Molecular viscous and heat-flux model",
                     "properties": {
                         "enabled": {
                             "type": "boolean",
                             "default": false,
-                            "description": "Enable laminar Navier--Stokes viscous and heat fluxes"
+                            "description": "Enable Navier--Stokes viscous and heat fluxes"
                         },
                         "model": {
                             "type": "string",
@@ -529,6 +533,139 @@
                             "minimum": 0.0
                         }
                     }
+                },
+                "turbulence": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Shared RANS closure and hybrid length-scale controls",
+                    "properties": {
+                        "model": {
+                            "type": "string",
+                            "default": "none",
+                            "description": "Turbulence closure",
+                            "enum": [
+                                "none",
+                                "SA",
+                                "KOmegaWilcox",
+                                "KOmegaSST",
+                                "RealizableKE"
+                            ]
+                        },
+                        "viscosityReference": {
+                            "type": "number",
+                            "default": 1.0,
+                            "description": "SA conservative variable scale: nuTilde = rhoNuTilde * viscosityReference / rho, in code units"
+                        },
+                        "turbulentPrandtl": {
+                            "type": "number",
+                            "default": 0.9,
+                            "description": "Turbulent heat conductivity uses cp*mu_t/Pr_t"
+                        },
+                        "turbulentSchmidt": {
+                            "type": "number",
+                            "default": 0.9,
+                            "description": "Turbulent species diffusivity uses mu_t/(rho*Sc_t)"
+                        },
+                        "desScale": {
+                            "type": "number",
+                            "default": 3e+200,
+                            "description": "Euler DES scale; greater than 100 disables SA DES, also multiplies SST cell length"
+                        },
+                        "desMode": {
+                            "type": "integer",
+                            "default": 1,
+                            "description": "SA DES mode: 0 DDES, 1 IDDES, 2 WMLES, 3 DES97"
+                        },
+                        "saVersion": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "Euler SA variant: 0 current, 1 oldest legacy, 9001 historical sign-error reproduction"
+                        },
+                        "saRotationCorrection": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Euler SA-R production correction; supplied velocity is absolute"
+                        },
+                        "useQCR": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Euler QCR correction of turbulent stress; disabled by default"
+                        },
+                        "sa": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "description": "Spalart-Allmaras kernel controls",
+                            "properties": {
+                                "productionLimit": {
+                                    "type": "number",
+                                    "default": 100000.0,
+                                    "description": "SA production-to-destruction limit multiplier",
+                                    "minimum": 0.0
+                                },
+                                "useFt2": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Include ft2 in nonnegative SA production, destruction and DES psi; false selects SA-noft2 on that branch while retaining SA-neg negative-state recovery"
+                                }
+                            }
+                        },
+                        "kOmega": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "description": "Wilcox kernel controls",
+                            "properties": {
+                                "turbulentViscosityLimit": {
+                                    "type": "number",
+                                    "default": 100000.0,
+                                    "description": "Wilcox k-omega turbulent-viscosity limit multiplier",
+                                    "minimum": 0.0
+                                },
+                                "productionLimit": {
+                                    "type": "number",
+                                    "default": 20.0,
+                                    "description": "Wilcox k-omega production limit multiplier",
+                                    "minimum": 0.0
+                                }
+                            }
+                        },
+                        "sst": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "description": "Menter SST kernel controls",
+                            "properties": {
+                                "turbulentViscosityLimit": {
+                                    "type": "number",
+                                    "default": 100000.0,
+                                    "description": "SST turbulent-viscosity limit multiplier",
+                                    "minimum": 0.0
+                                },
+                                "productionLimit": {
+                                    "type": "number",
+                                    "default": 20.0,
+                                    "description": "SST production limit multiplier",
+                                    "minimum": 0.0
+                                },
+                                "implicitAdditionalSinks": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Add nonnegative frozen-coefficient SST source sink derivatives to the implicit diagonal; does not change the RHS"
+                                }
+                            }
+                        },
+                        "realizableKE": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "description": "Realizable k-epsilon kernel controls",
+                            "properties": {
+                                "turbulentViscosityLimit": {
+                                    "type": "number",
+                                    "default": 100000.0,
+                                    "description": "Realizable k-epsilon turbulent-viscosity limit multiplier",
+                                    "minimum": 0.0
+                                }
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -539,7 +676,7 @@
                 "nodeFile": {
                     "type": "string",
                     "default": "",
-                    "description": "Optional CSV/text field: globalNode,rho,u,(v,w),p-or-rhoE"
+                    "description": "Optional CSV/text field with globalNode, flow components, then turbulence variables"
                 },
                 "isentropicVortex": {
                     "type": "boolean",
@@ -692,7 +829,7 @@
                 "useCFLTimeStep": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Derive the explicit step from convective/viscous spectra"
+                    "description": "Derive the explicit step from convective/viscous spectra and turbulence source destruction"
                 },
                 "useLocalTimeStep": {
                     "type": "boolean",

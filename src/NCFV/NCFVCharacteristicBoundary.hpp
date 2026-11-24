@@ -144,7 +144,7 @@ namespace DNDS::NCFV
             {
                 const Eigen::Map<const Vector> velocity(primitive.data() + 1);
                 const real vn = velocity.dot(normal);
-                return CharacteristicBoundary::Prescribed<dimension>({primitive.front(), 0}, {primitive.back(), 0},
+                return CharacteristicBoundary::Prescribed<dimension>({primitive.front(), 0}, {primitive[dimension + 1], 0},
                     {vn, 0}, gamma, needPlus, needConvected, [&](Vector &tangent, Vector &)
                     { tangent = velocity - vn * normal; });
             });
@@ -166,7 +166,8 @@ namespace DNDS::NCFV
     template <int dimension>
     auto WallCharacteristicFlux(const Eigen::Vector<real, dimension + 2> &inside,
                                 const Eigen::Vector<real, dimension + 2> &insideIncrement,
-                                const Eigen::Vector<real, dimension> &normal, real gamma, real wallNormalSpeed)
+                                const Eigen::Vector<real, dimension> &normal, real gamma, real wallNormalSpeed,
+                                CharacteristicBoundary::Scalar *wallDensity = nullptr)
         -> std::pair<Eigen::Vector<real, dimension + 2>, Eigen::Vector<real, dimension + 2>>
     {
         using Vector = Eigen::Vector<real, dimension>;
@@ -195,7 +196,11 @@ namespace DNDS::NCFV
             // The outgoing J+ is continuous across the wall expansion fan.
             const real soundRatio = 1 + .5 * gm1 * mach;
             if (soundRatio <= 0)
+            {
+                if (wallDensity)
+                    *wallDensity = {};
                 return {State::Zero(), State::Zero()};
+            }
             densityRatio.value = std::pow(soundRatio, 2 / gm1);
             densityRatio.increment = densityRatio.value * dMach / soundRatio;
             pressureRatio.value = densityRatio.value * soundRatio * soundRatio;
@@ -207,10 +212,12 @@ namespace DNDS::NCFV
         State flux = State::Zero(), differential = State::Zero();
         flux.template segment<dimension>(1) = p * normal;
         differential.template segment<dimension>(1) = dp * normal;
+        const real rho = left.density.value * densityRatio.value;
+        const real drho = left.density.increment * densityRatio.value + left.density.value * densityRatio.increment;
+        if (wallDensity)
+            *wallDensity = {rho, drho};
         if (wallNormalSpeed != 0)
         {
-            const real rho = left.density.value * densityRatio.value;
-            const real drho = left.density.increment * densityRatio.value + left.density.value * densityRatio.increment;
             const Vector u = left.velocity + (wallNormalSpeed - left.vn.value) * normal;
             const Vector du = left.dVelocity - left.vn.increment * normal;
             flux[0] = wallNormalSpeed * rho;
@@ -247,14 +254,14 @@ namespace DNDS::NCFV
         Vector tangent, dTangent;
         if (left.vn.value < 0)
         {
-            DNDS_check_throw_info(boundary.primitive.size() == dimension + 2,
+            DNDS_check_throw_info(boundary.primitive.size() >= dimension + 2,
                                   "NCFV pressure outlet backflow requires reservoir primitive data");
             const Eigen::Map<const Vector> reservoirVelocity(boundary.primitive.data() + 1);
             const Scalar reservoirDensity{boundary.primitive.front(), 0};
             if (left.vn.value + left.sound.value < 0)
                 return CharacteristicBoundary::ConservativeTrace<dimension>(
                     reservoirDensity, pressure, reservoirVelocity, Vector::Zero(), gamma);
-            entropy = CharacteristicBoundary::Entropy(reservoirDensity, {boundary.primitive.back(), 0}, gamma);
+            entropy = CharacteristicBoundary::Entropy(reservoirDensity, {boundary.primitive[dimension + 1], 0}, gamma);
             tangent = reservoirVelocity - reservoirVelocity.dot(normal) * normal;
             dTangent.setZero();
         }

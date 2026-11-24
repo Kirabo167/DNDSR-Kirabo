@@ -135,6 +135,21 @@ namespace DNDS::Geom
                 log() << fmt::format("=== UnstructuredMesh::BuildNodeWallDist() with minWallDist = {:.4e}, ", options.minWallDist)
                       << " To search in " << TrianglesFull->Size() << std::endl;
 
+        std::vector<tPoint> queryOffsets{tPoint::Zero()};
+        if (isPeriodic && options.searchPeriodicTranslations)
+            for (int axis = 1; axis <= 3; ++axis)
+            {
+                const tPoint shift = periodicInfo.translation[axis].map();
+                if (shift.isZero(0))
+                    continue;
+                const std::size_t count = queryOffsets.size();
+                for (std::size_t j = 0; j < count; ++j)
+                {
+                    const tPoint previous = queryOffsets[j];
+                    queryOffsets.push_back(previous - shift);
+                    queryOffsets.push_back(previous + shift);
+                }
+            }
         auto executeSearch = [&]()
         {
             if (options.verbose >= 3)
@@ -177,20 +192,26 @@ namespace DNDS::Geom
                         continue;
                     // std::cout << "iCell " << iCell << std::endl;
                     // std::cout << "iG " << ig << std::endl;
-                    auto p = coords[iNode];
-                    Point pQ(p[0], p[1], p[2]);
-                    // std::cout << "pQ " << pQ << std::endl;
-                    // Point closest_point = tree.closest_point(pQ);
-                    // FT sqd = tree.squared_distance(pQ);
-                    auto closest_point = tree.closest_point_and_primitive(pQ);
-                    // std::cout << "sqd" << sqd << std::endl;
-                    auto cp = tPoint{closest_point.first.x(), closest_point.first.y(), closest_point.first.z()};
-
-                    real dist = (p - cp).norm();
+                    const tPoint p = coords[iNode];
+                    real bestSquaredDistance = std::numeric_limits<real>::infinity();
+                    tPoint wallVector = tPoint::Zero();
+                    for (const auto &offset : queryOffsets)
+                    {
+                        const tPoint query = p + offset;
+                        const Point closest = tree.closest_point(Point(query[0], query[1], query[2]));
+                        const tPoint displacement = query - tPoint{closest.x(), closest.y(), closest.z()};
+                        const real squaredDistance = displacement.squaredNorm();
+                        if (squaredDistance < bestSquaredDistance)
+                        {
+                            bestSquaredDistance = squaredDistance;
+                            wallVector = displacement;
+                        }
+                    }
+                    real dist = std::sqrt(bestSquaredDistance);
                     minDist = std::min(dist, minDist);
                     dist = std::max(options.minWallDist, dist);
 
-                    nodeWallDist[iNode] = dist * (p - cp).stableNormalized();
+                    nodeWallDist[iNode] = dist * wallVector.stableNormalized();
                 }
             }
             else

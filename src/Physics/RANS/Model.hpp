@@ -22,7 +22,8 @@ namespace DNDS::Physics::RANS
         RKEConfig realizableKE;
         DNDS_DECLARE_CONFIG(ModelSettings)
         {
-            DNDS_FIELD(model, "none, SA, KOmegaWilcox, KOmegaSST, or RealizableKE");
+            DNDS_FIELD(model, "Turbulence closure",
+                       DNDS::Config::enum_values({"none", "SA", "KOmegaWilcox", "KOmegaSST", "RealizableKE"}));
             DNDS_FIELD(viscosityReference, "SA conservative variable scale: nuTilde = rhoNuTilde * viscosityReference / rho, in code units");
             DNDS_FIELD(turbulentPrandtl, "Turbulent heat conductivity uses cp*mu_t/Pr_t");
             DNDS_FIELD(turbulentSchmidt, "Turbulent species diffusivity uses mu_t/(rho*Sc_t)");

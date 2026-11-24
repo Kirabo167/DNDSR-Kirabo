@@ -125,6 +125,9 @@ namespace DNDS::Physics::RANS
         if (((parameters.kind == ModelKind::SA && parameters.desScale <= 100) || parameters.kind == ModelKind::KOmegaSST) &&
             !(std::isfinite(point.cellLength) && point.cellLength > 0))
             return NumericalStatus{NumericalError::InvalidInput};
+        if (parameters.kind == ModelKind::SA && parameters.desScale <= 100 &&
+            !(std::isfinite(point.wallNormalCellLength) && point.wallNormalCellLength >= 0))
+            return NumericalStatus{NumericalError::InvalidInput};
         Eigen::Matrix<real, 7, 1> source = Eigen::Matrix<real, 7, 1>::Zero();
         using State = const Eigen::Matrix<real, 7, 1> &;
         using Gradient = const Eigen::Matrix<real, 3, 7> &;
@@ -132,9 +135,10 @@ namespace DNDS::Physics::RANS
         switch (parameters.kind)
         {
         case ModelKind::SA:
-            GetSource_SA<3, State, Gradient, Source, false>(point.state, point.gradient, parameters.viscosityReference, point.molecularViscosity, point.gamma,
-                                                            std::min(point.wallDistance, std::pow(veryLargeReal, 1. / 6.)), parameters.desScale, point.cellLength, parameters.desMode,
-                                                            source, parameters.saRotationCorrection, mode, parameters.sa, parameters.saVersion);
+            GetSource_SAWithVorticity<3, State, Gradient, Source, false>(
+                point.state, point.gradient, parameters.viscosityReference, point.molecularViscosity, point.gamma,
+                std::min(point.wallDistance, std::pow(veryLargeReal, 1. / 6.)), parameters.desScale, point.cellLength, parameters.desMode,
+                source, parameters.saRotationCorrection, mode, parameters.sa, parameters.saVersion, nullptr, point.wallNormalCellLength);
             break;
         case ModelKind::KOmegaWilcox:
             GetSource_KOWilcox<3>(point.state, point.gradient, point.molecularViscosity, point.wallDistance, source, mode, parameters.kOmega);

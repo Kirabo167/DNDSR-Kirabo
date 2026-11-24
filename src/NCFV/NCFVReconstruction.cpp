@@ -1041,8 +1041,7 @@ namespace DNDS::NCFV
         for (index local : result.stencil)
             result.stencilGlobals.push_back(
                 _nodeHalo.LocalToGlobal(local));
-        result.inverseRows = _mode == IntegrationMode::EfficientDifferential &&
-                                     _settings.method != ReconstructionMethod::Variational
+        result.inverseRows = UsesGradientOnly()
                                  ? acceptedInverse.topRows(dimension)
                                  : acceptedInverse;
         return result;
@@ -1119,10 +1118,7 @@ namespace DNDS::NCFV
                       DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
         if (_mpi.rank == 0)
             log() << "NCFV quadratic reconstruction: stored rows="
-                  << (_mode == IntegrationMode::EfficientDifferential &&
-                              _settings.method != ReconstructionMethod::Variational
-                          ? _mesh->getDim()
-                          : BasisSize())
+                  << (UsesGradientOnly() ? _mesh->getDim() : BasisSize())
                   << ", method="
                   << (_settings.method == ReconstructionMethod::LeastSquares
                           ? "LeastSquares"
@@ -1310,7 +1306,7 @@ namespace DNDS::NCFV
                 _settings.method != ReconstructionMethod::Variational)
                 gradients[iNode] = op.referenceLengths.head(dimension).cwiseInverse().asDiagonal() *
                                    reconstructed.topRows(dimension);
-            else
+            if (!UsesGradientOnly())
                 coefficients[iNode] = reconstructed;
         }
         if (_settings.method != ReconstructionMethod::Variational)

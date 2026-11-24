@@ -147,9 +147,10 @@ namespace DNDS::Physics::RANS
         switch (_kind)
         {
         case ModelKind::SA:
-            GetSource_SA<3>(point.state, point.gradient, _settings.viscosityReference, point.molecularViscosity, point.gamma,
-                            std::min(point.wallDistance, std::pow(veryLargeReal, 1. / 6.)), _settings.desScale, point.cellLength, _settings.desMode,
-                            source, _settings.saRotationCorrection, mode, _settings.sa, _settings.saVersion);
+            GetSource_SAWithVorticity<3>(
+                point.state, point.gradient, _settings.viscosityReference, point.molecularViscosity, point.gamma,
+                std::min(point.wallDistance, std::pow(veryLargeReal, 1. / 6.)), _settings.desScale, point.cellLength, _settings.desMode,
+                source, _settings.saRotationCorrection, mode, _settings.sa, _settings.saVersion, nullptr, point.wallNormalCellLength);
             break;
         case ModelKind::KOmegaWilcox:
             GetSource_KOWilcox<3>(point.state, point.gradient, point.molecularViscosity, point.wallDistance, source, mode, _settings.kOmega);

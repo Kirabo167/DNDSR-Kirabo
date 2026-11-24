@@ -44,7 +44,10 @@ namespace DNDS::NCFV
                         std::string("DNDSR NCFV (") + MethodName + ") configuration");
                     schema["$schema"] = "http://json-schema.org/draft-07/schema#";
                     SolverSelection::ConstrainSchema(schema,
-                        {"ncfv_euler", "NCFV", "IdealGas", dimension + 2});
+                        {"ncfv_euler", "NCFV", "IdealGas", dimension + 2}, true);
+                    auto &variables = schema["properties"]["solver"]["properties"]["fieldNVariables"];
+                    variables["enum"] = {dimension + 2, dimension + 3, dimension + 4};
+                    variables["description"] = "dim+2 flow components plus zero, one (SA), or two turbulence components";
                     schema["properties"]["dimension"]["const"] = dimension;
                     schema["properties"]["dimension"]["default"] = dimension;
                     if constexpr (dimension == 2)
@@ -65,15 +68,31 @@ namespace DNDS::NCFV
                 parser.get<std::vector<std::string>>("--overwrite_key"),
                 parser.get<std::vector<std::string>>("--overwrite_value"));
 
+            const int nTurbulence = Physics::RANS::Model(loaded.configuration.physics.turbulence).ComponentNumber();
             loaded.configuration.solver.Require(
-                {"ncfv_euler", "NCFV", "IdealGas", dimension + 2});
+                {"ncfv_euler", "NCFV", "IdealGas", dimension + 2 + nTurbulence});
             DNDS_check_throw_info(loaded.configuration.dimension == dimension,
                                   "NCFV configuration dimension does not match " + appName);
             if (parser.get<bool>("--check-config"))
                 return 0;
-            Solver<dimension> solver(mpi, loaded.configuration);
-            solver.Initialize();
-            solver.Run();
+            const auto run = [&](auto components)
+            {
+                Solver<dimension, decltype(components)::value> solver(mpi, loaded.configuration);
+                solver.Initialize();
+                solver.Run();
+            };
+            switch (nTurbulence)
+            {
+            case 0:
+                run(std::integral_constant<int, 0>{});
+                break;
+            case 1:
+                run(std::integral_constant<int, 1>{});
+                break;
+            case 2:
+                run(std::integral_constant<int, 2>{});
+                break;
+            }
         }
         catch (const std::exception &exception)
         {

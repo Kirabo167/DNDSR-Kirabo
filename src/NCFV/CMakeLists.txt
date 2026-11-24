@@ -14,6 +14,7 @@ set(CPPS
 set(LINKS
     cfv
     geom
+    physics
     dnds
     ${DNDS_EXTERNAL_LIBS}
 )
@@ -21,10 +22,21 @@ set(LINKS
 dnds_add_lib(${LIBNAME}_core "${CPPS}" "${LINKS}" "${DNDS_PCH_TARGETS_FAST}"
     OFF ON ON)
 foreach(dimension 2 3)
-    dnds_add_lib(${LIBNAME}_${dimension}D "NCFVSpatial.cpp;NCFVSolver.cpp"
-        "${LIBNAME}_core;${LINKS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
-    target_compile_definitions(${LIBNAME}_${dimension}D PRIVATE
-        DNDS_NCFV_INSTANTIATION_DIM=${dimension})
+    set(dimension_lib ${LIBNAME}_${dimension}D)
+    foreach(rans_components 0 1 2)
+        set(instantiation ${dimension_lib})
+        if(rans_components GREATER 0)
+            set(instantiation ${dimension_lib}_rans${rans_components})
+        endif()
+        dnds_add_lib(${instantiation} "NCFVSpatial.cpp;NCFVSolver.cpp"
+            "${LIBNAME}_core;${LINKS}" "${DNDS_PCH_TARGETS_FAST}" OFF ON ON)
+        target_compile_definitions(${instantiation} PRIVATE
+            DNDS_NCFV_INSTANTIATION_DIM=${dimension}
+            DNDS_NCFV_INSTANTIATION_RANS=${rans_components})
+        if(rans_components GREATER 0)
+            target_link_libraries(${dimension_lib} INTERFACE ${instantiation})
+        endif()
+    endforeach()
 endforeach()
 add_library(${LIBNAME} INTERFACE)
 target_link_libraries(${LIBNAME} INTERFACE ${LIBNAME}_2D ${LIBNAME}_3D)

@@ -1046,6 +1046,7 @@ namespace DNDS::Geom
             int wallDistExecution = 0;
             real minWallDist = 1e-10;
             int verbose = 0;
+            bool searchPeriodicTranslations = false; ///< For callers with a translational periodic domain.
             // NOLINTNEXTLINE(modernize-use-equals-default): nested class default-init quirk with = default
             WallDistOptions() {}
 

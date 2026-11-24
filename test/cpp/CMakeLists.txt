@@ -675,11 +675,13 @@ ncfv_add_mpi_test(parallel "NCFV/test_NCFVParallel.cpp" "ncfv;cfv;geom;dnds")
 ncfv_add_mpi_test(linear_recovery "NCFV/test_NCFVLinearRecovery.cpp" "ncfv;cfv;geom;dnds" 1 2 4)
 ncfv_add_mpi_test(shared_gradient "NCFV/test_NCFVSharedGradient.cpp" "ncfv;cfv;geom;dnds")
 ncfv_add_mpi_test(io "NCFV/test_NCFVIO.cpp" "ncfv;cfv;geom;dnds" 1 2)
+ncfv_add_mpi_test(turbulence "NCFV/test_NCFVTurbulence.cpp" "ncfv;cfv;geom;dnds" 1 2)
 add_dependencies(ncfv_unit_tests
     ncfv_test_geometry
     ncfv_test_parallel
     ncfv_test_linear_recovery
     ncfv_test_shared_gradient
-    ncfv_test_io)
+    ncfv_test_io
+    ncfv_test_turbulence)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/NativeFramework.cmake)

@@ -1,9 +1,8 @@
 # NCFV — Node Center Finite Volume Method
 
 `NCFV` 全称为 **Node Center Finite Volume Method**，是 DNDSR 内并列的
-独立三阶格点型有限体积求解器模块。它只复用 DNDSR 的 CGNS
-读取、网格分区、MPI 数组、JSON 配置和 Euler 黎曼通量，不修改原有
-`Geom`、`CFV`、`Euler` 或其他求解器的数据结构与离散流程。数学推导和
+独立三阶格点型有限体积求解器模块。它复用 DNDSR 的 CGNS 读取、网格分区、
+MPI 数组、JSON 配置、Euler 黎曼通量和共享 RANS 闭合。数学推导和
 路线分析见
 [`docs/reports/DNDSR_高效三阶格点型有限体积法_数学推导_MPI设计_可行性报告.pdf`](../../docs/reports/DNDSR_高效三阶格点型有限体积法_数学推导_MPI设计_可行性报告.pdf)。
 
@@ -72,10 +71,9 @@ SSPRK3 时间推进，只替换体/面的积分实现。
 +\sum_r\boldsymbol d_r(C_{rm}-\delta_{im})\right].
 \]
 
-这些权重在初始化时逐微单纯形累加。运行期只存和通信节点点值与一阶梯度；
-体积分、左右宏面平均和中心物理通量都由压缩权重计算。每条原始边只调用
-一次黎曼求解器形成宏面耗散。该模式不创建、使用或保存任何体、内部面、
-边界面的 Gauss 点坐标。
+这些权重在初始化时逐微单纯形累加。节点恢复、左右宏面平均和中心物理通量
+由压缩权重计算。每条原始边调用一次黎曼求解器形成宏面耗散。启用 RANS 时，
+额外保留单纯形体积分点与二次重构系数，用于非线性湍流源项。
 
 每个内部宏面使用一个按 DNDS 进程局部节点编号严格排序、去重的
 `efficientStencil`。每个条目同时保存该节点对左右重构的守恒量梯度权重、
@@ -115,8 +113,8 @@ SSPRK3 时间推进，只替换体/面的积分实现。
 `reconstruction.method` 可以选择 `LeastSquares`（正规方程和 LDLT）、
 `SVDLeastSquares`（Jacobi SVD 伪逆）或 `Variational`（变分重构）；
 中文别名分别为 `最小二乘重构`、`SVD最小二乘重构` 和 `变分重构`。
-默认仍为 `SVDLeastSquares`。LS 与 SVDLS 在高效模式只保存逆算子的前
-`dimension` 行，因此一阶梯度仍来自完整二次问题；传统模式保存全部
+默认仍为 `SVDLeastSquares`。无黏和层流高效模式中的 LS 与 SVDLS 只保存逆算子的前
+`dimension` 行，因此一阶梯度仍来自完整二次问题。传统模式和 RANS 保存全部
 5（二维）或 9（三维）行。候选点按原始节点边图逐环扩展，完整一环
 无条件保留；二环候选优先按近似反向成对加入，直到达到
 `ceil(stencilSizeFactor * basisSize)`。配对先补强当前加权矩阵的最弱谱方向，
@@ -514,7 +512,7 @@ schema 位于对应维度目录中；旧版被禁用的 `Roe_M2` 配置已迁移
 边界通量、许可状态界及 CFL 波速；该路径给固定壁使用反射外态以维持正性限制器的通量分解。
 
 传统格式在每个求积点计算边界通量。高效格式默认按支撑节点的积分权重累加通量。
-光滑 Euler 或层流 Navier–Stokes 算例可设置 `algorithm.macroFaceBoundary=true`，
+光滑流动算例可设置 `algorithm.macroFaceBoundary=true`，
 并关闭 `reconstruction.enableLimiter` 和 `reconstruction.limitFluxCorrection`。
 此时同一节点控制体内同分区、同向共面的微面合为宏面。设 \(H\) 为上表确定的向外通量，
 则利用对二次多项式精确的几何权重计算
@@ -564,6 +562,58 @@ H5 重启使用原始节点编号重分配，支持更换 MPI 进程数；JSON �
 `.dir` 后缀。完整运行配置会写入 `outputPrefix.resolved.json`。
 
 可运行的黏性示例为 `cases/ncfv_euler/2D/NCFV_viscous.json`。
+
+### 湍流闭合
+
+二维、三维均通过 `physics.turbulence.model` 选择模型，同时启用
+`physics.viscous.enabled`。在 `[rho,u,v,(w),p]` 后追加对应的原始变量，
+同步设置 `solver.fieldNVariables`。
+
+| `model` | 追加原始变量 | 二维 / 三维字段数 |
+| --- | --- | --- |
+| `none`（默认） | 无 | 4 / 5 |
+| `SA` | `nuTilde` | 5 / 6 |
+| `KOmegaWilcox` | `k, omega` | 6 / 7 |
+| `KOmegaSST` | `k, omega` | 6 / 7 |
+| `RealizableKE` | `k, epsilon` | 6 / 7 |
+
+初始值、远场储库、分区原始变量和节点文件使用同一字段顺序。分区的 `primitive`
+为空时继承 `farFieldPrimitive`。两方程的初始值和储库值均须为正。
+守恒节点文件的附加变量是 `rhoNuTilde`、`rhoK,rhoOmega`
+或 `rhoK,rhoEpsilon`。SA 的 `rhoNuTilde` 在存储时为
+\(\rho\tilde\nu/\texttt{viscosityReference}\)，原始变量和 VTK 使用物理 \(\tilde\nu\)。
+开启 `useQCR` 可使用二次应力修正。SA 支持 `sa.useFt2`、`saRotationCorrection`
+和 `saVersion`。SA 的 `desScale` 大于 100 时为 RANS，启用混合尺度时
+`desMode` 的 `0/1/2/3` 分别对应 DDES、IDDES、WMLES、DES97。SST 使用
+`desScale` 乘局部单元尺度构造混合长度，默认的大值关闭此修正。
+
+例如，二维 SST 算例采用以下片段，其余参数可沿用二维黏性算例。
+
+```json
+{
+    "solver": {"type": "ncfv_euler", "discretization": "NCFV", "model": "IdealGas", "fieldNVariables": 6},
+    "physics": {
+        "viscous": {"enabled": true},
+        "turbulence": {"model": "KOmegaSST"},
+        "initialPrimitive": [1.0, 0.1, 0.0, 1.0, 0.0001, 1.0],
+        "farFieldPrimitive": [1.0, 0.1, 0.0, 1.0, 0.0001, 1.0]
+    }
+}
+```
+
+内部通量对湍流标量使用质量通量迎风，两方程闭合还向动量和能量通量加上
+\(2\rho k/3\) 的法向应力与做功。黏性通量使用共享模型的涡黏度、湍流导热和
+各方程扩散系数。体源项在两种模式下均从对偶均值重构二次场，在微单纯形求积点
+评价后做体积平均。RANS 的显式 CFL 包含湍流扩散及源项耗散率。
+
+开放边界按域内法向速度的符号选取湍流对流信息。流入及回流采用储库，流出采用
+域内重构并给零法向标量扩散。`Extrapolation` 始终沿用域内重构状态及梯度，周期面走内部
+通量。滑移和对称面给零标量法向通量。无滑移壁面令 \(\tilde\nu_w=0\) 或
+\(k_w=0\)，并按共享闭合给定 \(\omega_w\) 或 \(\varepsilon_w\)。壁面目标通过
+通量施加到对偶体，参考距离取对偶质心至该壁面。壁面节点的湍流均值由输运方程推进。
+壁距离搜索仅使用无滑移边界，IDDES 和 WMLES 额外使用局部单元的最大跨度与
+壁法向跨度。重启校验湍流模型与 SA 的缩放系数，VTK 按模型输出 `NuTilde`、
+`TurbulentKineticEnergy`、`Omega` 或 `Epsilon`。
 
 ## 6. 周期等熵涡
 
@@ -776,6 +826,6 @@ SSPRK3 自由流保持。测试也在
 左右界面平均权重和通量矩阵权重，并验证跨分区限制器确实约束宏面平均值。
 
 I/O 测试还验证非均匀 CSV 初场、一步推进、VTK/H5 输出、状态回读及强
-无滑移壁条件。当前支持 O1 二维/三维 Euler 和层流黏性流动；O2 曲边、
-旋转周期、湍流模型和隐式推进未实现。现有精确积分与自由流测试不是整套
-非线性 Navier–Stokes 三阶收敛的证明，仍需系统网格加密与黏性制造解验证。
+无滑移壁条件。`ncfv_turbulence_np{1,2}` 检查两种积分模式的各湍流闭合、
+静压出口回流、等温壁面推进、VTK 和 H5 重启。整套黏性及 RANS 格式的收敛阶
+仍需用网格加密与制造解测定。

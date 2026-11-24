@@ -26,6 +26,7 @@ namespace DNDS::Physics::RANS
         Eigen::Matrix<real, 3, 7> gradient = Eigen::Matrix<real, 3, 7>::Zero();
         real molecularViscosity = 0, wallDistance = 1, cellLength = 0;
         real cp = 1, gamma = 1.4;
+        real wallNormalCellLength = 0; ///< Optional wall-normal grid spacing for SA-IDDES/WMLES.
     };
     struct TurbulentTransport
     {

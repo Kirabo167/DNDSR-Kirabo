@@ -8,6 +8,7 @@
 #include "NCFVAnalytic.hpp"
 #include "NCFVReconstruction.hpp"
 #include "NCFVSharedGradientLimiter.hpp"
+#include "NCFVState.hpp"
 
 #include "Euler/Gas.hpp"
 #include <unordered_map>
@@ -130,16 +131,21 @@ namespace DNDS::NCFV
      * Edge arrays instead borrow Topology ownership so a single integrated flux serves both
      * incident control volumes. Reconstructed point values are separate from evolved dual means.
      */
-    template <int dimension>
+    template <int dimension, int nTurbulence = 0>
     class SpatialOperator
     {
         static_assert(dimension == 2 || dimension == 3);
 
-        using State = Eigen::Vector<real, dimension + 2>; ///< Density, momentum components, total energy density.
-        using StateGradient = Eigen::Matrix<real, dimension, dimension + 2>; ///< (direction, conserved component).
+        static_assert(nTurbulence >= 0 && nTurbulence <= 2);
+        using Layout = StateLayout<dimension, nTurbulence>;
+        static constexpr int FlowSize = Layout::FlowSize;
+        static constexpr int StateSize = Layout::Size;
+        using State = typename Layout::State;
+        using FlowState = Eigen::Vector<real, FlowSize>;
+        using StateGradient = Eigen::Matrix<real, dimension, StateSize>; ///< (direction, conserved component).
         /// Conserved-component rows; column i*dimension+j stores d(F_j)/d(x_i).
         using PhysicalFluxGradient =
-            Eigen::Matrix<real, dimension + 2, dimension * dimension>;
+            Eigen::Matrix<real, StateSize, dimension * dimension>;
         using SpatialVector = Eigen::Vector<real, dimension>;
 
         /**
@@ -164,6 +170,7 @@ namespace DNDS::NCFV
         IntegrationMode _mode;
         ReconstructionSettings _reconstructionSettings;
         PhysicsSettings _physics;
+        Physics::RANS::Model _turbulence;
         TimeSettings _time;
         const NodeHalo &_nodeHalo;
         std::unordered_map<index, std::vector<BoundaryMacroFace>> _boundaryMacroFaces;
@@ -187,8 +194,9 @@ namespace DNDS::NCFV
         NodeStatePair _edgeFluxCorrectionFactors;
         NodeStatePair _edgeSpectralRadius;
         NodeStatePair _localTimeSteps;
-        std::unique_ptr<SharedGradientFaceSweep<dimension>> _sharedGradientFaceSweep;
-        State _farField = State::Zero();
+        NodeStatePair _turbulenceGeometry; ///< Effective wall distance, maximum cell span, and wall-normal span.
+        std::vector<real> _sourceDestructionRates;
+        std::unique_ptr<SharedGradientFaceSweep<dimension, nTurbulence>> _sharedGradientFaceSweep;
         real _lastMinimumTimeStep = 0;
         real _lastMaximumTimeStep = 0;
         RhsPhaseTiming _lastRhsTiming;
@@ -293,13 +301,15 @@ namespace DNDS::NCFV
         template <bool derivative>
         State ReconstructedBoundaryFlux(
             const State &inside, const State &increment, const SpatialVector &normal,
-            const BoundaryZoneSettings &boundary, real mmsExponential, real phaseIncrement) const;
+            const BoundaryZoneSettings &boundary, real mmsExponential, real phaseIncrement,
+            real wallSecondary) const;
 
         State BoundaryPointFlux(const State &inside, const SpatialVector &normal,
-                                const BoundaryZoneSettings &boundary, real mmsExponential) const;
+                                const BoundaryZoneSettings &boundary, real mmsExponential, real wallSecondary) const;
 
         State PhysicalFluxIncrement(const State &state, const State &increment, const SpatialVector &normal) const;
-        State BoundaryMacroInviscidFlux(index node, const BoundaryMacroFace &face, real mmsTimeFactor) const;
+        State BoundaryMacroInviscidFlux(index node, const BoundaryMacroFace &face,
+                                        const State &mean, real mmsTimeFactor) const;
 
         /**
          * @brief Evaluate the traditional quadratic reconstruction at a physical integration point.
@@ -365,6 +375,7 @@ namespace DNDS::NCFV
          *     conserved components as columns. Right interface reconstruction.
          * @param unitNormal Left-to-right unit interface normal.
          * @param characteristicDistance Positive normal correction distance used to enforce the state jump.
+         * @param wallDistance Positive wall distance used by the turbulence closure.
          * @return Conservative viscous flux per unit measure, with zero mass flux.
          */
         State InternalViscousFlux(
@@ -373,7 +384,7 @@ namespace DNDS::NCFV
             const StateGradient &leftGradient,
             const StateGradient &rightGradient,
             const SpatialVector &unitNormal,
-            real characteristicDistance) const;
+            real characteristicDistance, real wallDistance) const;
         /**
          * @brief Apply viscous boundary constraints to the stress/heat-flux interface evaluation.
          * @param inside Physical interior conservative trace.
@@ -382,6 +393,9 @@ namespace DNDS::NCFV
          * @param unitNormal Outward unit boundary normal.
          * @param boundary Wall/thermal or other normalized boundary settings.
          * @param lengthScale Positive local dual-volume scale for one-sided gradient corrections.
+         * @param normalDistance Distance from the dual centroid to this boundary face.
+         * @param wallDistance Positive distance for turbulent transport.
+         * @param wallSecondary Prescribed specific omega or epsilon at the no-slip wall.
          * @return Outward viscous flux per unit measure, with boundary velocity/thermal constraints applied.
          */
         State BoundaryViscousFlux(
@@ -389,10 +403,11 @@ namespace DNDS::NCFV
             const StateGradient &insideGradient,
             const SpatialVector &unitNormal,
             const BoundaryZoneSettings &boundary,
-            real lengthScale) const;
+            real lengthScale, real normalDistance, real wallDistance, real wallSecondary) const;
         /**
          * @brief Estimate a surface-integrated inviscid plus optional viscous CFL contribution.
          * @param state Physical conservative state supplying flow, sound speed, and viscosity.
+         * @param kinematicDiffusivity Maximum diffusivity prepared by the selected flow/turbulence model.
          * @param unitNormal Unit surface-normal direction.
          * @param measure Positive scalar surface length/area.
          * @param lengthScale Positive local volume scale used by the viscous spectral estimate.
@@ -400,9 +415,24 @@ namespace DNDS::NCFV
          */
         real SurfaceSpectralRadius(
             const State &state,
+            real kinematicDiffusivity,
             const SpatialVector &unitNormal,
             real measure,
             real lengthScale) const;
+
+        real TurbulentPressure(const State &state) const;
+        void BuildTurbulenceGeometry();
+        real BoundaryNormalDistance(index node, const SpatialVector &normal) const;
+        real SourceWallDistance(index node, const Vector3 &offset) const;
+        real WallSecondaryPrimitive(const State &mean, const BoundaryZoneSettings &boundary, real distance) const;
+        real InverseTurbulenceScale() const;
+        Physics::RANS::Point TurbulencePoint(const State &state, const StateGradient &gradient,
+                                            real wallDistance, real viscosity) const;
+        State ViscousTraceFlux(const State &state, const StateGradient &primitiveGradient,
+                               const SpatialVector &normal, bool adiabatic, real wallDistance, bool noSlip = false) const;
+        real MaximumDiffusivity(const State &state, const StateGradient &gradient, real wallDistance) const;
+        StateGradient NodalGradient(index node) const;
+        State TurbulenceSourceMean(index node, const State &mean, bool prepareTimeStep);
         /**
          * @brief Compute the local Lax-Friedrichs wave-speed bound for two admissible means.
          * @param left Left conservative mean.
@@ -479,7 +509,7 @@ namespace DNDS::NCFV
             NodeMatrixPair &field,
             const std::string &name,
             int rows,
-            int columns = dimension + 2);
+            int columns = StateSize);
         /**
          * @brief Allocate owned/ghost local-cache matrices without an MPI transformer.
          * @param [out] field Distributed array pair to initialize, resize, and clear to zero.
@@ -575,7 +605,7 @@ namespace DNDS::NCFV
             const NodeHalo &nodeHalo)
             : _mpi(mpi), _mesh(mesh), _topology(topology), _geometry(geometry),
               _reconstruction(reconstruction), _boundaries(boundaries), _mode(mode),
-              _reconstructionSettings(reconstructionSettings), _physics(physics),
+              _reconstructionSettings(reconstructionSettings), _physics(physics), _turbulence(physics.turbulence),
               _time(time), _nodeHalo(nodeHalo)
         {
         }
@@ -618,7 +648,7 @@ namespace DNDS::NCFV
             _scaleInteriorInviscidCorrection =
                 (scales.array() != 1).any();
             _singleZeroInviscidCorrectionComponent = -1;
-            for (int component = 0; component < dimension + 2; component++)
+            for (int component = 0; component < StateSize; component++)
             {
                 if (scales(component) == 0 &&
                     _singleZeroInviscidCorrectionComponent == -1)
@@ -763,7 +793,7 @@ namespace DNDS::NCFV
          * @brief Read diagnostics from the optional shared-gradient face sweep.
          * @return Pointer to read-only most recent sweep diagnostics, or nullptr when the sweep is disabled.
          */
-        [[nodiscard]] const typename SharedGradientFaceSweep<dimension>::Diagnostics *
+        [[nodiscard]] const typename SharedGradientFaceSweep<dimension, nTurbulence>::Diagnostics *
         SharedGradientSweepDiagnostics() const
         {
             return _sharedGradientFaceSweep ? &_sharedGradientFaceSweep->LastDiagnostics() : nullptr;
@@ -776,5 +806,9 @@ namespace DNDS::NCFV
     };
 
     extern template class SpatialOperator<2>;
+    extern template class SpatialOperator<2, 1>;
+    extern template class SpatialOperator<2, 2>;
     extern template class SpatialOperator<3>;
+    extern template class SpatialOperator<3, 1>;
+    extern template class SpatialOperator<3, 2>;
 }
