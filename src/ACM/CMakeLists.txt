@@ -15,6 +15,7 @@ set(HPPS
     ACM.hpp
     ACMBC.hpp
     ACMBDF2.hpp
+    ACMDIRK.hpp
     ACMConfig.hpp
     ACMEvaluator.hpp
     ACMEvaluator.hxx
@@ -31,6 +32,7 @@ set(HPPS
     ACMTurbulence.hpp
     ACMTurbulenceTransport.hpp
     ACMTurbulenceTransport.hxx
+    ACMHighOrderTurbulence.hxx
     SingleBlockApp.hpp
 )
 

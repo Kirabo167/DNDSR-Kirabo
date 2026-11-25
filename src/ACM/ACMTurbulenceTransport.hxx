@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include "ACMHighOrderTurbulence.hxx"
 
 namespace DNDS::ACM
 {
@@ -106,6 +107,9 @@ namespace DNDS::ACM
         DNDS_check_throw_info(
             _flowSettings.enableViscousFlux && _flowSettings.dynamicViscosity > 0,
             "ACM RANS transport requires enabled positive molecular viscosity");
+        DNDS_check_throw_info(_turbulenceSettings.model != TurbulenceModel::KOmegaSSTSAS ||
+                                  (_turbulenceSettings.variationalReconstruction && _vfv->getSettings().maxOrder >= 2),
+                              "ACM SST-SAS requires quadratic or higher CFV reconstruction");
 
         _vfv->BuildUDof(_state, nStoredVariables);
         _vfv->BuildUDof(_rhs, nStoredVariables);
@@ -277,6 +281,48 @@ namespace DNDS::ACM
                 _turbulenceSettings.minimumWallDistance);
         }
 
+        _cellHMax.resize(static_cast<std::size_t>(_mesh->NumCellProc()));
+        _cellHNormal.resize(_cellHMax.size());
+        for (index cell = 0; cell < _mesh->NumCellProc(); ++cell)
+        {
+            const auto nodes = _mesh->cell2node[cell];
+            Geom::tSmallCoords coords;
+            _mesh->GetCoordsOnCell(cell, coords);
+            Vector3 wallVector = Vector3::Zero();
+            Vector3 longestWallVector = Vector3::Zero();
+            real distanceSum = 0;
+            for (rowsize a = 0; a < nodes.size(); ++a)
+            {
+                const Vector3 value = ToVector3(_mesh->GetCoordWallDistOnCell(cell, a));
+                wallVector += value;
+                distanceSum += value.norm();
+                if (value.squaredNorm() > longestWallVector.squaredNorm()) longestWallVector = value;
+            }
+            // At a medial axis equally near wall directions can cancel. Select
+            // a valid nearest-wall direction and interpolate scalar distances.
+            if (wallVector.norm() <= 1e-12 * distanceSum)
+                wallVector = longestWallVector;
+            const real wallNorm = wallVector.norm();
+            if (_turbulenceSettings.model == TurbulenceModel::SpalartAllmarasIDDES)
+            {
+                DNDS_check_throw_info(std::isfinite(wallNorm) && wallNorm > 0 &&
+                                          wallNorm < std::pow(veryLargeReal, 0.25) * 0.5 * nodes.size(),
+                                      "SA-IDDES requires a resolved nearest-wall direction");
+                _cellWallDistance[cell] = std::max(distanceSum / nodes.size(), _turbulenceSettings.minimumWallDistance);
+            }
+            const Vector3 normal = wallNorm > 0 && std::isfinite(wallNorm) ? Vector3(wallVector / wallNorm) : Vector3::UnitX();
+            real hMax = 0, hNormal = 0;
+            for (rowsize a = 0; a < nodes.size(); ++a)
+                for (rowsize b = 0; b < a; ++b)
+                {
+                    const Vector3 edge = coords.col(a) - coords.col(b);
+                    hMax = std::max(hMax, edge.norm());
+                    hNormal = std::max(hNormal, std::abs(edge.dot(normal)));
+                }
+            _cellHMax[cell] = hMax;
+            _cellHNormal[cell] = hNormal;
+        }
+
         _faceWallDistance.assign(
             static_cast<std::size_t>(_mesh->NumFaceProc()),
             _turbulenceSettings.minimumWallDistance);
@@ -294,6 +340,33 @@ namespace DNDS::ACM
             _faceWallDistance[static_cast<std::size_t>(iFace)] = std::max(
                 distance,
                 _turbulenceSettings.minimumWallDistance);
+        }
+        if (_turbulenceSettings.variationalReconstruction)
+        {
+            _cellPointWallDistance.resize(static_cast<std::size_t>(_mesh->NumCellProc()));
+            _facePointWallDistance.resize(static_cast<std::size_t>(_mesh->NumFaceProc()));
+            const auto interpolate = [&](index entity, bool face, std::vector<real> &values)
+            {
+                const auto nodes = face ? _mesh->face2node[entity] : _mesh->cell2node[entity];
+                Geom::tSmallCoords vectors(3, nodes.size());
+                for (rowsize a = 0; a < nodes.size(); ++a)
+                {
+                    const Geom::tPoint displacement = face ? _mesh->GetCoordWallDistOnFace(entity, a) : _mesh->GetCoordWallDistOnCell(entity, a);
+                    vectors.col(a) = Geom::tPoint(displacement.norm(), 0, 0);
+                }
+                auto quad = face ? _vfv->GetFaceQuad(entity) : _vfv->GetCellQuad(entity);
+                values.resize(quad.GetNumPoints());
+                Geom::Elem::SummationNoOp noOp;
+                quad.Integration(noOp, [&](auto &, int point, const Geom::tPoint &, const Geom::Elem::tD01Nj &shape)
+                {
+                    values[point] = std::max(Geom::Elem::PPhysicsCoordD01Nj(vectors, shape).norm(),
+                                             _turbulenceSettings.minimumWallDistance);
+                });
+            };
+            for (index cell = 0; cell < _mesh->NumCellProc(); ++cell)
+                interpolate(cell, false, _cellPointWallDistance[cell]);
+            for (index face = 0; face < _mesh->NumFaceProc(); ++face)
+                interpolate(face, true, _facePointWallDistance[face]);
         }
     }
 
@@ -439,6 +512,36 @@ namespace DNDS::ACM
     {
         _limiter.setConstant(1.0);
         _flowLimiter.setConstant(1.0);
+        if (_turbulenceSettings.variationalReconstruction)
+        {
+            // Physical-bound scaling preserves smooth extrema. Sample all face
+            // and volume points used by flux and source integration.
+            for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+            {
+                const auto checkPoint = [&](index face, rowsize side, int point)
+                {
+                    const TurbulenceState increment = (_scalarVFV->GetIntPointDiffBaseValue(
+                        cell, face, side, point, std::array<int, 1>{0}, 1) * _qRec[cell]).transpose();
+                    for (int variable = 0; variable < ActiveVariableCount(); ++variable)
+                    {
+                        const real delta = increment(variable), mean = _state[cell](variable);
+                        real bound = 1;
+                        if (delta > 0) bound = (_turbulenceSettings.maximumValue[variable] - mean) / delta;
+                        if (delta < 0) bound = (_turbulenceSettings.minimumValue[variable] - mean) / delta;
+                        _limiter[cell](variable) = std::min(_limiter[cell](variable), std::clamp(bound, real(0), real(1)));
+                    }
+                };
+                const auto faces = _mesh->cell2face[cell];
+                for (rowsize k = 0; k < faces.size(); ++k)
+                    for (int point = 0; point < _vfv->GetFaceQuad(faces[k]).GetNumPoints(); ++point)
+                        checkPoint(faces[k], _mesh->CellIsFaceBack(cell, faces[k], k) ? 0 : 1, point);
+                for (int point = 0; point < _vfv->GetCellQuad(cell).GetNumPoints(); ++point)
+                    checkPoint(-1, -1, point);
+            }
+            _limiter.trans.startPersistentPull();
+            _limiter.trans.waitPersistentPull();
+            return;
+        }
         if (!_turbulenceSettings.secondOrderReconstruction)
         {
             _limiter.trans.startPersistentPull();
@@ -607,7 +710,10 @@ namespace DNDS::ACM
         int iG) const
     {
         TurbulenceState reconstructed = _state[iCell];
-        if (_turbulenceSettings.secondOrderReconstruction)
+        if (_turbulenceSettings.variationalReconstruction)
+            reconstructed += _limiter[iCell].asDiagonal() * TurbulenceState((_scalarVFV->GetIntPointDiffBaseValue(
+                iCell, iFace, if2c, iG, std::array<int, 1>{0}, 1) * _qRec[iCell]).transpose());
+        else if (_turbulenceSettings.secondOrderReconstruction)
         {
             const Eigen::Matrix<real, gDim, 1> displacement =
                 (_vfv->GetFaceQuadraturePPhysFromCell(
@@ -631,7 +737,10 @@ namespace DNDS::ACM
         int iG) const
     {
         State reconstructed = flow[iCell];
-        if (_turbulenceSettings.secondOrderReconstruction)
+        if (_turbulenceSettings.variationalReconstruction)
+            reconstructed += (_vfv->GetIntPointDiffBaseValue(
+                iCell, iFace, if2c, iG, std::array<int, 1>{0}, 1) * _flowRec[iCell]).transpose();
+        else if (_turbulenceSettings.secondOrderReconstruction)
         {
             const Eigen::Matrix<real, gDim, 1> displacement =
                 (_vfv->GetFaceQuadraturePPhysFromCell(
@@ -675,6 +784,8 @@ namespace DNDS::ACM
             return;
         ++_preparationCount;
         EvaluateGradients(flow, time);
+        if (_turbulenceSettings.variationalReconstruction)
+            ReconstructVariational(flow, time);
         if (!_limiterFrozen)
             EvaluateLimiter(flow, time);
         _faceEddyViscosity.resize(static_cast<std::size_t>(_mesh->NumFaceProc()));
@@ -708,10 +819,10 @@ namespace DNDS::ACM
                     faceToCell[0], iFace, 0, iG);
                 State leftFlow = ReconstructFlowState(
                     flow, faceToCell[0], iFace, 0, iG);
-                TurbulenceGradient gradientLeft = CellTurbulenceGradient(faceToCell[0]);
+                TurbulenceGradient gradientLeft = PointTurbulenceGradient(faceToCell[0], iFace, 0, iG);
                 Eigen::Matrix<real, 3, 4> flowGradientLeft =
                     Eigen::Matrix<real, 3, 4>::Zero();
-                flowGradientLeft.template topRows<gDim>() = _flowGradient[faceToCell[0]];
+                flowGradientLeft = PointFlowGradient(faceToCell[0], iFace, 0, iG);
 
                 TurbulenceState rightTurbulence;
                 State rightFlow;
@@ -729,10 +840,9 @@ namespace DNDS::ACM
                         flow, faceToCell[1], iFace, 1, iG);
                     rightCellTurbulence = _state[faceToCell[1]];
                     rightCellFlow = flow[faceToCell[1]];
-                    gradientRight = CellTurbulenceGradient(faceToCell[1]);
+                    gradientRight = PointTurbulenceGradient(faceToCell[1], iFace, 1, iG);
                     flowGradientRight.setZero();
-                    flowGradientRight.template topRows<gDim>() =
-                        _flowGradient[faceToCell[1]];
+                    flowGradientRight = PointFlowGradient(faceToCell[1], iFace, 1, iG);
 
                     Eigen::RowVector<real, nFlowVariables> rightFlowRow =
                         rightFlow.transpose();
@@ -807,7 +917,7 @@ namespace DNDS::ACM
                 TurbulenceGradient faceTurbulenceGradient =
                     0.5 * (gradientLeft + gradientRight);
                 const real connectionProjection = centerDisplacement.dot(normal);
-                if (std::abs(connectionProjection) > 1e-14)
+                if (!_turbulenceSettings.variationalReconstruction && std::abs(connectionProjection) > 1e-14)
                     faceTurbulenceGradient +=
                         normal *
                         (rightCellTurbulence - TurbulenceState(_state[faceToCell[0]]) -
@@ -815,8 +925,18 @@ namespace DNDS::ACM
                             .transpose() /
                         connectionProjection;
 
+                if (_turbulenceSettings.variationalReconstruction && faceToCell[1] == UnInitIndex)
+                {
+                    const auto type = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(iFace));
+                    if (type == BoundaryType::BCOut || type == BoundaryType::BCSym || type == BoundaryType::BCWallInvis ||
+                        (type == BoundaryType::BCFar && leftFlow.template head<3>().dot(normal) >= 0))
+                        faceTurbulenceGradient -= normal * (normal.transpose() * faceTurbulenceGradient) / normal.squaredNorm();
+                }
+
                 const Eigen::Matrix<real, 3, 4> faceFlowGradient =
-                    CorrectedFaceGradient(
+                    _turbulenceSettings.variationalReconstruction
+                        ? Eigen::Matrix<real, 3, 4>(0.5 * (flowGradientLeft + flowGradientRight))
+                        : CorrectedFaceGradient(
                         flowGradientLeft,
                         flowGradientRight,
                         State(flow[faceToCell[0]]),
@@ -836,7 +956,7 @@ namespace DNDS::ACM
                         faceTurbulence,
                         velocityGradient,
                         faceTurbulenceGradient,
-                        _faceWallDistance[static_cast<std::size_t>(iFace)],
+                        _turbulenceSettings.variationalReconstruction ? _facePointWallDistance[iFace][iG] : _faceWallDistance[iFace],
                         _flowSettings.rho0,
                         _flowSettings.dynamicViscosity,
                         _turbulenceSettings);
@@ -861,6 +981,36 @@ namespace DNDS::ACM
             return std::accumulate(values.begin(), values.end(), 0.0) /
                    static_cast<real>(values.size());
         return values.at(static_cast<std::size_t>(iG));
+    }
+
+    template <int gDim>
+    TurbulenceState ACMTurbulenceTransport<gDim>::CellSource(index cell) const
+    {
+        if (!_turbulenceSettings.enableSourceTerms)
+            return TurbulenceState::Zero();
+        if (!_turbulenceSettings.variationalReconstruction)
+            return TurbulenceSource(TurbulenceState(_state[cell]), CellVelocityGradient(cell),
+                                    CellTurbulenceGradient(cell), _cellWallDistance[cell],
+                                    _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings,
+                                    _cellHMax[cell], _cellHNormal[cell]);
+
+        const bool useSAS = _turbulenceSettings.model == TurbulenceModel::KOmegaSSTSAS;
+        const real volume = _vfv->GetCellVol(cell);
+        const real filterWidth = useSAS ? std::pow(volume, 1.0 / gDim) : 0;
+        const auto quad = _vfv->GetCellQuad(cell);
+        TurbulenceState integral = TurbulenceState::Zero();
+        for (int point = 0; point < quad.GetNumPoints(); ++point)
+        {
+            const VelocityGradient velocityGradient = PointFlowGradient(cell, -1, -1, point).template leftCols<3>().transpose();
+            const SASKinematics sas = useSAS ? PointSASKinematics(cell, point, filterWidth) : SASKinematics{};
+            const real weight = quad.GetWeight(point) * _vfv->GetCellJacobiDet(cell, point);
+            integral += weight * TurbulenceSource(
+                ReconstructTurbulenceState(cell, -1, -1, point), velocityGradient,
+                PointTurbulenceGradient(cell, -1, -1, point), _cellPointWallDistance[cell][point],
+                _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings,
+                _cellHMax[cell], _cellHNormal[cell], sas);
+        }
+        return integral / volume;
     }
 
     template <int gDim>
@@ -893,7 +1043,7 @@ namespace DNDS::ACM
                     State leftFlow = ReconstructFlowState(
                         flow, faceToCell[0], iFace, 0, iG);
                     TurbulenceGradient gradientLeft =
-                        CellTurbulenceGradient(faceToCell[0]);
+                        PointTurbulenceGradient(faceToCell[0], iFace, 0, iG);
                     TurbulenceGradient gradientRight = gradientLeft;
                     TurbulenceState rightTurbulence;
                     State rightFlow;
@@ -907,7 +1057,7 @@ namespace DNDS::ACM
                         rightFlow = ReconstructFlowState(
                             flow, faceToCell[1], iFace, 1, iG);
                         rightCellTurbulence = _state[faceToCell[1]];
-                        gradientRight = CellTurbulenceGradient(faceToCell[1]);
+                        gradientRight = PointTurbulenceGradient(faceToCell[1], iFace, 1, iG);
                         Eigen::RowVector<real, nFlowVariables> rightFlowRow =
                             rightFlow.transpose();
                         _vfv->ApplyPeriodicTransform(
@@ -956,7 +1106,7 @@ namespace DNDS::ACM
                     TurbulenceGradient faceGradient =
                         0.5 * (gradientLeft + gradientRight);
                     const real connectionProjection = centerDisplacement.dot(normal);
-                    if (std::abs(connectionProjection) > 1e-14)
+                    if (!_turbulenceSettings.variationalReconstruction && std::abs(connectionProjection) > 1e-14)
                         faceGradient +=
                             normal *
                             (rightCellTurbulence -
@@ -964,6 +1114,17 @@ namespace DNDS::ACM
                              faceGradient.transpose() * centerDisplacement)
                                 .transpose() /
                             connectionProjection;
+
+                    if (_turbulenceSettings.variationalReconstruction && connectionProjection > 0)
+                        faceGradient += normal * (rightTurbulence - leftTurbulence).transpose() / connectionProjection;
+
+                    if (_turbulenceSettings.variationalReconstruction && faceToCell[1] == UnInitIndex)
+                    {
+                        const auto type = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(iFace));
+                        if (type == BoundaryType::BCOut || type == BoundaryType::BCSym || type == BoundaryType::BCWallInvis ||
+                            (type == BoundaryType::BCFar && leftFlow.template head<3>().dot(normal) >= 0))
+                            faceGradient -= normal * (normal.transpose() * faceGradient) / normal.squaredNorm();
+                    }
 
                     const TurbulenceState faceTurbulence = ClampTurbulenceState(
                         0.5 * (leftTurbulence + rightTurbulence),
@@ -1003,13 +1164,14 @@ namespace DNDS::ACM
                             advectiveFlux.setZero();
                     }
                     const TurbulenceState faceDiffusivity = TurbulenceDiffusivity(
-                        faceTurbulence, faceGradient, _faceWallDistance[static_cast<std::size_t>(iFace)],
+                        faceTurbulence, faceGradient,
+                        _turbulenceSettings.variationalReconstruction ? _facePointWallDistance[iFace][iG] : _faceWallDistance[iFace],
                         _flowSettings.rho0, _flowSettings.dynamicViscosity, FaceEddyViscosity(iFace, iG), _turbulenceSettings);
                     TurbulenceState boundedNormalDerivative = faceGradient.transpose() * normal;
                     TurbulenceState diffusiveFlux = faceDiffusivity.cwiseProduct(boundedNormalDerivative);
                     // Limit the final face transfer, not F1 or the other equation's
                     // diffusivity. Carry the small cell jump directly to the flux.
-                    const bool boundedSST = _turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                    const bool boundedSST = IsSSTModel(_turbulenceSettings.model) &&
                         _turbulenceSettings.boundedSSTDiffusion;
                     for (int variable = 0; variable < ActiveVariableCount(); variable++)
                     {
@@ -1020,7 +1182,7 @@ namespace DNDS::ACM
                                 faceGradient.col(variable).dot(normal), jump, connectionProjection, normal.squaredNorm());
                             boundedNormalDerivative(variable) = jump * coefficient;
                         }
-                        else
+                        else if (!_turbulenceSettings.variationalReconstruction)
                             diffusiveFlux(variable) = CFV::BoundScalarNormalDerivative(diffusiveFlux(variable),
                                 static_cast<int>(_extrema[faceToCell[0]](variable)),
                                 faceToCell[1] == UnInitIndex ? -1 : static_cast<int>(_extrema[faceToCell[1]](variable)));
@@ -1043,15 +1205,7 @@ namespace DNDS::ACM
 #endif
         for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
         {
-            const TurbulenceState source = TurbulenceSource(
-                TurbulenceState(_state[iCell]),
-                CellVelocityGradient(iCell),
-                CellTurbulenceGradient(iCell),
-                _cellWallDistance[static_cast<std::size_t>(iCell)],
-                _flowSettings.rho0,
-                _flowSettings.dynamicViscosity,
-                _turbulenceSettings);
-            rhs[iCell] += source;
+            rhs[iCell] += CellSource(iCell);
             DNDS_check_throw_info(
                 rhs[iCell].allFinite(),
                 "ACM turbulence transport produced a non-finite total residual");
@@ -1106,18 +1260,37 @@ namespace DNDS::ACM
         for (index cell = 0; cell < _mesh->NumCell(); cell++)
         {
             const TurbulenceState state = _state[cell];
-            if (_turbulenceSettings.model == TurbulenceModel::KOmegaSST)
+            if (IsSSTModel(_turbulenceSettings.model))
             {
-                diagonal[static_cast<std::size_t>(cell)] = SSTImplicitDestructionJacobian(
-                    state, CellTurbulenceGradient(cell), _cellWallDistance[static_cast<std::size_t>(cell)],
-                    _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings);
+                auto &block = diagonal[static_cast<std::size_t>(cell)];
+                if (_turbulenceSettings.model == TurbulenceModel::KOmegaSSTSAS && _turbulenceSettings.enableSourceTerms)
+                {
+                    const real volume = _vfv->GetCellVol(cell);
+                    const real filterWidth = std::pow(volume, 1.0 / gDim);
+                    const auto quad = _vfv->GetCellQuad(cell);
+                    for (int point = 0; point < quad.GetNumPoints(); ++point)
+                    {
+                        const VelocityGradient velocityGradient = PointFlowGradient(cell, -1, -1, point).template leftCols<3>().transpose();
+                        block += (quad.GetWeight(point) * _vfv->GetCellJacobiDet(cell, point)) *
+                            SSTImplicitSourceJacobian(
+                                ReconstructTurbulenceState(cell, -1, -1, point),
+                                PointTurbulenceGradient(cell, -1, -1, point), _cellPointWallDistance[cell][point],
+                                _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings,
+                                velocityGradient, PointSASKinematics(cell, point, filterWidth));
+                    }
+                    block /= volume;
+                }
+                else
+                    block = SSTImplicitSourceJacobian(
+                        state, CellTurbulenceGradient(cell), _cellWallDistance[cell],
+                        _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings);
                 continue;
             }
             const auto source = [&](const TurbulenceState &value)
             {
                 return TurbulenceSource(value, CellVelocityGradient(cell), CellTurbulenceGradient(cell),
                     _cellWallDistance[static_cast<std::size_t>(cell)], _flowSettings.rho0,
-                    _flowSettings.dynamicViscosity, _turbulenceSettings);
+                    _flowSettings.dynamicViscosity, _turbulenceSettings, _cellHMax[cell], _cellHNormal[cell]);
             };
             for (int variable = 0; variable < active; variable++)
             {
@@ -1235,7 +1408,7 @@ namespace DNDS::ACM
                     const bool clipped = CFV::BoundScalarNormalDerivative(derivative,
                         static_cast<int>(_extrema[cells[0]](variable)),
                         cells[1] == UnInitIndex ? -1 : static_cast<int>(_extrema[cells[1]](variable))) != derivative;
-                    const bool boundedSST = _turbulenceSettings.model == TurbulenceModel::KOmegaSST &&
+                    const bool boundedSST = IsSSTModel(_turbulenceSettings.model) &&
                         _turbulenceSettings.boundedSSTDiffusion;
                     const real coefficient = CFV::BoundedScalarConductance(derivative,
                         qRightCell(variable) - _state[cells[0]](variable), projection, normal.squaredNorm());

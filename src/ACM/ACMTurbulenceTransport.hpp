@@ -160,13 +160,8 @@ namespace DNDS::ACM
         /** @brief Return read-only distributed primitive turbulence variables. */
         const TTurbulenceDof &GetState() const { return _state; }
 
-        /** @brief Current cell source for diagnostics, after Prepare/EvaluateRHS. */
-        TurbulenceState CellSource(index cell) const
-        {
-            return TurbulenceSource(TurbulenceState(_state[cell]), CellVelocityGradient(cell),
-                                    CellTurbulenceGradient(cell), _cellWallDistance.at(static_cast<std::size_t>(cell)),
-                                    _flowSettings.rho0, _flowSettings.dynamicViscosity, _turbulenceSettings);
-        }
+        /** @brief Current cell-average source after Prepare/EvaluateRHS. */
+        TurbulenceState CellSource(index cell) const;
 
         /** @brief Positive cell wall distance used by the closure. */
         real CellWallDistance(index cell) const { return _cellWallDistance.at(static_cast<std::size_t>(cell)); }
@@ -238,6 +233,13 @@ namespace DNDS::ACM
         TTurbulenceDof _state;                       ///< Current primitive RANS variables.
         TTurbulenceDof _rhs;                         ///< Internal SSPRK residual buffer.
         TTurbulenceGradient _gradient;               ///< Current turbulence gradients.
+        TpVFV _scalarVFV;
+        CFV::tURec<2> _qRec, _qRecWork;
+        CFV::tURec<4> _flowRec, _flowRecWork;
+        void ReconstructVariational(TFlowDof &flow, real time);
+        TurbulenceGradient PointTurbulenceGradient(index cell, index face, rowsize side, int point) const;
+        Eigen::Matrix<real, 3, 4> PointFlowGradient(index cell, index face, rowsize side, int point) const;
+        SASKinematics PointSASKinematics(index cell, int point, real filterWidth) const;
         TFlowGradient _flowGradient;                 ///< Current flow gradients for production/mu_t.
         TLimiter _extrema; ///< MPI stencil minimum/maximum flags for each scalar.
         std::vector<std::vector<Eigen::Vector<real, gDim>>> _gradientWeights;
@@ -245,6 +247,7 @@ namespace DNDS::ACM
         TFlowLimiter _flowLimiter;                   ///< Shared limiter for all reconstructed flow entries.
         std::vector<real> _cellWallDistance;         ///< One positive value per owned/ghost cell.
         std::vector<real> _faceWallDistance;         ///< One positive value per process face.
+        std::vector<std::vector<real>> _cellPointWallDistance, _facePointWallDistance;
         std::vector<std::vector<real>> _faceEddyViscosity; ///< Frozen values at face quadrature points.
         std::function<real(index, int, real)> _faceVolumeFlux; ///< Optional shared ACM continuity flux.
         bool _initialized = false;                   ///< Wall-distance/state initialization guard.
@@ -294,6 +297,7 @@ namespace DNDS::ACM
          * @note Modifier: Runzhi Ma.
          */
         void BuildWallDistance();
+        std::vector<real> _cellHMax, _cellHNormal;
 
         /**
          * @brief Compute linearly exact weighted least-squares flow and turbulence gradients.

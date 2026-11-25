@@ -32,6 +32,11 @@ namespace DNDS::ACM
     {
         constexpr real betaStar = 0.09;
         constexpr real minimumClosureValue = 1e-30;
+        constexpr real sstBeta1 = 0.075;
+        constexpr real sstBeta2 = 0.0828;
+        constexpr real sstSigmaOmega1 = 0.5;
+        constexpr real sstSigmaOmega2 = 0.856;
+        constexpr real sstKappa = 0.41;
 
         /**
          * @brief Return a positive finite closure denominator.
@@ -153,19 +158,18 @@ namespace DNDS::ACM
             real rho0,
             real molecularViscosity)
         {
-            constexpr real sigmaOmega2 = 0.856;
             const real k = PositiveDenominator(turbulence(0));
             const real omega = PositiveDenominator(turbulence(1));
             const real d = PositiveDenominator(wallDistance);
             const real nu = molecularViscosity / PositiveDenominator(rho0);
             const real cross = turbulenceGradient.col(0).dot(turbulenceGradient.col(1));
             const real cdKw = std::max(
-                2.0 * rho0 * sigmaOmega2 * cross / omega,
+                2.0 * rho0 * sstSigmaOmega2 * cross / omega,
                 1e-20); // Original SST (1994), not the SST-2003 CD floor.
 
             const real nearWall = std::sqrt(k) / (betaStar * omega * d);
             const real viscousWall = 500.0 * nu / (d * d * omega);
-            const real crossWall = 4.0 * rho0 * sigmaOmega2 * k / (cdKw * d * d);
+            const real crossWall = 4.0 * rho0 * sstSigmaOmega2 * k / (cdKw * d * d);
             const real argument1 = std::clamp(
                 std::min(std::max(nearWall, viscousWall), crossWall),
                 0.0,
@@ -177,6 +181,59 @@ namespace DNDS::ACM
             return {
                 std::tanh(std::pow(argument1, 4)),
                 std::tanh(argument2 * argument2)};
+        }
+
+        // Per unit mass; unlike CD_kw in F1, this source retains its sign.
+        real SSTOmegaCrossDiffusion(real f1, real omega, const TurbulenceGradient &gradient)
+        {
+            const real cross = gradient.col(0).dot(gradient.col(1));
+            return 2.0 * (1.0 - f1) * sstSigmaOmega2 * cross / PositiveDenominator(omega);
+        }
+
+        struct SASSource
+        {
+            real omegaProduction = 0;
+            real negativeOmegaDerivative = 0;
+        };
+
+        // Menter and Egorov (2010), doi:10.1007/s10494-010-9264-5.
+        // The quadratic SAS source and Smagorinsky grid cutoff use the local SST coefficients.
+        SASSource EvaluateSASSource(const TurbulenceState &turbulence, const VelocityGradient &velocityGradient,
+                                   const TurbulenceGradient &gradient, real f1, SASKinematics sas)
+        {
+            DNDS_check_throw_info(velocityGradient.allFinite() &&
+                                      std::isfinite(sas.velocityLaplacianMagnitude) && sas.velocityLaplacianMagnitude >= 0 &&
+                                      std::isfinite(sas.filterWidth) && sas.filterWidth > 0,
+                                  "ACM SST-SAS needs a finite velocity Laplacian and positive grid filter width");
+            if (sas.velocityLaplacianMagnitude == 0)
+                return {};
+
+            constexpr real zeta2 = 3.51;
+            constexpr real Cs = 0.11;
+            constexpr real C = 2.0;
+            constexpr real sigmaPhi = 2.0 / 3.0;
+            const real k = PositiveDenominator(turbulence(0));
+            const real omega = PositiveDenominator(turbulence(1));
+            const real sigmaOmega = f1 * sstSigmaOmega1 + (1 - f1) * sstSigmaOmega2;
+            // beta/betaStar - gamma is positive by the SST-1994 definition of gamma.
+            const real equilibriumCoefficient = sigmaOmega * sstKappa * sstKappa / std::sqrt(betaStar);
+            const real minimumLength = Cs * std::sqrt(sstKappa * zeta2 / equilibriumCoefficient) * sas.filterWidth;
+            const real modelLength = std::sqrt(k) / (std::sqrt(std::sqrt(betaStar)) * omega);
+            // S/L_vK with L_vK = max(kappa*S/|laplacian(U)|, minimumLength).
+            const real scaleRate = std::min(sas.velocityLaplacianMagnitude / sstKappa,
+                                            FullStrainMagnitude(velocityGradient) / minimumLength);
+            const real rate = modelLength * scaleRate;
+            const real production = zeta2 * sstKappa * rate * rate;
+            const real kGradient = (gradient.col(0) / k).squaredNorm();
+            const real omegaGradient = (gradient.col(1) / omega).squaredNorm();
+            const real damping = (2 * C / sigmaPhi) * k * std::max(kGradient, omegaGradient);
+            if (production <= damping)
+                return {};
+
+            const real source = production - damping;
+            // At fixed k and absolute gradients, the omega damping branch and production both scale as omega^-2.
+            const real differentiatedTerm = omegaGradient > kGradient ? source : production;
+            return {source, 2 * differentiatedTerm / omega};
         }
 
         /**
@@ -210,6 +267,8 @@ namespace DNDS::ACM
     /** @copydoc TurbulenceSettings::Validate */
     void TurbulenceSettings::Validate() const
     {
+        DNDS_check_throw_info(std::isfinite(variationalTolerance) && variationalTolerance > 0 &&
+                                  variationalMaxIterations > 0, "Invalid ACM RANS variational controls");
         const auto finitePair = [](const std::array<real, 2> &values)
         {
             return std::all_of(values.begin(), values.end(), [](real value)
@@ -271,9 +330,11 @@ namespace DNDS::ACM
         case TurbulenceModel::Laminar:
             return 0;
         case TurbulenceModel::SpalartAllmaras:
+        case TurbulenceModel::SpalartAllmarasIDDES:
             return 1;
         case TurbulenceModel::KOmegaWilcox:
         case TurbulenceModel::KOmegaSST:
+        case TurbulenceModel::KOmegaSSTSAS:
         case TurbulenceModel::RealizableKEpsilon:
             return 2;
         }
@@ -290,10 +351,14 @@ namespace DNDS::ACM
             return "Laminar";
         case TurbulenceModel::SpalartAllmaras:
             return "SpalartAllmaras";
+        case TurbulenceModel::SpalartAllmarasIDDES:
+            return "SpalartAllmarasIDDES";
         case TurbulenceModel::KOmegaWilcox:
             return "KOmegaWilcox";
         case TurbulenceModel::KOmegaSST:
             return "KOmegaSST";
+        case TurbulenceModel::KOmegaSSTSAS:
+            return "KOmegaSSTSAS";
         case TurbulenceModel::RealizableKEpsilon:
             return "RealizableKEpsilon";
         }
@@ -305,7 +370,7 @@ namespace DNDS::ACM
     {
         DNDS_check_throw_info(variable >= 0 && variable < TurbulenceVariableCount(model),
                               "Invalid ACM turbulence variable index");
-        if (model == TurbulenceModel::SpalartAllmaras)
+        if (IsSAModel(model))
             return "TurbulenceNuTilde";
         if (variable == 0)
             return "TurbulenceK";
@@ -358,7 +423,7 @@ namespace DNDS::ACM
 
         if (settings.model == TurbulenceModel::Laminar)
             return 0;
-        if (settings.model == TurbulenceModel::SpalartAllmaras)
+        if (IsSAModel(settings.model))
         {
             const real nuTilde = turbulence(0);
             const real chi = rho0 * nuTilde / molecularViscosity;
@@ -380,7 +445,7 @@ namespace DNDS::ACM
                 molecularViscosity,
                 settings);
         }
-        if (settings.model == TurbulenceModel::KOmegaSST)
+        if (IsSSTModel(settings.model))
         {
             constexpr real a1 = 0.31;
             const SSTBlending blending = EvaluateSSTBlending(
@@ -436,7 +501,7 @@ namespace DNDS::ACM
         if (settings.model == TurbulenceModel::Laminar)
             return flux;
 
-        if (settings.model == TurbulenceModel::SpalartAllmaras)
+        if (IsSAModel(settings.model))
         {
             constexpr real sigma = 2.0 / 3.0;
             flux(0) = (molecularViscosity / rho0 + turbulence(0)) / sigma;
@@ -448,12 +513,10 @@ namespace DNDS::ACM
             flux(0) = (molecularViscosity + sigmaK * turbulentViscosity) / rho0;
             flux(1) = (molecularViscosity + sigmaOmega * turbulentViscosity) / rho0;
         }
-        else if (settings.model == TurbulenceModel::KOmegaSST)
+        else if (IsSSTModel(settings.model))
         {
             constexpr real sigmaK1 = 0.85;
             constexpr real sigmaK2 = 1.0;
-            constexpr real sigmaOmega1 = 0.5;
-            constexpr real sigmaOmega2 = 0.856;
             const SSTBlending blending = EvaluateSSTBlending(
                 turbulence,
                 turbulenceGradient,
@@ -462,7 +525,7 @@ namespace DNDS::ACM
                 molecularViscosity);
             const real sigmaK = sigmaK1 * blending.f1 + sigmaK2 * (1.0 - blending.f1);
             const real sigmaOmega =
-                sigmaOmega1 * blending.f1 + sigmaOmega2 * (1.0 - blending.f1);
+                sstSigmaOmega1 * blending.f1 + sstSigmaOmega2 * (1.0 - blending.f1);
             flux(0) = (molecularViscosity + sigmaK * turbulentViscosity) / rho0;
             flux(1) = (molecularViscosity + sigmaOmega * turbulentViscosity) / rho0;
         }
@@ -517,6 +580,44 @@ namespace DNDS::ACM
         return increment;
     }
 
+    real SAIDDESLength(real nuTilde, real nu, const VelocityGradient &velocityGradient,
+                      real d, real hMax, real hNormal)
+    {
+        DNDS_check_throw_info(std::isfinite(nuTilde) && nuTilde >= 0 && std::isfinite(nu) && nu > 0 &&
+                                  velocityGradient.allFinite() && std::isfinite(d) && d > 0 &&
+                                  std::isfinite(hMax) && hMax > 0 && std::isfinite(hNormal) &&
+                                  hNormal > 0 && hNormal <= hMax * (1 + 1e-12),
+                              "SA-IDDES requires positive physical viscosity, wall distance and cell extents");
+        constexpr real kappa = 0.41, cb1 = 0.1355, cb2 = 0.622, sigma = 2.0 / 3.0;
+        constexpr real cw1 = cb1 / (kappa * kappa) + (1 + cb2) / sigma;
+        constexpr real cDES = 0.65, cW = 0.15, cT = 1.63, cL = 3.55;
+        const real chi = nuTilde / nu;
+        const real fv1 = SAViscosityDamping(chi);
+        const real fv2 = SASecondaryDamping(chi, fv1);
+        const real ft2 = chi > 50 ? 0 : 1.2 * std::exp(-0.5 * chi * chi);
+        const real nut = nuTilde * fv1;
+        const real denominator = PositiveDenominator(kappa * kappa * d * d * velocityGradient.norm());
+        // Saturate tanh arguments before powers, preserving their limiting values.
+        const auto tanhPower = [](real x, int power)
+        { return x >= 10 ? real(1) : std::tanh(std::pow(std::max(real(0), x), power)); };
+        const real rt = nut / denominator, rl = nu / denominator;
+        const real alpha = 0.25 - d / hMax;
+        const real fB = std::min(real(1), 2 * std::exp(-9 * alpha * alpha));
+        const real fd = std::max(fB, tanhPower(8 * rt, 3));
+        const real ft = tanhPower(cT * cT * rt, 3);
+        const real fl = tanhPower(cL * cL * rl, 10);
+        const real psiSquared = chi <= 0 ? 100 :
+            (1 - cb1 / (cw1 * kappa * kappa * 0.424) * (ft2 + (1 - ft2) * fv2)) /
+            PositiveDenominator(fv1 * (1 - ft2));
+        const real psi = std::sqrt(std::clamp(psiSquared, real(1), real(100)));
+        const real fe1 = 2 * std::exp(-(alpha >= 0 ? 11.09 : 9) * alpha * alpha);
+        const real fe = std::max(real(0), fe1 - 1) * psi * (1 - std::max(ft, fl));
+        const real delta = std::min(hMax, std::max({cW * d, cW * hMax, hNormal}));
+        const real length = fd * (1 + fe) * d + (1 - fd) * cDES * delta * psi;
+        DNDS_check_throw_info(std::isfinite(length) && length > 0, "Non-finite SA-IDDES length");
+        return length;
+    }
+
     TurbulenceState TurbulenceSource(
         const TurbulenceState &turbulenceInput,
         const VelocityGradient &velocityGradient,
@@ -524,7 +625,8 @@ namespace DNDS::ACM
         real wallDistance,
         real rho0,
         real molecularViscosity,
-        const TurbulenceSettings &settings)
+        const TurbulenceSettings &settings,
+        real hMax, real hNormal, SASKinematics sas)
     {
         TurbulenceState source = TurbulenceState::Zero();
         if (settings.model == TurbulenceModel::Laminar || !settings.enableSourceTerms)
@@ -538,12 +640,15 @@ namespace DNDS::ACM
 
         const TurbulenceState turbulence =
             ClampTurbulenceState(turbulenceInput, settings);
-        const real d = std::max(wallDistance, settings.minimumWallDistance);
+        const real physicalDistance = std::max(wallDistance, settings.minimumWallDistance);
         const real nu = molecularViscosity / rho0;
+        const real d = settings.model == TurbulenceModel::SpalartAllmarasIDDES
+            ? SAIDDESLength(turbulence(0), nu, velocityGradient, physicalDistance, hMax, hNormal)
+            : physicalDistance;
         const real strainMagnitude = StrainMagnitude(velocityGradient);
         const real productionInvariant = strainMagnitude * strainMagnitude;
 
-        if (settings.model == TurbulenceModel::SpalartAllmaras)
+        if (IsSAModel(settings.model))
         {
             constexpr real cb1 = 0.1355;
             constexpr real cb2 = 0.622;
@@ -630,37 +735,32 @@ namespace DNDS::ACM
                             beta * secondVariable * secondVariable +
                             sigmaD * cross / PositiveDenominator(secondVariable);
             }
-            else if (settings.model == TurbulenceModel::KOmegaSST)
+            else if (IsSSTModel(settings.model))
             {
-                constexpr real sigmaOmega2 = 0.856;
-                constexpr real beta1 = 0.075;
-                constexpr real beta2 = 0.0828;
-                constexpr real sigmaOmega1 = 0.5;
-                constexpr real kappa = 0.41;
-                const real gamma1 = beta1 / betaStar -
-                                    sigmaOmega1 * kappa * kappa / std::sqrt(betaStar);
-                const real gamma2 = beta2 / betaStar -
-                                    sigmaOmega2 * kappa * kappa / std::sqrt(betaStar);
+                const real gamma1 = sstBeta1 / betaStar -
+                                    sstSigmaOmega1 * sstKappa * sstKappa / std::sqrt(betaStar);
+                const real gamma2 = sstBeta2 / betaStar -
+                                    sstSigmaOmega2 * sstKappa * sstKappa / std::sqrt(betaStar);
                 const SSTBlending blending = EvaluateSSTBlending(
                     turbulence,
                     turbulenceGradient,
                     d,
                     rho0,
                     molecularViscosity);
-                const real beta = beta1 * blending.f1 + beta2 * (1.0 - blending.f1);
+                const real beta = sstBeta1 * blending.f1 + sstBeta2 * (1.0 - blending.f1);
                 const real gamma = gamma1 * blending.f1 + gamma2 * (1.0 - blending.f1);
                 const real limitedProduction = std::min(
                     rawProductionK,
                     20.0 * betaStar * k * secondVariable);
-                const real cross = turbulenceGradient.col(0).dot(turbulenceGradient.col(1));
                 source(0) = limitedProduction - betaStar * k * secondVariable;
                 // Original SST: only k production is capped. Omega uses gamma*P/nu_t,
                 // including dilatation, with the same limited eddy viscosity as P.
                 const real omegaProduction = turbulentViscosity > 0
                     ? gamma * rho0 * rawProductionK / turbulentViscosity : 0;
                 source(1) = omegaProduction - beta * secondVariable * secondVariable +
-                            2.0 * (1.0 - blending.f1) * sigmaOmega2 * cross /
-                                PositiveDenominator(secondVariable);
+                            SSTOmegaCrossDiffusion(blending.f1, secondVariable, turbulenceGradient);
+                if (settings.model == TurbulenceModel::KOmegaSSTSAS)
+                    source(1) += EvaluateSASSource(turbulence, velocityGradient, turbulenceGradient, blending.f1, sas).omegaProduction;
             }
             else
             {
@@ -717,11 +817,12 @@ namespace DNDS::ACM
         return source;
     }
 
-    Eigen::Matrix<real, 2, 2> SSTImplicitDestructionJacobian(
+    Eigen::Matrix<real, 2, 2> SSTImplicitSourceJacobian(
         const TurbulenceState &input, const TurbulenceGradient &gradient,
-        real wallDistance, real rho0, real molecularViscosity, const TurbulenceSettings &settings)
+        real wallDistance, real rho0, real molecularViscosity, const TurbulenceSettings &settings,
+        const VelocityGradient &velocityGradient, SASKinematics sas)
     {
-        DNDS_check_throw_info(settings.model == TurbulenceModel::KOmegaSST && input.allFinite() &&
+        DNDS_check_throw_info(IsSSTModel(settings.model) && input.allFinite() &&
                                   gradient.allFinite() && std::isfinite(wallDistance) && wallDistance > 0 &&
                                   std::isfinite(rho0) && rho0 > 0 &&
                                   std::isfinite(molecularViscosity) && molecularViscosity > 0,
@@ -732,10 +833,15 @@ namespace DNDS::ACM
         const TurbulenceState state = ClampTurbulenceState(input, settings);
         const auto blending = EvaluateSSTBlending(state, gradient,
             std::max(wallDistance, settings.minimumWallDistance), rho0, molecularViscosity);
-        const real beta = 0.075 * blending.f1 + 0.0828 * (1 - blending.f1);
+        const real beta = sstBeta1 * blending.f1 + sstBeta2 * (1 - blending.f1);
         result(0, 0) = betaStar * state(1);
         result(0, 1) = betaStar * state(0);
         result(1, 1) = 2 * beta * state(1);
+        if (settings.model == TurbulenceModel::KOmegaSSTSAS)
+        {
+            result(1, 1) += EvaluateSASSource(state, velocityGradient, gradient, blending.f1, sas).negativeOmegaDerivative;
+            DNDS_check_throw_info(std::isfinite(result(1, 1)), "Non-finite SST-SAS omega source diagonal");
+        }
         return result;
     }
 
@@ -760,8 +866,7 @@ namespace DNDS::ACM
             boundaryType == BoundaryType::BCWallIsothermal)
         {
             TurbulenceState faceValue = TurbulenceState::Zero();
-            if (settings.model == TurbulenceModel::KOmegaWilcox ||
-                settings.model == TurbulenceModel::KOmegaSST)
+            if (settings.model == TurbulenceModel::KOmegaWilcox || IsSSTModel(settings.model))
             {
                 const real d = std::max(wallDistance, settings.minimumWallDistance);
                 faceValue(1) = settings.wallOmegaCoefficient *

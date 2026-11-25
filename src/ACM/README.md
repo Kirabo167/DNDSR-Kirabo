@@ -78,8 +78,8 @@ builds constant-/variable-density variants and the compatibility executable.
 The executable selects the compiled state layout; the runtime closure must match it:
 
 - `acm2D/3D`: `[u,v,w,p]`, `Laminar`, and `mu_t=0`;
-- `acmSA2D/3D`: `[u,v,w,p,rho*nuTilde]`, `SpalartAllmaras`;
-- `acm2EQ2D/3D`: `[u,v,w,p,rho*k,rho*omega]` for `KOmegaWilcox`/`KOmegaSST`,
+- `acmSA2D/3D`: `[u,v,w,p,rho*nuTilde]`, `SpalartAllmaras` or `SpalartAllmarasIDDES`;
+- `acm2EQ2D/3D`: `[u,v,w,p,rho*k,rho*omega]` for `KOmegaWilcox`, `KOmegaSST` and `KOmegaSSTSAS`,
   or `[u,v,w,p,rho*k,rho*epsilon]` for `RealizableKEpsilon`.
 
 The same implementation is instantiated for both two and three dimensions. It reuses Geom wall
@@ -389,3 +389,22 @@ coefficient. Setting it to `false` restores the previous extremum-limited mode.
 The bounded mode can clip even affine diffusion on skew meshes; it is a robustness
 choice, not a guarantee of the original spatial accuracy. See the
 [SST algorithm review](../../docs/solver-guide/acm_rans_zh.md) for its formula and limits.
+
+The `acm2EQ2D` and `acm2EQ3D` executables accept `turbulenceSettings.model="KOmegaSSTSAS"`.
+This model adds the Menter–Egorov scale-adaptive source to the SST-1994 omega
+equation. Set `turbulenceSettings.variationalReconstruction=true`,
+`vfvSettings.maxOrder>=2` and `vfvSettings.intOrder>=4` to evaluate the velocity
+Laplacian and the source at the CFV volume quadrature points. Use physical time
+marching and a three-dimensional mesh to study resolved turbulence.
+[SST-SAS formulation and configuration](../../docs/solver-guide/acm_rans_zh.md)
+
+For the task-book high-order path, use `ESDIRK3DualTimeGMRES` for third-order
+physical integration and `newtonKrylov=true` for Jacobian actions that rebuild the
+complete reconstructed residual. RANS variables can use CFV polynomials and volume
+source quadrature with `turbulenceSettings.variationalReconstruction=true`.
+In that path, `boundedSSTDiffusion=false` selects polynomial diffusion with trace
+jump stabilization; the legacy low-order path retains its extremum switch.
+The SA executables also accept `SpalartAllmarasIDDES`, using physical cell extents,
+wall shielding and the IDDES elevation function. Configuration, validation cases
+and engineering-validation limits are described in the
+[ACM task-book guide](../../docs/solver-guide/acm_taskbook_zh.md).

@@ -823,44 +823,57 @@ namespace
     }
 
     /** @brief Multi-cell periodic box with distinct neighbour centers for viscous closures. */
-    void WritePeriodicQuadGrid(const std::filesystem::path &path)
+    void WritePeriodicQuadGrid(const std::filesystem::path &path, int n = 2, bool triangles = false, bool warped = false)
     {
         int file = -1, base = 0, zone = 0, coordinate = 0, section = 0, boundary = 0;
         CheckCGNS(cg_open(path.c_str(), CG_MODE_WRITE, &file));
         try
         {
             CheckCGNS(cg_base_write(file, "Base", 2, 2, &base));
-            cgsize_t size[3] = {9, 4, 0};
+            const int nCell = (triangles ? 2 : 1) * n * n;
+            cgsize_t size[3] = {static_cast<cgsize_t>((n + 1) * (n + 1)), static_cast<cgsize_t>(nCell), 0};
             CheckCGNS(cg_zone_write(file, base, "Zone", size, Unstructured, &zone));
-            std::array<double, 9> x{}, y{};
-            for (int j = 0; j < 3; j++)
-                for (int i = 0; i < 3; i++)
+            std::vector<double> x((n + 1) * (n + 1)), y(x.size());
+            for (int j = 0; j <= n; j++)
+                for (int i = 0; i <= n; i++)
                 {
-                    x[3 * j + i] = 0.5 * i;
-                    y[3 * j + i] = 0.5 * j;
+                    const double perturbation = warped ? 0.15 / n * std::sin(2 * std::acos(-1.0) * i / n) * std::sin(2 * std::acos(-1.0) * j / n) : 0;
+                    x[(n + 1) * j + i] = double(i) / n + perturbation;
+                    y[(n + 1) * j + i] = double(j) / n - 0.7 * perturbation;
                 }
             CheckCGNS(cg_coord_write(file, base, zone, RealDouble, "CoordinateX", x.data(), &coordinate));
             CheckCGNS(cg_coord_write(file, base, zone, RealDouble, "CoordinateY", y.data(), &coordinate));
-            std::array<cgsize_t, 16> cells{};
+            std::vector<cgsize_t> cells((triangles ? 3 : 4) * nCell);
             int offset = 0;
-            for (int j = 0; j < 2; j++)
-                for (int i = 0; i < 2; i++)
+            for (int j = 0; j < n; j++)
+                for (int i = 0; i < n; i++)
                 {
-                    const cgsize_t first = 3 * j + i + 1;
+                    const cgsize_t first = (n + 1) * j + i + 1;
                     cells[offset++] = first;
                     cells[offset++] = first + 1;
-                    cells[offset++] = first + 4;
-                    cells[offset++] = first + 3;
+                    cells[offset++] = first + n + 2;
+                    if (triangles)
+                    {
+                        cells[offset++] = first;
+                        cells[offset++] = first + n + 2;
+                    }
+                    cells[offset++] = first + n + 1;
                 }
-            CheckCGNS(cg_section_write(file, base, zone, "Cells", QUAD_4, 1, 4, 0, cells.data(), &section));
+            CheckCGNS(cg_section_write(file, base, zone, "Cells", triangles ? TRI_3 : QUAD_4, 1, nCell, 0, cells.data(), &section));
             const std::array<const char *, 4> names = {"PERIODIC_1", "PERIODIC_1_DONOR", "PERIODIC_2", "PERIODIC_2_DONOR"};
-            const std::array<std::array<cgsize_t, 4>, 4> edges = {{{1, 4, 4, 7}, {3, 6, 6, 9},
-                                                               {1, 2, 2, 3}, {7, 8, 8, 9}}};
+            std::array<std::vector<cgsize_t>, 4> edges;
+            for (int k = 0; k < n; ++k)
+            {
+                edges[0].insert(edges[0].end(), {cgsize_t((n + 1) * k + 1), cgsize_t((n + 1) * (k + 1) + 1)});
+                edges[1].insert(edges[1].end(), {cgsize_t((n + 1) * k + n + 1), cgsize_t((n + 1) * (k + 1) + n + 1)});
+                edges[2].insert(edges[2].end(), {cgsize_t(k + 1), cgsize_t(k + 2)});
+                edges[3].insert(edges[3].end(), {cgsize_t(n * (n + 1) + k + 1), cgsize_t(n * (n + 1) + k + 2)});
+            }
             for (int i = 0; i < 4; i++)
             {
-                const cgsize_t start = 5 + 2 * i;
-                CheckCGNS(cg_section_write(file, base, zone, names[i], BAR_2, start, start + 1, 0, edges[i].data(), &section));
-                cgsize_t range[2] = {start, start + 1};
+                const cgsize_t start = nCell + 1 + n * i;
+                CheckCGNS(cg_section_write(file, base, zone, names[i], BAR_2, start, start + n - 1, 0, edges[i].data(), &section));
+                cgsize_t range[2] = {start, start + n - 1};
                 CheckCGNS(cg_boco_write(file, base, zone, names[i], BCTypeNull, PointRange, 2, range, &boundary));
                 CheckCGNS(cg_boco_gridlocation_write(file, base, zone, boundary, EdgeCenter));
             }
@@ -876,6 +889,74 @@ namespace
 
 using UnifiedSA = std::integral_constant<ACM::ACMModel, ACM::ACMModel::ConstantDensitySA2D>;
 using Unified2EQ = std::integral_constant<ACM::ACMModel, ACM::ACMModel::ConstantDensity2EQ2D>;
+
+TEST_CASE("ACM SST-SAS integrates the omega source and its implicit diagonal on a periodic mesh")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path, 4);
+    using Solver = ACM::ACMSolver<Unified2EQ::value>;
+    using Block = Eigen::Matrix<DNDS::real, 2, 2>;
+    std::vector<Solver::TState> referenceRhs;
+    std::vector<ACM::TurbulenceState> referenceSource;
+    std::vector<Block> referenceDiagonal;
+    for (const auto model : {ACM::TurbulenceModel::KOmegaSST, ACM::TurbulenceModel::KOmegaSSTSAS})
+    {
+        auto cfg = MakeUnifiedCase<Unified2EQ::value>(mesh.path);
+        cfg.turbulenceSettings.model = model;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        cfg.turbulenceSettings.variationalReconstruction = true;
+        cfg.vfvSettings.maxOrder = 2;
+        cfg.vfvSettings.intOrder = 4;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        const auto metrics = solver.GetReconstruction();
+        Solver::TFlowDof flow;
+        Solver::TDof rhs;
+        metrics->BuildUDof(flow, 4);
+        metrics->BuildUDof(rhs, 6);
+        const auto transport = solver.GetTurbulenceTransport();
+        const auto cells = solver.GetMesh()->NumCell();
+        for (DNDS::index cell = 0; cell < cells; ++cell)
+        {
+            const auto x = metrics->GetCellBary(cell);
+            solver.GetState()[cell](0) = 0.1 * std::sin(2 * std::acos(-1.0) * x(1));
+            flow[cell] = solver.GetState()[cell].template head<4>();
+        }
+        solver.EvaluateRHS(rhs);
+        std::vector<Block> diagonal;
+        transport->EvaluateImplicitDiagonal(flow, diagonal, 0);
+        if (model == ACM::TurbulenceModel::KOmegaSST)
+        {
+            referenceDiagonal = diagonal;
+            for (DNDS::index cell = 0; cell < cells; ++cell)
+            {
+                referenceRhs.emplace_back(rhs[cell]);
+                referenceSource.emplace_back(transport->CellSource(cell));
+            }
+            continue;
+        }
+
+        DNDS::real sourceIncrease = 0;
+        for (DNDS::index cell = 0; cell < cells; ++cell)
+        {
+            const Solver::TState rhsChange = rhs[cell] - referenceRhs[cell];
+            const ACM::TurbulenceState sourceChange = transport->CellSource(cell) - referenceSource[cell];
+            CHECK(rhsChange.template head<5>().norm() < 1e-12);
+            CHECK(rhsChange(5) == doctest::Approx(cfg.acmSettings.rho0 * sourceChange(1)));
+            CHECK(sourceChange(1) >= 0);
+            sourceIncrease += sourceChange(1);
+
+            const Block diagonalChange = diagonal[cell] - referenceDiagonal[cell];
+            const DNDS::real omega = cfg.initialState[5] / cfg.acmSettings.rho0;
+            CHECK(diagonalChange(1, 1) == doctest::Approx(2 * sourceChange(1) / omega));
+            CHECK(diagonalChange.row(0).norm() < 1e-11);
+            CHECK(std::abs(diagonalChange(1, 0)) < 1e-11);
+        }
+        CHECK(sourceIncrease > 1);
+    }
+}
 
 TEST_CASE("ACM turbulence face Jacobian matches periodic transport finite differences")
 {
@@ -1030,6 +1111,270 @@ TEST_CASE("ACM turbulence advection cross Jacobian follows shared velocity press
     transport->EvaluateRHS(minus, flow);
     for (DNDS::index cell = 0; cell < grid->NumCell(); cell++)
         CHECK((product[cell] + (plus[cell] - minus[cell]) / (2 * epsilon)).norm() < 1e-7);
+}
+
+TEST_CASE("ACM full Newton Krylov preserves the converged reconstructed physical solution")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    std::vector<Solver::TState> reference;
+    for (bool newton : {false, true})
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::BDF2DualTimeGMRES;
+        cfg.timeMarchSettings.newtonKrylov = newton;
+        cfg.timeMarchSettings.nSteps = 1;
+        cfg.timeMarchSettings.implicitTolerance = 1e-9;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::Variational;
+        cfg.reconstructionSettings.variationalTolerance = 1e-12;
+        cfg.reconstructionSettings.variationalMaxIterations = 2000;
+        cfg.reconstructionSettings.enableLimiter = false;
+        cfg.vfvSettings.maxOrder = 2;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+        {
+            solver.GetState()[cell](0) += 0.01 * std::sin(1.0 + cell);
+            solver.GetState()[cell](1) += 0.01 * std::cos(1.0 + cell);
+            solver.GetState()[cell](4) += 0.01 * cell;
+        }
+        solver.Run();
+        REQUIRE(solver.CompletedPhysicalSteps() == 1);
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+            if (!newton) reference.push_back(solver.GetState()[cell]);
+            else CHECK((solver.GetState()[cell] - reference[cell]).norm() < 1e-8);
+    }
+}
+
+TEST_CASE("ACM SA-IDDES advances the real wall-bounded transport operator")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WriteSingleCellQuad(mesh.path, false);
+    auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensitySA2D>(mesh.path);
+    cfg.turbulenceSettings.model = ACM::TurbulenceModel::SpalartAllmarasIDDES;
+    cfg.turbulenceSettings.enableSourceTerms = true;
+    cfg.initialState[4] = cfg.acmSettings.rho0 * 1e-3;
+    cfg.defaultBoundaryType = ACM::BoundaryType::BCOut;
+    ACM::BoundaryCondition wall;
+    wall.name = "Bottom";
+    wall.type = ACM::BoundaryType::BCWall;
+    cfg.boundaryConditions = {wall};
+    cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::ExplicitSSPRK3;
+    cfg.timeMarchSettings.nSteps = 1;
+    cfg.timeMarchSettings.pseudoTimeStep = 1e-4;
+    ACM::ACMSolver<ACM::ACMModel::ConstantDensitySA2D> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    solver.Run();
+    CHECK(solver.GetState()[0].allFinite());
+    CHECK(solver.GetState()[0](4) > 0);
+    CHECK(solver.GetState()[0](4) < cfg.initialState[4]);
+}
+
+TEST_CASE("ACM laminar Newton Krylov ESDIRK3 has third-order shear decay")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path, 4);
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2D>;
+    const auto error = [&](int count)
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.solver = ACM::ModelSelection<ACM::ACMModel::ConstantDensity2D>();
+        cfg.initialState.resize(4);
+        cfg.turbulenceSettings.model = ACM::TurbulenceModel::Laminar;
+        cfg.acmSettings.dynamicViscosity = cfg.acmSettings.rho0 * 0.1;
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::ESDIRK3DualTimeGMRES;
+        cfg.timeMarchSettings.newtonKrylov = true;
+        cfg.timeMarchSettings.nSteps = count;
+        cfg.timeMarchSettings.physicalTimeStep = 0.2 / count;
+        cfg.timeMarchSettings.pseudoTimeStep = 1;
+        cfg.timeMarchSettings.maxImplicitIterations = 100;
+        cfg.timeMarchSettings.implicitTolerance = 1e-11;
+        cfg.timeMarchSettings.linearAbsoluteTolerance = 1e-13;
+        cfg.timeMarchSettings.linearRelativeTolerance = 1e-8;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::Variational;
+        cfg.reconstructionSettings.variationalTolerance = 1e-12;
+        cfg.reconstructionSettings.variationalMaxIterations = 2000;
+        cfg.reconstructionSettings.enableLimiter = false;
+        cfg.vfvSettings.maxOrder = 3;
+        cfg.vfvSettings.intOrder = 6;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        const auto vfv = solver.GetReconstruction();
+        std::vector<DNDS::real> initial(solver.GetMesh()->NumCell());
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+        {
+            const auto quad = vfv->GetCellQuad(cell);
+            for (int point = 0; point < quad.GetNumPoints(); ++point)
+                initial[cell] += quad.GetWeight(point) * vfv->GetCellJacobiDet(cell, point) / vfv->GetCellVol(cell) *
+                    std::sin(2 * std::acos(-1.0) * vfv->GetCellQuadraturePPhys(cell, point)(1));
+            solver.GetState()[cell](0) = initial[cell];
+        }
+        Solver::TDof rhs;
+        vfv->BuildUDof(rhs, 4);
+        solver.GetEvaluator()->EvaluateRHS(rhs, solver.GetState());
+        DNDS::real numerator = 0, denominator = 0;
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+        {
+            numerator += initial[cell] * rhs[cell](0);
+            denominator += initial[cell] * initial[cell];
+        }
+        const DNDS::real lambda = numerator / denominator;
+        REQUIRE(lambda < 0);
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+            CHECK(std::abs(rhs[cell](0) - lambda * initial[cell]) < 1e-9);
+        solver.Run();
+        DNDS::real result = 0;
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+            result += vfv->GetCellVol(cell) * std::pow(solver.GetState()[cell](0) - initial[cell] * std::exp(lambda * 0.2), 2);
+        std::cout << "ACM shear temporal steps=" << count << " L2=" << std::sqrt(result) << std::endl;
+        return std::sqrt(result);
+    };
+    const auto coarse = error(4), medium = error(8), fine = error(16);
+    CHECK(coarse / medium > 7);
+    CHECK(medium / fine > 7);
+    CHECK(medium / fine < 9);
+}
+
+TEST_CASE("ACM high-order RANS advection diffusion converges on warped triangular grids")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    using Solver = ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D>;
+    const DNDS::real wave = 2 * std::acos(-1.0);
+    std::vector<DNDS::real> errors;
+    std::vector<DNDS::real> flowErrors;
+    for (int n : {6, 12, 24})
+    {
+        TempMeshFile mesh;
+        WritePeriodicQuadGrid(mesh.path, n, true, true);
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.initialState[0] = 0.7;
+        cfg.initialState[1] = 0.3;
+        cfg.vfvSettings.maxOrder = 3;
+        cfg.vfvSettings.intOrder = 6;
+        cfg.reconstructionSettings.type = ACM::ReconstructionType::Variational;
+        cfg.reconstructionSettings.enableLimiter = false;
+        cfg.reconstructionSettings.variationalTolerance = 1e-11;
+        cfg.reconstructionSettings.variationalMaxIterations = 2000;
+        cfg.turbulenceSettings.model = ACM::TurbulenceModel::KOmegaSST;
+        cfg.turbulenceSettings.variationalReconstruction = true;
+        cfg.turbulenceSettings.variationalTolerance = 1e-11;
+        cfg.turbulenceSettings.variationalMaxIterations = 2000;
+        cfg.turbulenceSettings.enableSourceTerms = false;
+        cfg.turbulenceSettings.includeIsotropicStress = false;
+        cfg.turbulenceSettings.boundedSSTDiffusion = false;
+        cfg.turbulenceSettings.maximumEddyViscosityRatio = 1e-30;
+        cfg.acmSettings.dynamicViscosity = cfg.acmSettings.rho0 * 0.01;
+        Solver solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        auto vfv = solver.GetReconstruction();
+        std::vector<DNDS::real> exact(solver.GetMesh()->NumCell());
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+        {
+            const auto quad = vfv->GetCellQuad(cell);
+            DNDS::real average = 0;
+            for (int point = 0; point < quad.GetNumPoints(); ++point)
+            {
+                const auto x = vfv->GetCellQuadraturePPhys(cell, point);
+                const DNDS::real f = std::sin(wave * x(0)) * std::cos(wave * x(1));
+                const DNDS::real fx = wave * std::cos(wave * x(0)) * std::cos(wave * x(1));
+                const DNDS::real fy = -wave * std::sin(wave * x(0)) * std::sin(wave * x(1));
+                const DNDS::real weight = quad.GetWeight(point) * vfv->GetCellJacobiDet(cell, point) / vfv->GetCellVol(cell);
+                average += weight * f;
+                exact[cell] += weight * 0.1 * (-0.7 * fx - 0.3 * fy - 0.02 * wave * wave * f);
+            }
+            solver.GetState()[cell](4) = cfg.acmSettings.rho0 * (1 + 0.1 * average);
+            solver.GetState()[cell](5) = cfg.acmSettings.rho0 * (2 + 0.2 * average);
+        }
+        Solver::TDof rhs;
+        vfv->BuildUDof(rhs, 6);
+        solver.EvaluateRHS(rhs);
+        DNDS::real error = 0, conservation = 0;
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+        {
+            const DNDS::real residual = rhs[cell](4) / cfg.acmSettings.rho0;
+            error += vfv->GetCellVol(cell) * std::pow(residual - exact[cell], 2);
+            conservation += vfv->GetCellVol(cell) * residual;
+            CHECK(rhs[cell](5) / cfg.acmSettings.rho0 == doctest::Approx(2 * residual).epsilon(1e-8).scale(1));
+        }
+        CHECK(std::abs(conservation) < 1e-10);
+        errors.push_back(std::sqrt(error));
+        std::cout << "ACM RANS spatial n=" << n << " L2=" << errors.back() << std::endl;
+        // A divergence-free shear with spatially varying pressure independently
+        // checks momentum convection, pressure, viscous flux and continuity.
+        std::vector<ACM::State> flowExact(solver.GetMesh()->NumCell(), ACM::State::Zero());
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+        {
+            ACM::State mean = ACM::State::Zero();
+            const auto quad = vfv->GetCellQuad(cell);
+            for (int point = 0; point < quad.GetNumPoints(); ++point)
+            {
+                const auto x = vfv->GetCellQuadraturePPhys(cell, point);
+                const DNDS::real sx = std::sin(wave * x(0)), cx = std::cos(wave * x(0));
+                const DNDS::real sy = std::sin(wave * x(1)), cy = std::cos(wave * x(1));
+                const DNDS::real weight = quad.GetWeight(point) * vfv->GetCellJacobiDet(cell, point) / vfv->GetCellVol(cell);
+                mean += weight * ACM::State(0.7 + 0.1 * sy, 0.3, 0, 0.2 * cx * cy);
+                flowExact[cell](0) += weight * (-0.03 * wave * cy + 0.2 * wave / cfg.acmSettings.rho0 * sx * cy -
+                                               0.001 * wave * wave * sy);
+                flowExact[cell](1) += weight * 0.2 * wave / cfg.acmSettings.rho0 * cx * sy;
+            }
+            solver.GetState()[cell].template head<4>() = mean;
+        }
+        solver.EvaluateRHS(rhs);
+        DNDS::real flowError = 0;
+        for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+            flowError += vfv->GetCellVol(cell) *
+                (ACM::State(rhs[cell].template head<4>()) - flowExact[cell]).squaredNorm();
+        flowErrors.push_back(std::sqrt(flowError));
+        std::cout << "ACM flow spatial n=" << n << " L2=" << flowErrors.back() << std::endl;
+    }
+    REQUIRE(errors.size() == 3);
+    CHECK(std::log2(errors[1] / errors[2]) > 2.8);
+    CHECK(std::log2(flowErrors[1] / flowErrors[2]) > 2.8);
+}
+
+TEST_CASE("ACM unified ESDIRK3 achieves third-order Wilcox physical decay")
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    TempMeshFile mesh;
+    WritePeriodicQuadGrid(mesh.path);
+    const auto error = [&](int count)
+    {
+        auto cfg = MakeUnifiedCase<ACM::ACMModel::ConstantDensity2EQ2D>(mesh.path);
+        cfg.timeMarchSettings.integrator = ACM::TimeIntegratorType::ESDIRK3DualTimeGMRES;
+        cfg.timeMarchSettings.nSteps = count;
+        cfg.timeMarchSettings.physicalTimeStep = 2.0 / count;
+        cfg.timeMarchSettings.pseudoTimeStep = 10;
+        cfg.timeMarchSettings.maxImplicitIterations = 100;
+        cfg.timeMarchSettings.implicitTolerance = 1e-12;
+        cfg.timeMarchSettings.linearAbsoluteTolerance = 1e-14;
+        cfg.timeMarchSettings.linearRelativeTolerance = 1e-10;
+        cfg.turbulenceSettings.enableSourceTerms = true;
+        cfg.initialState[5] = cfg.acmSettings.rho0 * 0.8;
+        ACM::ACMSolver<ACM::ACMModel::ConstantDensity2EQ2D> solver(mpi, cfg);
+        solver.ReadMeshAndInitialize();
+        solver.Run();
+        const DNDS::real factor = 1 + 0.0708 * 0.8 * 2;
+        const DNDS::real exactK = 0.4 * std::pow(factor, -0.09 / 0.0708);
+        const DNDS::real exactOmega = 0.8 / factor;
+        CHECK(solver.CompletedPhysicalSteps() == count);
+        CHECK(solver.SimulationTime() == doctest::Approx(2));
+        return std::hypot(solver.GetState()[0](4) / cfg.acmSettings.rho0 - exactK,
+                          solver.GetState()[0](5) / cfg.acmSettings.rho0 - exactOmega);
+    };
+    const auto coarse = error(4), medium = error(8), fine = error(16);
+    CHECK(coarse / medium > 7);
+    CHECK(medium / fine > 7);
+    CHECK(medium / fine < 9);
 }
 
 TEST_CASE("ACM unified two-equation BDF2 reproduces conservative Wilcox decay with both linear solvers")

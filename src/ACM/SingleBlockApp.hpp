@@ -85,8 +85,8 @@ namespace DNDS::ACM
                         physical["dynamicViscosity"]["minimum"] = std::numeric_limits<real>::min();
                         physical["dynamicViscosity"]["default"] = 0.001;
                         turbulence["model"]["enum"] = sa
-                            ? nlohmann::ordered_json::array({"SpalartAllmaras"})
-                            : nlohmann::ordered_json::array({"KOmegaWilcox", "KOmegaSST", "RealizableKEpsilon"});
+                            ? nlohmann::ordered_json::array({"SpalartAllmaras", "SpalartAllmarasIDDES"})
+                            : nlohmann::ordered_json::array({"KOmegaWilcox", "KOmegaSST", "KOmegaSSTSAS", "RealizableKEpsilon"});
                         turbulence["model"]["default"] = sa ? "SpalartAllmaras" : "KOmegaWilcox";
                         turbulence["transportSubsteps"]["const"] = 1;
                         turbulence["transportSubsteps"]["default"] = 1;

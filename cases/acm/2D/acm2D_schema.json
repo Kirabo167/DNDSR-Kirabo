@@ -129,7 +129,8 @@
                         "ImplicitEulerLUSGS",
                         "ImplicitEulerGMRES",
                         "BDF2DualTimeLUSGS",
-                        "BDF2DualTimeGMRES"
+                        "BDF2DualTimeGMRES",
+                        "ESDIRK3DualTimeGMRES"
                     ]
                 },
                 "nSteps": {
@@ -334,6 +335,11 @@
                         "BlockJacobi",
                         "LUSGS"
                     ]
+                },
+                "newtonKrylov": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Full reconstructed residual Jacobian-vector products with preconditioned GMRES"
                 }
             }
         },
@@ -348,8 +354,10 @@
                     "enum": [
                         "Laminar",
                         "SpalartAllmaras",
+                        "SpalartAllmarasIDDES",
                         "KOmegaWilcox",
                         "KOmegaSST",
+                        "KOmegaSSTSAS",
                         "RealizableKEpsilon"
                     ],
                     "const": "Laminar"
@@ -461,6 +469,23 @@
                     "default": 0,
                     "description": "Wall-distance diagnostic level",
                     "minimum": 0.0
+                },
+                "variationalReconstruction": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Use CFV polynomial RANS states, gradients and volume source quadrature"
+                },
+                "variationalTolerance": {
+                    "type": "number",
+                    "default": 1e-10,
+                    "description": "Relative coefficient defect for RANS CFV reconstruction",
+                    "minimum": 0.0
+                },
+                "variationalMaxIterations": {
+                    "type": "integer",
+                    "default": 500,
+                    "description": "Maximum RANS CFV reconstruction sweeps",
+                    "minimum": 1.0
                 }
             }
         },

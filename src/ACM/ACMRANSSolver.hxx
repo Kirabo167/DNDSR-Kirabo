@@ -49,7 +49,7 @@ namespace DNDS::ACM
             vfv.BuildUDof(*field, nVarsFixed);
             field->setConstant(0.0);
         }
-        if (_configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian)
+        if (_configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian || _configuration.timeMarchSettings.newtonKrylov)
             for (TDof *field : {&_matrixFreeRhs, &_matrixFreeMinusRhs})
             {
                 vfv.BuildUDof(*field, nVarsFixed);
@@ -284,6 +284,11 @@ namespace DNDS::ACM
                 for (int variable = 0; variable < nVarsFixed; variable++)
                     if (variable != 3)
                     {
+                        if (_dirkShift > 0)
+                        {
+                            _defect[cell](variable) -= _dirkShift * (_u[cell](variable) - _dirkSource[i](variable));
+                            continue;
+                        }
                         const auto coefficients = EquationCoefficients(cell, variable, base);
                         _defect[cell](variable) -=
                             (coefficients.current * _u[cell](variable) +
@@ -310,10 +315,12 @@ namespace DNDS::ACM
     void ACMSolver<model, true>::BuildImplicitSystem(
         const TStateField &old, const ScalarField &steps, bool physical, real time)
     {
-        _matrixFreePhysical = physical && _configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian;
+        _matrixFreePhysical = (physical && _configuration.timeMarchSettings.dualTimeRANSMatrixFreeJacobian) ||
+                              _configuration.timeMarchSettings.newtonKrylov;
         if (_matrixFreePhysical)
         {
             _matrixFreeBaseState = OwnedState();
+            _matrixFreeOldState = old;
             _matrixFreeSteps = steps;
             _matrixFreeTime = time;
             TState local = TState::Zero(), global;
@@ -349,7 +356,7 @@ namespace DNDS::ACM
         {
             const auto i = static_cast<std::size_t>(cell);
             if (physical)
-                _flowDiagonal[i] += (base.current / _configuration.timeMarchSettings.physicalTimeStep +
+                _flowDiagonal[i] += ((_dirkShift > 0 ? _dirkShift : base.current / _configuration.timeMarchSettings.physicalTimeStep) +
                                      _continuationMass) * PhysicalTimeMassMatrix();
             else
                 _flowDiagonal[i] +=
@@ -374,8 +381,8 @@ namespace DNDS::ACM
                 _diagonal[i](variable, variable) +=
                     1 / (steps[i] * _configuration.turbulenceSettings.transportTimeScale);
                 if (physical)
-                    _diagonal[i](variable, variable) += EquationCoefficients(cell, variable, base).current /
-                                                        _configuration.timeMarchSettings.physicalTimeStep + _continuationMass;
+                    _diagonal[i](variable, variable) += (_dirkShift > 0 ? _dirkShift : EquationCoefficients(cell, variable, base).current /
+                                                        _configuration.timeMarchSettings.physicalTimeStep) + _continuationMass;
             }
         }
         const auto transport = _flowSolver.GetTurbulenceTransport();
@@ -423,17 +430,17 @@ namespace DNDS::ACM
         MPI::Allreduce(&localSafeStep, &safeStep, 1, DNDS_MPI_REAL, MPI_MIN, _mpi.comm);
         const real epsilon = CentralJacobianProbeStep(_matrixFreeBaseNorm, std::sqrt(globalNorm), safeStep);
         const auto turbulence = _flowSolver.GetTurbulenceTransport();
-        turbulence->SetLimiterFrozen(true);
+        turbulence->SetLimiterFrozen(!_configuration.timeMarchSettings.newtonKrylov);
         try
         {
-            // No extra variational sweep: only cell means, closure gradients,
-            // eddy viscosity, numerical fluxes and sources are perturbed.
+            // Legacy probes freeze flow reconstruction; full Newton probes
+            // rebuild it together with closure gradients, viscosity and sources.
             for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
                 _u[cell] = _matrixFreeBaseState[cell] + epsilon * input[cell];
-            EvaluateRHS(_matrixFreeRhs, _matrixFreeTime, false);
+            EvaluateRHS(_matrixFreeRhs, _matrixFreeTime, _configuration.timeMarchSettings.newtonKrylov);
             for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
                 _u[cell] = _matrixFreeBaseState[cell] - epsilon * input[cell];
-            EvaluateRHS(_matrixFreeMinusRhs, _matrixFreeTime, false);
+            EvaluateRHS(_matrixFreeMinusRhs, _matrixFreeTime, _configuration.timeMarchSettings.newtonKrylov);
         }
         catch (...)
         {
@@ -446,18 +453,26 @@ namespace DNDS::ACM
         for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
         {
             output[cell] = (_matrixFreeMinusRhs[cell] - _matrixFreeRhs[cell]) / (2 * epsilon);
-            output[cell].template head<4>() += GammaLocal(
-                State(_matrixFreeBaseState[cell].template head<4>()), _configuration.acmSettings.beta2,
-                _configuration.acmSettings.alpha) * input[cell].template head<4>() / _matrixFreeSteps[cell];
+            if (IsPhysicalTimeIntegrator(_configuration.timeMarchSettings.integrator))
+                output[cell].template head<4>() += GammaLocal(
+                    State(_matrixFreeBaseState[cell].template head<4>()), _configuration.acmSettings.beta2,
+                    _configuration.acmSettings.alpha) * input[cell].template head<4>() / _matrixFreeSteps[cell];
+            else
+                output[cell].template head<4>() += PseudoTimeProductJacobian(
+                    State(_matrixFreeBaseState[cell].template head<4>()),
+                    State(_matrixFreeOldState[cell].template head<4>()), _matrixFreeSteps[cell],
+                    _configuration.acmSettings) * input[cell].template head<4>();
             output[cell].template tail<nTurbulence>() += input[cell].template tail<nTurbulence>() /
                 (_matrixFreeSteps[cell] * _configuration.turbulenceSettings.transportTimeScale) +
                 _turbulencePressureMass[cell] * input[cell](3);
             for (int variable = 0; variable < nVarsFixed; variable++)
-                if (variable != 3)
-                    output[cell](variable) += (EquationCoefficients(cell, variable, base).current /
-                                             _configuration.timeMarchSettings.physicalTimeStep + _continuationMass) * input[cell](variable);
+                if (variable != 3 && IsPhysicalTimeIntegrator(_configuration.timeMarchSettings.integrator))
+                    output[cell](variable) += ((_dirkShift > 0 ? _dirkShift : EquationCoefficients(cell, variable, base).current /
+                                             _configuration.timeMarchSettings.physicalTimeStep) + _continuationMass) * input[cell](variable);
         }
         AssignOwned(_matrixFreeBaseState);
+        if (_configuration.timeMarchSettings.newtonKrylov)
+            EvaluateRHS(_rhs, _matrixFreeTime, true);
     }
 
     template <ACMModel model>
@@ -659,6 +674,14 @@ namespace DNDS::ACM
             for (int variable = 0; variable < nVarsFixed; variable++)
                 variableScales(variable) = std::max(std::sqrt(globalScales(variable) /
                     std::max<real>(1, GetMesh()->NumCellGlobal())), real(1e-14));
+            // A vanishing initial flow correction does not imply vanishing
+            // velocity/pressure units. A 1e-14 flow scale amplifies roundoff in
+            // rho*k -> momentum coupling and can numerically erase the Krylov
+            // least-squares solution during homogeneous turbulence decay.
+            const real velocityScale = std::max(variableScales.template head<3>().norm(),
+                std::sqrt(_configuration.acmSettings.beta2 / _configuration.acmSettings.rho0));
+            variableScales.template head<3>().setConstant(velocityScale);
+            variableScales(3) = std::max(variableScales(3), _configuration.acmSettings.beta2);
         }
         if (_matrixFreePhysical)
         {
@@ -931,7 +954,7 @@ namespace DNDS::ACM
             }
             canRejectMixing = false;
             BuildImplicitSystem(old, steps, physical, time);
-            SolveCorrection(physical ? BDF2UsesLUSGS(settings.integrator)
+            SolveCorrection(physical ? (!IsESDIRK3Integrator(settings.integrator) && BDF2UsesLUSGS(settings.integrator))
                                      : settings.integrator == TimeIntegratorType::ImplicitEulerLUSGS);
             const auto current = mixingDepth > 0 ? OwnedState() : TStateField{};
             for (index cell = 0; cell < GetMesh()->NumCell(); cell++)
@@ -1079,7 +1102,7 @@ namespace DNDS::ACM
     {
         DNDS_check_throw_info(GetEvaluator() != nullptr, "ACM RANS Run requires mesh initialization");
         const auto &settings = _configuration.timeMarchSettings;
-        const bool physical = IsBDF2DualTimeIntegrator(settings.integrator);
+        const bool physical = IsPhysicalTimeIntegrator(settings.integrator);
         ScalarField steps(static_cast<std::size_t>(GetMesh()->NumCell()), settings.pseudoTimeStep);
         _previous = OwnedState();
         _previousPrevious = _previous;
@@ -1110,6 +1133,40 @@ namespace DNDS::ACM
                 report.initialTurbulenceDefectNorm = initial.turbulenceDefectNorm;
                 report.converged = true;
             }
+            else if (IsESDIRK3Integrator(settings.integrator))
+            {
+                auto accepted = OwnedState();
+                try
+                {
+                    report = AdvanceESDIRK3(accepted, _physicalTime, settings.physicalTimeStep,
+                        [&](const TStateField &state, TStateField &rate, real stageTime)
+                        {
+                            AssignOwned(state);
+                            EvaluateRHS(_rhs, stageTime);
+                            rate.resize(state.size());
+                            for (index cell = 0; cell < GetMesh()->NumCell(); ++cell)
+                                rate[cell] = _rhs[cell];
+                        },
+                        [&](TStateField &state, const TStateField &source, real shift, real stageTime)
+                        {
+                            AssignOwned(state);
+                            _dirkSource = source;
+                            _dirkShift = shift;
+                            const auto stageReport = AdvanceImplicit(steps, true, stageTime);
+                            state = OwnedState();
+                            return stageReport;
+                        });
+                    AssignOwned(accepted);
+                    _dirkShift = 0;
+                }
+                catch (...)
+                {
+                    _dirkShift = 0;
+                    AssignOwned(accepted);
+                    ProjectState();
+                    throw;
+                }
+            }
             else
                 report = AdvanceImplicit(steps, physical, time);
             if (physical)
@@ -1137,7 +1194,7 @@ namespace DNDS::ACM
                 log() << std::scientific;
                 if (physical)
                     log() << "ACM physical step " << std::setw(8) << absoluteStep << " time=" << _physicalTime
-                          << " BDF" << usedCoefficients.order;
+                          << (IsESDIRK3Integrator(settings.integrator) ? " ESDIRK3" : " BDF" + std::to_string(usedCoefficients.order));
                 else
                     log() << "ACM step " << std::setw(8) << absoluteStep;
                 log() << " residual " << report.initialDefectNorm << " -> " << report.finalDefectNorm

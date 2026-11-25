@@ -246,8 +246,10 @@ namespace DNDS::ACM
         {
         case TurbulenceModel::Laminar:
         case TurbulenceModel::SpalartAllmaras:
+        case TurbulenceModel::SpalartAllmarasIDDES:
         case TurbulenceModel::KOmegaWilcox:
         case TurbulenceModel::KOmegaSST:
+        case TurbulenceModel::KOmegaSSTSAS:
         case TurbulenceModel::RealizableKEpsilon:
             return true;
         }

@@ -1025,6 +1025,15 @@ namespace DNDS::ACM
                     acmSettings.dynamicViscosity > 0,
                 "ACM turbulence models require positive dynamicViscosity");
         }
+        DNDS_check_throw_info(turbulenceSettings.model != TurbulenceModel::KOmegaSSTSAS ||
+                                  turbulenceSettings.variationalReconstruction,
+                              "ACM SST-SAS needs turbulenceSettings.variationalReconstruction=true for velocity curvature");
+        DNDS_check_throw_info(!turbulenceSettings.variationalReconstruction ||
+                                  (vfvSettings.maxOrder >= 2 && vfvSettings.intOrder >= 4),
+                              "High-order RANS requires CFV polynomial degree >=2 and quadrature order >=4");
+        DNDS_check_throw_info(!timeMarchSettings.newtonKrylov || reconstructionSettings.type != ReconstructionType::Variational ||
+                                  reconstructionSettings.variationalTolerance > 0,
+                              "Full Newton-Krylov requires convergence-controlled flow variational reconstruction");
         const State left = LeftState();
         DNDS_check_throw_info(initialState.size() == static_cast<std::size_t>(solver.fieldNVariables) &&
                                   initialState.size() >= 4 && initialState.size() <= 6,
@@ -1153,6 +1162,10 @@ namespace DNDS::ACM
             turbulence["includeIsotropicStress"] = TurbulenceSettings{}.includeIsotropicStress;
         if (!turbulence.contains("boundedSSTDiffusion"))
             turbulence["boundedSSTDiffusion"] = TurbulenceSettings{}.boundedSSTDiffusion;
+        const nlohmann::ordered_json turbulenceDefaults = TurbulenceSettings{};
+        for (const char *key : {"variationalReconstruction", "variationalTolerance", "variationalMaxIterations"})
+            if (!turbulence.contains(key))
+                turbulence[key] = turbulenceDefaults.at(key);
         auto &timeMarch = resolved.at("timeMarchSettings");
         if (!timeMarch.contains("physicalTimeStep"))
             timeMarch["physicalTimeStep"] = TimeMarchSettings{}.physicalTimeStep;
@@ -1165,7 +1178,7 @@ namespace DNDS::ACM
                                 "dualTimeRANSStartupSteps", "dualTimeRANSStartupIterations",
                                 "dualTimeRANSContinuationSteps", "dualTimeRANSContinuationFactor",
                                 "dualTimeRANSAndersonDepth", "dualTimeRANSMatrixFreeJacobian",
-                                "linearRelativeTolerance", "linearAbsoluteTolerance"})
+                                "linearRelativeTolerance", "linearAbsoluteTolerance", "newtonKrylov"})
             if (!timeMarch.contains(key))
                 timeMarch[key] = timeDefaults.at(key);
         auto &reconstruction = resolved.at("reconstructionSettings");

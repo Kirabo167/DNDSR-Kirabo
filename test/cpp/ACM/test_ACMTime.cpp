@@ -13,6 +13,7 @@
 #include "ACM/ACMConfig.hpp"
 #include "ACM/ACMTime.hpp"
 #include "ACM/ACMLinear.hpp"
+#include "ACM/ACMDIRK.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,47 @@
 
 using namespace DNDS;
 using namespace DNDS::ACM;
+
+TEST_CASE("ACM ESDIRK3 converges at third order with stage-time forcing and algebraic pressure")
+{
+    const auto error = [](int count)
+    {
+        StateField field(1, State::Zero());
+        field[0](0) = 1;
+        const DNDS::real dt = 1.0 / count;
+        for (int n = 0; n < count; ++n)
+            AdvanceESDIRK3(field, n * dt, dt,
+                [](const StateField &state, StateField &rhs, DNDS::real time)
+                {
+                    rhs.assign(1, State::Zero());
+                    rhs[0](0) = -state[0](0) + std::sin(time) + std::cos(time);
+                },
+                [](StateField &state, const StateField &source, DNDS::real shift, DNDS::real time)
+                {
+                    state[0](0) = (shift * source[0](0) + std::sin(time) + std::cos(time)) / (shift + 1);
+                    state[0](3) = time * time; // algebraic constraint, no pressure history
+                    TimeStepReport report;
+                    report.converged = true;
+                    return report;
+                });
+        CHECK(field[0](3) == doctest::Approx(1));
+        return std::abs(field[0](0) - (std::exp(-1.0) + std::sin(1.0)));
+    };
+    const auto coarse = error(8), medium = error(16), fine = error(32);
+    CHECK(coarse / medium > 7);
+    CHECK(medium / fine > 7);
+    CHECK(medium / fine < 9);
+}
+
+TEST_CASE("ACM ESDIRK3 does not publish an unconverged stage")
+{
+    StateField field(1, State::Ones());
+    CHECK_THROWS_AS(AdvanceESDIRK3(field, 0, 0.1,
+        [](const StateField &state, StateField &rhs, DNDS::real) { rhs = state; },
+        [](StateField &stage, const StateField &, DNDS::real, DNDS::real)
+        { stage[0].setZero(); return TimeStepReport{}; }), std::runtime_error);
+    CHECK(field[0].isApprox(State::Ones()));
+}
 
 TEST_CASE("ACM RANS startup budget ends at the configured physical step")
 {

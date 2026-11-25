@@ -76,7 +76,7 @@ namespace DNDS::ACM
         DNDS_check_throw_info(active == Traits::nExtraVars,
                               "ACM executable turbulence equation count does not match turbulenceSettings.model");
         if constexpr (Traits::nExtraVars == 1)
-            DNDS_check_throw_info(configuration.turbulenceSettings.model == TurbulenceModel::SpalartAllmaras,
+            DNDS_check_throw_info(IsSAModel(configuration.turbulenceSettings.model),
                                   "ACM SA executable requires SpalartAllmaras");
         if constexpr (Traits::nExtraVars > 0)
         {

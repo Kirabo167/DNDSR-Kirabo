@@ -34,6 +34,7 @@ namespace DNDS::ACM
         ImplicitEulerGMRES,
         BDF2DualTimeLUSGS,
         BDF2DualTimeGMRES,
+        ESDIRK3DualTimeGMRES,
     };
 
     /**
@@ -66,6 +67,9 @@ namespace DNDS::ACM
         case TimeIntegratorType::BDF2DualTimeGMRES:
             json = "BDF2DualTimeGMRES";
             return;
+        case TimeIntegratorType::ESDIRK3DualTimeGMRES:
+            json = "ESDIRK3DualTimeGMRES";
+            return;
         }
         throw std::invalid_argument("unknown ACM time-integrator enum value");
     }
@@ -95,6 +99,8 @@ namespace DNDS::ACM
             integrator = TimeIntegratorType::BDF2DualTimeLUSGS;
         else if (name == "BDF2DualTimeGMRES")
             integrator = TimeIntegratorType::BDF2DualTimeGMRES;
+        else if (name == "ESDIRK3DualTimeGMRES")
+            integrator = TimeIntegratorType::ESDIRK3DualTimeGMRES;
         else
             throw std::invalid_argument("unknown ACM time integrator: " + name);
     }
@@ -108,7 +114,8 @@ namespace DNDS::ACM
             "ImplicitEulerLUSGS",
             "ImplicitEulerGMRES",
             "BDF2DualTimeLUSGS",
-            "BDF2DualTimeGMRES"};
+            "BDF2DualTimeGMRES",
+            "ESDIRK3DualTimeGMRES"};
     }
 
     /// Left preconditioners available to the generic GMRES algorithm.
@@ -158,6 +165,7 @@ namespace DNDS::ACM
         bool dualTimeRequireConvergence = true;                            ///< Reject an unconverged physical step before committing histories.
         int dualTimeRANSAndersonDepth = 0;                                 ///< Optional unified RANS nonlinear residual mixing; zero disables it.
         bool dualTimeRANSMatrixFreeJacobian = false;                       ///< Coupled RANS Jacobian action with frozen flow reconstruction coefficients.
+        bool newtonKrylov = false; ///< Differentiate the complete reconstructed residual; GMRES uses the assembled operator as preconditioner.
         real steadyRelativeTolerance = 0;                                 ///< Steady inner target relative to this outer step's spatial RMS.
         bool steadyAdaptiveCFL = false;                                   ///< Adapt CFL using post-step spatial residual and inner success.
         real steadyCFLMin = 0.1;
@@ -212,6 +220,7 @@ namespace DNDS::ACM
             DNDS_FIELD(dualTimeRANSAndersonDepth, "Unified RANS BDF nonlinear Anderson history depth; zero disables acceleration",
                        DNDS::Config::range(0, 10));
             DNDS_FIELD(dualTimeRANSMatrixFreeJacobian, "Coupled RANS BDF finite-difference Jacobian action; flow reconstruction remains frozen within the linear solve");
+            DNDS_FIELD(newtonKrylov, "Full reconstructed residual Jacobian-vector products with preconditioned GMRES");
             DNDS_FIELD(steadyRelativeTolerance, "Steady inner defect relative to current outer spatial residual; zero uses absolute tolerance",
                        DNDS::Config::range(0.0, 1.0));
             DNDS_FIELD(steadyAdaptiveCFL, "Adapt steady implicit CFL using actual spatial residual progress");

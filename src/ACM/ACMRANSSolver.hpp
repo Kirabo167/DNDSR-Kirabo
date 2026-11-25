@@ -49,7 +49,7 @@ namespace DNDS::ACM
          */
         void ReadMeshAndInitialize();
         /**
-         * @brief Advance all flow and turbulence equations using the configured steady or BDF2 integrator.
+         * @brief Advance all equations using the configured steady, BDF2 or ESDIRK3 integrator.
          * @details Shares stages and nonlinear iterations across every equation; applies convergence controls,
          *     commits completed physical histories, and writes scheduled output.
          * @pre ReadMeshAndInitialize() has completed on every rank.
@@ -116,6 +116,7 @@ namespace DNDS::ACM
         TDof _u, _rhs, _defect, _increment, _scaledLinearInput;
         TDof _matrixFreeRhs, _matrixFreeMinusRhs;
         TStateField _matrixFreeBaseState;
+        TStateField _matrixFreeOldState;
         ScalarField _matrixFreeSteps;
         TState _matrixFreeStateScales = TState::Ones();
         real _matrixFreeBaseNorm = 0, _matrixFreeTime = 0;
@@ -130,6 +131,8 @@ namespace DNDS::ACM
         std::vector<Eigen::Vector<real, nTurbulence>> _turbulencePressureMass;
         std::vector<TMatrix> _diagonal;
         TStateField _previous, _previousPrevious;
+        TStateField _dirkSource;
+        real _dirkShift = 0; ///< ESDIRK stage mass, excluding algebraic pressure.
         std::size_t _completedPhysicalSteps = 0;
         real _physicalTime = 0;
         bool _reportedScaledTurbulenceBlock = false; ///< Report the first recovered unscaled rank failure per solver/rank.
@@ -224,7 +227,7 @@ namespace DNDS::ACM
          * @param [out] output Allocated unified operator product on owned cells.
          */
         void ApplyOperator(TDof &input, TDof &output);
-        /** @brief Full closure/source/transport Jacobian action with frozen flow reconstruction. */
+        /** @brief Closure/source/transport Jacobian action, rebuilding flow reconstruction in full Newton mode. */
         void ApplyMatrixFreeOperator(TDof &input, TDof &output);
         /**
          * @brief Apply the flow preconditioner and invert each local active-turbulence block.

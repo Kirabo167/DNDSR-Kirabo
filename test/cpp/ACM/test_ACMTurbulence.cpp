@@ -12,6 +12,30 @@
 
 #include "ACM/ACMTurbulence.hpp"
 
+TEST_CASE("SA-IDDES shields attached layers and selects the LES length away from walls")
+{
+    using namespace DNDS::ACM;
+    VelocityGradient gradient = VelocityGradient::Zero();
+    gradient(0, 1) = 1;
+    CHECK(SAIDDESLength(1e-3, 1e-6, gradient, 1e-3, 1, 1e-3) == doctest::Approx(1e-3));
+    gradient(0, 1) = 1e6;
+    const auto length = SAIDDESLength(1e-3, 1e-6, gradient, 1, 0.1, 0.02);
+    CHECK(length == doctest::Approx(0.065).epsilon(1e-5));
+    const auto scaled = SAIDDESLength(1e-3 * 1e-6, 1e-6 * 1e-6, gradient, 1e-3, 1e-4, 2e-5);
+    CHECK(scaled == doctest::Approx(1e-3 * length).epsilon(1e-10));
+    CHECK_THROWS(SAIDDESLength(1e-3, 1e-6, gradient, 1, 0, 0.02));
+    CHECK_THROWS(SAIDDESLength(1e-3, 1e-6, gradient, 1, 0.1, 0.2));
+    TurbulenceSettings settings;
+    settings.model = TurbulenceModel::SpalartAllmarasIDDES;
+    CHECK(TurbulenceVariableCount(settings.model) == 1);
+    CHECK(std::string(TurbulenceVariableName(settings.model, 0)) == "TurbulenceNuTilde");
+    const TurbulenceState state(1e-3, 0);
+    const auto source = TurbulenceSource(state, gradient, TurbulenceGradient::Zero(), 1, 1, 1e-6, settings, 0.1, 0.02);
+    CHECK(source.allFinite());
+    CHECK(source(1) == 0);
+    CHECK_THROWS(TurbulenceSource(state, gradient, TurbulenceGradient::Zero(), 1, 1, 1e-6, settings));
+}
+
 #include <array>
 #include <cmath>
 #include <limits>
@@ -139,14 +163,87 @@ TEST_CASE("ACM SST implicit destruction stays positive under limited production"
     const real negativeFullDerivative = -(TurbulenceSource(plus, velocity, gradient, 0.01, 1, 0.001, settings)(0) -
         TurbulenceSource(minus, velocity, gradient, 0.01, 1, 0.001, settings)(0)) / 2e-8;
     CHECK(negativeFullDerivative == doctest::Approx(-17.1));
-    const auto implicit = SSTImplicitDestructionJacobian(state, gradient, 0.01, 1, 0.001, settings);
+    const auto implicit = SSTImplicitSourceJacobian(state, gradient, 0.01, 1, 0.001, settings);
     CHECK(implicit(0, 0) == doctest::Approx(0.9));
     CHECK(implicit(0, 1) == doctest::Approx(9e-7));
     CHECK(implicit(1, 0) == 0);
     CHECK(implicit(1, 1) == doctest::Approx(1.5));
-    CHECK((SSTImplicitDestructionJacobian(state, gradient, 0.01, 3, 0.003, settings) - implicit).norm() < 1e-14);
+    CHECK((SSTImplicitSourceJacobian(state, gradient, 0.01, 3, 0.003, settings) - implicit).norm() < 1e-14);
     settings.enableSourceTerms = false;
-    CHECK(SSTImplicitDestructionJacobian(state, gradient, 0.01, 1, 0.001, settings).norm() == 0);
+    CHECK(SSTImplicitSourceJacobian(state, gradient, 0.01, 1, 0.001, settings).norm() == 0);
+}
+
+TEST_CASE("ACM SST-SAS uses velocity curvature, the grid cutoff and gradient damping")
+{
+    TurbulenceSettings sst;
+    sst.model = TurbulenceModel::KOmegaSST;
+    TurbulenceSettings sas = sst;
+    sas.model = TurbulenceModel::KOmegaSSTSAS;
+    sas.variationalReconstruction = true;
+    const nlohmann::ordered_json encoded = sas;
+    CHECK(encoded.at("model") == "KOmegaSSTSAS");
+    CHECK(encoded.get<TurbulenceSettings>().model == sas.model);
+    CHECK(TurbulenceVariableCount(sas.model) == 2);
+
+    const TurbulenceState state(0.4, 1.1);
+    VelocityGradient velocity = VelocityGradient::Zero();
+    velocity(0, 1) = 4;
+    TurbulenceGradient gradient = TurbulenceGradient::Zero();
+    constexpr real distance = 1e20; // Outer SST branch.
+    const auto extra = [&](SASKinematics kinematics)
+    {
+        return TurbulenceState(TurbulenceSource(state, velocity, gradient, distance, 1, 0.001, sas, 0, 0, kinematics) -
+                               TurbulenceSource(state, velocity, gradient, distance, 1, 0.001, sst));
+    };
+    CHECK(extra({0, 0.1}).isZero()); // Affine velocity profile.
+    CHECK_THROWS(TurbulenceSource(state, velocity, gradient, distance, 1, 0.001, sas));
+    const real length = std::sqrt(state(0)) / (std::pow(0.09, 0.25) * state(1));
+    const real cutoffFactor = 0.11 * std::sqrt(0.41 * 3.51 / (0.856 * 0.41 * 0.41 / 0.3));
+    for (const real width : {0.1, 10.0})
+    {
+        const real vonKarman = std::max(0.41 * 4 / 2, cutoffFactor * width);
+        const TurbulenceState difference = extra({2, width});
+        CHECK(difference(0) == 0);
+        CHECK(difference(1) == doctest::Approx(3.51 * 0.41 * 16 * std::pow(length / vonKarman, 2)));
+    }
+    gradient(0, 0) = 100;
+    CHECK(extra({2, 0.1}).isZero());
+    sas.enableSourceTerms = false;
+    CHECK(TurbulenceSource(state, velocity, gradient, distance, 1, 0.001, sas).isZero());
+    CHECK(SSTImplicitSourceJacobian(state, gradient, distance, 1, 0.001, sas).isZero());
+}
+
+TEST_CASE("ACM SST-SAS implicit omega diagonal matches the active source derivative")
+{
+    TurbulenceSettings sst;
+    sst.model = TurbulenceModel::KOmegaSST;
+    TurbulenceSettings sas = sst;
+    sas.model = TurbulenceModel::KOmegaSSTSAS;
+    const TurbulenceState state(0.4, 1.1);
+    VelocityGradient velocity = VelocityGradient::Zero();
+    velocity(0, 1) = 4;
+    TurbulenceGradient gradient = TurbulenceGradient::Zero();
+    const SASKinematics kinematics{2, 0.1};
+    constexpr real distance = 1e20, step = 1e-6;
+    const auto extra = [&](real omega)
+    {
+        const TurbulenceState sample(state(0), omega);
+        return TurbulenceSource(sample, velocity, gradient, distance, 1, 0.001, sas, 0, 0, kinematics)(1) -
+               TurbulenceSource(sample, velocity, gradient, distance, 1, 0.001, sst)(1);
+    };
+    gradient(0, 0) = 0.2;
+    for (const real omegaGradient : {0.1, 1.0})
+    {
+        gradient(1, 1) = omegaGradient;
+        const Eigen::Matrix2d change =
+            SSTImplicitSourceJacobian(state, gradient, distance, 1, 0.001, sas, velocity, kinematics) -
+            SSTImplicitSourceJacobian(state, gradient, distance, 1, 0.001, sst);
+        const real expected = (extra(state(1) - step) - extra(state(1) + step)) / (2 * step);
+        CHECK(extra(state(1)) > 0);
+        CHECK(change(1, 1) == doctest::Approx(expected).epsilon(2e-8));
+        CHECK(change.row(0).isZero());
+        CHECK(change(1, 0) == 0);
+    }
 }
 
 /// @test Verify the realizable k-epsilon E correction responds to turbulent-time gradients.

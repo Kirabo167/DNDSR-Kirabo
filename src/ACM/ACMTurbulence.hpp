@@ -28,9 +28,11 @@ namespace DNDS::ACM
     {
         Laminar,
         SpalartAllmaras,
+        SpalartAllmarasIDDES,
         KOmegaWilcox,
         KOmegaSST, ///< Original SST (1994): Omega limiter, 20x k cap, CD floor 1e-20.
         RealizableKEpsilon,
+        KOmegaSSTSAS, ///< SST-1994 with the Menter–Egorov scale-adaptive omega source.
     };
 
     DNDS_DEFINE_ENUM_JSON(
@@ -38,14 +40,39 @@ namespace DNDS::ACM
         {
             {TurbulenceModel::Laminar, "Laminar"},
             {TurbulenceModel::SpalartAllmaras, "SpalartAllmaras"},
+            {TurbulenceModel::SpalartAllmarasIDDES, "SpalartAllmarasIDDES"},
             {TurbulenceModel::KOmegaWilcox, "KOmegaWilcox"},
             {TurbulenceModel::KOmegaSST, "KOmegaSST"},
+            {TurbulenceModel::KOmegaSSTSAS, "KOmegaSSTSAS"},
             {TurbulenceModel::RealizableKEpsilon, "RealizableKEpsilon"},
         })
 
     using TurbulenceState = Eigen::Vector<real, 2>;            ///< `[nuTilde,unused]`, `[k,omega]`, or `[k,epsilon]`.
     using TurbulenceGradient = Eigen::Matrix<real, 3, 2>;      ///< Spatial rows and turbulence-variable columns.
     using VelocityGradient = Eigen::Matrix<real, 3, 3>;        ///< `du_i/dx_j` in global coordinates.
+
+    inline bool IsSAModel(TurbulenceModel model)
+    {
+        return model == TurbulenceModel::SpalartAllmaras || model == TurbulenceModel::SpalartAllmarasIDDES;
+    }
+
+    inline bool IsSSTModel(TurbulenceModel model)
+    {
+        return model == TurbulenceModel::KOmegaSST || model == TurbulenceModel::KOmegaSSTSAS;
+    }
+
+    struct SASKinematics
+    {
+        real velocityLaplacianMagnitude = 0; ///< Euclidean norm of the physical velocity Laplacian.
+        real filterWidth = 0;               ///< Cell volume to the power 1/dim.
+    };
+
+    /** @brief Shur et al. (2008) SA-IDDES length, including shielding and elevation.
+     * hMax is the maximum vertex separation; hNormal is the cell extent along
+     * the nearest-wall normal. Both are physical lengths, not cell volume.
+     */
+    real SAIDDESLength(real nuTilde, real nu, const VelocityGradient &velocityGradient,
+                      real wallDistance, real hMax, real hNormal);
 
     /** @brief Isotropic Reynolds stress (2/3) rho*k I, including reflected ghost k. */
     Eigen::Matrix<real, 3, 3> IsotropicTurbulenceStress(real density, real kineticEnergy);
@@ -67,6 +94,9 @@ namespace DNDS::ACM
         bool boundedSSTDiffusion = true;                       ///< Robust non-negative face conductance; false retains the extremum switch.
         bool enableSourceTerms = true;                         ///< Enable production/destruction source terms.
         bool secondOrderReconstruction = true;                 ///< Use limited Green--Gauss face reconstruction.
+        bool variationalReconstruction = false; ///< Reconstruct all RANS variables with the CFV polynomial basis.
+        real variationalTolerance = 1e-10;
+        int variationalMaxIterations = 500;
         int transportSubsteps = 4;                             ///< SSPRK3 turbulence substeps per flow step.
         real transportTimeScale = 0.25;                        ///< Turbulence step relative to the flow pseudo-time step.
         int wallDistanceMethod = 1;                            ///< Geom wall-distance method: 0 brute force, 1 AABB tree.
@@ -91,6 +121,9 @@ namespace DNDS::ACM
             DNDS_FIELD(boundedSSTDiffusion, "Use bounded non-negative SST face conductance; false retains extremum-limited diffusion");
             DNDS_FIELD(enableSourceTerms, "Enable turbulence production and destruction sources");
             DNDS_FIELD(secondOrderReconstruction, "Use limited second-order turbulence reconstruction");
+            DNDS_FIELD(variationalReconstruction, "Use CFV polynomial RANS states, gradients and volume source quadrature");
+            DNDS_FIELD(variationalTolerance, "Relative coefficient defect for RANS CFV reconstruction", DNDS::Config::range(0.0));
+            DNDS_FIELD(variationalMaxIterations, "Maximum RANS CFV reconstruction sweeps", DNDS::Config::range(1));
             DNDS_FIELD(transportSubsteps, "Turbulence SSPRK3 substeps per ACM flow step",
                        DNDS::Config::range(1));
             DNDS_FIELD(transportTimeScale, "Turbulence-to-flow pseudo-time scale",
@@ -235,6 +268,9 @@ namespace DNDS::ACM
      * @param rho0 Positive constant density.
      * @param molecularViscosity Molecular dynamic viscosity.
      * @param settings Runtime closure and source switch.
+     * @param hMax Maximum vertex separation; required for SA-IDDES, ignored by pure RANS.
+     * @param hNormal Cell extent along the nearest-wall direction; required for SA-IDDES.
+     * @param sas Velocity curvature and grid filter width required by SST-SAS.
      * @return Primitive-variable source rate; unused entries are zero.
      */
     TurbulenceState TurbulenceSource(
@@ -244,15 +280,17 @@ namespace DNDS::ACM
         real wallDistance,
         real rho0,
         real molecularViscosity,
-        const TurbulenceSettings &settings);
+        const TurbulenceSettings &settings,
+        real hMax = 0, real hNormal = 0, SASKinematics sas = {});
 
-    /** @brief Stable SST negative-source Jacobian approximation with production,
-     *  cross diffusion and blending frozen, retaining implicit destruction only.
-     *  The physical source is still evaluated by TurbulenceSource without modification.
+    /** @brief Approximate negative SST source Jacobian with frozen blending.
+     *  Includes destruction and the active SAS source's omega derivative at
+     *  fixed k and gradients. Standard SST ignores the SAS inputs.
      */
-    Eigen::Matrix<real, 2, 2> SSTImplicitDestructionJacobian(
+    Eigen::Matrix<real, 2, 2> SSTImplicitSourceJacobian(
         const TurbulenceState &turbulence, const TurbulenceGradient &turbulenceGradient,
-        real wallDistance, real rho0, real molecularViscosity, const TurbulenceSettings &settings);
+        real wallDistance, real rho0, real molecularViscosity, const TurbulenceSettings &settings,
+        const VelocityGradient &velocityGradient = VelocityGradient::Zero(), SASKinematics sas = {});
 
     /**
      * @brief Construct a turbulence ghost state using ACM boundary semantics.

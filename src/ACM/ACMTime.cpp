@@ -137,6 +137,13 @@ namespace DNDS::ACM
     /** @copydoc TimeMarchSettings::Validate */
     void TimeMarchSettings::Validate() const
     {
+        DNDS_check_throw_info(!newtonKrylov ||
+                                  integrator == TimeIntegratorType::ImplicitEulerGMRES ||
+                                  integrator == TimeIntegratorType::BDF2DualTimeGMRES ||
+                                  integrator == TimeIntegratorType::ESDIRK3DualTimeGMRES,
+                              "ACM Newton-Krylov requires a GMRES implicit integrator");
+        DNDS_check_throw_info(!newtonKrylov || dualTimeRANSAndersonDepth == 0,
+                              "ACM Newton-Krylov and Anderson mixing must be selected separately");
         DNDS_check_throw_info(nSteps >= 0, "ACM nSteps must be non-negative");
         DNDS_check_throw_info(
             std::isfinite(pseudoTimeStep) && pseudoTimeStep > 0,
@@ -157,7 +164,8 @@ namespace DNDS::ACM
                 std::isfinite(dualTimeTurbulenceRelativeTolerance) && dualTimeTurbulenceRelativeTolerance >= 0 && dualTimeTurbulenceRelativeTolerance < 1,
             "ACM BDF grouped relative tolerances must be finite and in [0,1)");
         const bool physicalBDF = integrator == TimeIntegratorType::BDF2DualTimeLUSGS ||
-                                 integrator == TimeIntegratorType::BDF2DualTimeGMRES;
+                                 integrator == TimeIntegratorType::BDF2DualTimeGMRES ||
+                                 integrator == TimeIntegratorType::ESDIRK3DualTimeGMRES;
         DNDS_check_throw_info(dualTimeRANSContinuationSteps >= 0 &&
                                   std::isfinite(dualTimeRANSContinuationFactor) && dualTimeRANSContinuationFactor >= 1 &&
                                   (dualTimeRANSContinuationSteps == 0 || physicalBDF),
@@ -166,7 +174,8 @@ namespace DNDS::ACM
                                   (dualTimeRANSStartupSteps == 0 ||
                                    (physicalBDF && dualTimeRANSStartupIterations >= maxImplicitIterations)),
                               "ACM RANS startup budget requires BDF, nonnegative steps and an extended positive iteration limit");
-        DNDS_check_throw_info(!dualTimeRANSMatrixFreeJacobian || integrator == TimeIntegratorType::BDF2DualTimeGMRES,
+        DNDS_check_throw_info(!dualTimeRANSMatrixFreeJacobian || integrator == TimeIntegratorType::BDF2DualTimeGMRES ||
+                                  integrator == TimeIntegratorType::ESDIRK3DualTimeGMRES,
                               "ACM RANS matrix-free Jacobian requires BDF2DualTimeGMRES");
         DNDS_check_throw_info(dualTimeRANSAndersonDepth >= 0 && dualTimeRANSAndersonDepth <= 10 &&
                                   (physicalBDF || dualTimeRANSAndersonDepth == 0),

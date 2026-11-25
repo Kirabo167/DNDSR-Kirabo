@@ -12,6 +12,7 @@
 #pragma once
 
 #include "ACMBDF2.hpp"
+#include "ACMDIRK.hpp"
 #include "ACMEvaluator.hpp"
 #include "ACMTime.hpp"
 #include "ACMTurbulenceTransport.hpp"
@@ -53,7 +54,7 @@ namespace DNDS::ACM
         void ReadMeshAndInitialize();
 
         /**
-         * @brief Run configured steady pseudo-time or BDF2 physical dual-time steps.
+         * @brief Run configured steady pseudo-time, BDF2 or ESDIRK3 physical steps.
          */
         void Run();
 
@@ -107,6 +108,10 @@ namespace DNDS::ACM
         TDof _rhs;                                   ///< Distributed raw spatial residual.
         TDof _linearRhs;                             ///< Distributed implicit defect/right-hand side.
         TDof _linearIncrement;                       ///< Distributed LU-SGS/GMRES correction.
+        StateField _dirkSource;
+        real _dirkShift = 0; ///< Active physical stage mass; zero selects BDF history.
+        MatrixField _newtonMass;
+        real _newtonTime = 0;
 
         /**
          * @brief Copy owned distributed cell means into the rank-local time-integrator field.

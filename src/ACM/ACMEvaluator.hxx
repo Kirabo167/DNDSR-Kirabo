@@ -783,7 +783,7 @@ namespace DNDS::ACM
                                 2 * unitNormal * (facePoint - leftCenter).dot(unitNormal);
                         }
 
-                        const Eigen::Matrix<real, 3, 4> faceGradient =
+                        Eigen::Matrix<real, 3, 4> faceGradient =
                             CorrectedFaceGradient(
                                 gradientLeft,
                                 gradientRight,
@@ -791,6 +791,31 @@ namespace DNDS::ACM
                                 rightCellState,
                                 centerDisplacement,
                                 unitNormal);
+                        if (_reconstructionSettings.type == ReconstructionType::Variational &&
+                            _vfv->getSettings().maxOrder >= 2)
+                        {
+                            // Penalize the trace jump, not the difference of cell
+                            // means. Mean-based correction is not polynomially
+                            // consistent on unequal or skew high-order cells.
+                            faceGradient = 0.5 * (gradientLeft + gradientRight);
+                            const real distance = centerDisplacement.dot(unitNormal);
+                            if (distance > 0)
+                                faceGradient += unitNormal * (right - left).transpose() / distance;
+                            if (faceToCell[1] == UnInitIndex)
+                            {
+                                const auto type = _boundaryHandler->GetTypeFromID(_mesh->GetFaceZone(iFace));
+                                if (type == BoundaryType::BCOut ||
+                                    (type == BoundaryType::BCFar && left.head<3>().dot(unitNormal) >= 0))
+                                    faceGradient -= unitNormal * (unitNormal.transpose() * faceGradient);
+                                else if (type == BoundaryType::BCSym || type == BoundaryType::BCWallInvis)
+                                {
+                                    const Matrix3 reflection = Matrix3::Identity() - 2 * unitNormal * unitNormal.transpose();
+                                    faceGradient.template leftCols<3>() = 0.5 *
+                                        (gradientLeft.template leftCols<3>() +
+                                         reflection * gradientLeft.template leftCols<3>() * reflection);
+                                }
+                            }
+                        }
                         totalFlux -= ViscousFlux(
                             faceGradient,
                             unitNormal,

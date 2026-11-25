@@ -73,6 +73,7 @@ $$
 | `SpalartAllmaras` | $\tilde\nu$ | $\mu_t=\rho_0\tilde\nu f_{v1}$；含壁面破坏与梯度平方源项 |
 | `KOmegaWilcox` | $k,\omega$ | $\rho_0k/\omega$ 加应力限制；含交叉扩散和生产限制 |
 | `KOmegaSST` | $k,\omega$ | 上述 $F_1/F_2$ 混合模型 |
+| `KOmegaSSTSAS` | $k,\omega$ | SST-1994 加 Menter–Egorov 尺度自适应源项 |
 | `RealizableKEpsilon` | $k,\epsilon$ | realizable 黏度限制；含低 Reynolds 数修正与额外 $\epsilon$ 源项 |
 
 模型公式、正值界限和壁面状态在 [`ACMTurbulence.cpp`](../../src/ACM/ACMTurbulence.cpp)；面通量、梯度、MPI ghost 交换与 SSPRK3 在 [`ACMTurbulenceTransport.hxx`](../../src/ACM/ACMTurbulenceTransport.hxx)；与流场黏性通量和黏性 CFL 的耦合在 [`ACMEvaluator.hxx`](../../src/ACM/ACMEvaluator.hxx)，求解流程在 [`ACMSolver.hxx`](../../src/ACM/ACMSolver.hxx)。`turbulenceSettings.model` 选择模型，`initialValue` 和 `farFieldValue` 按表中的变量顺序填写。VTK-HDF 字段分别命名为 `TurbulenceNuTilde`、`TurbulenceK`、`TurbulenceOmega` 或 `TurbulenceEpsilon`，重启按所选模型读取。
@@ -167,3 +168,33 @@ $$
 新增回归覆盖近下限平台、相等状态的精确零通量、面交换守恒、两体积显式步的 CFL 条件界限、
 真实周期网格上的冻结矩阵/残差匹配、变密度守恒扩散量纲、新旧模式，以及上述精度反例。
 这些检查不能证明完整对流/源项/时间算法无条件保正，也不能替代 SUBOFF 完整网格的续算和收敛验证。
+
+## 6. SST-SAS 尺度自适应模型
+
+常密度 `acm2EQ2D` 和 `acm2EQ3D` 通过 `turbulenceSettings.model="KOmegaSSTSAS"` 选择该模型。
+在算例中设置 `turbulenceSettings.variationalReconstruction=true`、`vfvSettings.maxOrder` 至少为 2、
+`vfvSettings.intOrder` 至少为 4。这样可以在体积求积点同时求得速度梯度、速度拉普拉斯和湍流变量梯度。
+解析剪切层或尾流的非定常结构时，使用三维网格和物理时间推进，例如 `ESDIRK3DualTimeGMRES`。
+
+SAS 用应变率大小 $S=\sqrt{2S_{ij}S_{ij}}$ 和速度拉普拉斯的模 $|\nabla^2\boldsymbol u|$
+计算 von Kármán 尺度，用局部网格长度 $\Delta$ 对它设置下界。常密度 $\omega$ 方程的单位质量新增源项为
+
+$$
+\begin{aligned}
+L &= \frac{\sqrt{k}}{(\beta^*)^{1/4}\omega},\\
+L_{\mathrm{vK}} &= \max\left(\frac{\kappa S}{|\nabla^2\boldsymbol u|},\;
+      C_s\sqrt{\frac{\kappa\zeta_2}{\beta/\beta^*-\gamma}}\,\Delta\right),\\
+q_{\mathrm{SAS}} &= \max\left(\zeta_2\kappa S^2\left(\frac{L}{L_{\mathrm{vK}}}\right)^2
+      - \frac{2C k}{\sigma_\Phi}\max\left(\frac{|\nabla\omega|^2}{\omega^2},
+      \frac{|\nabla k|^2}{k^2}\right),\;0\right).
+\end{aligned}
+$$
+
+这里 $\kappa=0.41$、$\zeta_2=3.51$、$C_s=0.11$、$C=2$、$\sigma_\Phi=2/3$。
+三维 $\Delta=V^{1/3}$，二维取单元面积平方根。$\beta$ 和 $\gamma$ 使用局部 SST 混合系数。
+实现以 $S/L_{\mathrm{vK}}$ 的等价形式求值，速度拉普拉斯为零时该源项为零。
+依据为 [Menter 与 Egorov（2010）](https://doi.org/10.1007/s10494-010-9264-5) 和
+[CFX Theory Guide §2.7，式 (2–210) 至 (2–215)](https://ansyshelp.ansys.com/public/Views/Secured/corp/v251/en/cfx_thry/thry_turb_sas.html)。
+
+体积积分将 $\rho_0 q_{\mathrm{SAS}}$ 加入守恒 $\omega$ 残差。组装隐式矩阵在相同求积点使用
+冻结梯度、$k$ 和混合系数后的 SAS $\omega$ 导数。矩阵自由 Newton–Krylov 直接对完整空间残差求差分。

@@ -40,6 +40,64 @@ using namespace DNDS::ACM;
 using ACMConvergence2D = std::integral_constant<ACMModel, ACMModel::ConstantDensity2D>;
 using ACMConvergence3D = std::integral_constant<ACMModel, ACMModel::ConstantDensity3D>;
 
+TEST_CASE_TEMPLATE("ACM high-order RANS conserves diffusion across MPI partitions and symmetry walls",
+                   Dimension, ACMConvergence2D, ACMConvergence3D)
+{
+    MPIInfo mpi;
+    mpi.setWorld();
+    constexpr ACMModel ransModel = Dimension::value == ACMModel::ConstantDensity2D
+        ? ACMModel::ConstantDensity2EQ2D : ACMModel::ConstantDensity2EQ3D;
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
+    KernelConfiguration cfg;
+    cfg.solver = ModelSelection<ransModel>();
+    cfg.meshSettings.meshFile = (root / (Dimension::value == ACMModel::ConstantDensity2D
+        ? "data/mesh/ACMVariable_verify2D.cgns" : "data/mesh/ACMVariable_verify3D.cgns")).string();
+    cfg.initialState = {0, 0, 0, 0, 0.1, 1};
+    cfg.defaultBoundaryType = BoundaryType::BCSym;
+    BoundaryCondition symmetry;
+    symmetry.name = "FAR"; // Built-in FAR semantics require an explicit named override.
+    symmetry.type = BoundaryType::BCSym;
+    symmetry.value = {0, 0, 0, 0};
+    cfg.boundaryConditions = {symmetry};
+    cfg.acmSettings.enableViscousFlux = true;
+    cfg.acmSettings.dynamicViscosity = 0.001;
+    cfg.turbulenceSettings.model = TurbulenceModel::KOmegaWilcox;
+    cfg.turbulenceSettings.includeIsotropicStress = false;
+    cfg.turbulenceSettings.transportSubsteps = 1;
+    cfg.turbulenceSettings.enableSourceTerms = false;
+    cfg.turbulenceSettings.variationalReconstruction = true;
+    cfg.turbulenceSettings.variationalTolerance = 1e-10;
+    cfg.turbulenceSettings.variationalMaxIterations = 2000;
+    cfg.reconstructionSettings.type = ReconstructionType::Variational;
+    cfg.reconstructionSettings.variationalTolerance = 1e-10;
+    cfg.reconstructionSettings.enableLimiter = false;
+    cfg.vfvSettings.maxOrder = 3;
+    cfg.vfvSettings.intOrder = 6;
+    ACMSolver<ransModel> solver(mpi, cfg);
+    solver.ReadMeshAndInitialize();
+    const auto vfv = solver.GetReconstruction();
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+    {
+        const auto x = vfv->GetCellBary(cell);
+        solver.GetState()[cell](4) = 0.1 + 0.01 * std::cos(2 * x(0) + x(1) + 3 * x(2));
+        solver.GetState()[cell](5) = 1 + 0.1 * std::sin(x(0) + 2 * x(1) + x(2));
+    }
+    typename ACMSolver<ransModel>::TDof rhs;
+    vfv->BuildUDof(rhs, 6);
+    solver.EvaluateRHS(rhs);
+    Eigen::Vector2d local = Eigen::Vector2d::Zero(), global;
+    DNDS::real localSignal = 0, signal = 0;
+    for (DNDS::index cell = 0; cell < solver.GetMesh()->NumCell(); ++cell)
+    {
+        local += vfv->GetCellVol(cell) * rhs[cell].template tail<2>();
+        localSignal += rhs[cell].template tail<2>().squaredNorm();
+    }
+    MPI::Allreduce(local.data(), global.data(), 2, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+    MPI::Allreduce(&localSignal, &signal, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+    CHECK(signal > 1e-8);
+    CHECK(global.norm() < 1e-10);
+}
+
 TEST_CASE_TEMPLATE("ACM residual RMS excludes ghosts and empty ranks from the denominator", Width,
                    std::integral_constant<int, 4>, std::integral_constant<int, 5>, std::integral_constant<int, 6>)
 {

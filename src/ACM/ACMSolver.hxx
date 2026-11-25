@@ -152,7 +152,7 @@ namespace DNDS::ACM
         auto flowReconstructionSettings = _configuration.reconstructionSettings;
         // A physical defect must be a function of the current state. Fixed sweeps
         // from a warm start depend on previous RHS calls, including linearization.
-        if (IsBDF2DualTimeIntegrator(_configuration.timeMarchSettings.integrator) &&
+        if (IsPhysicalTimeIntegrator(_configuration.timeMarchSettings.integrator) &&
             flowReconstructionSettings.variationalTolerance == 0)
             flowReconstructionSettings.resetVariationalCoefficients = true;
         if (_configuration.vfvSettings.maxOrder == 0 &&
@@ -441,13 +441,61 @@ namespace DNDS::ACM
         bool useLUSGS)
     {
         const auto &settings = _configuration.timeMarchSettings;
+        StateField newtonBase;
+        TDof plus, minus;
+        State scales = State::Ones();
+        real baseNorm = 0;
+        if (settings.newtonKrylov)
+        {
+            CopyOwnedToStateField(_u, newtonBase);
+            _vfv->BuildUDof(plus, 4);
+            _vfv->BuildUDof(minus, 4);
+            State local = State::Zero(), global;
+            for (const auto &state : newtonBase) local += state.array().square().matrix();
+            MPI::Allreduce(local.data(), global.data(), 4, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+            scales = (global / std::max<real>(1, _mesh->NumCellGlobal())).array().sqrt().matrix();
+            const real velocityScale = std::max(real(1), scales.head<3>().norm());
+            scales.head<3>().setConstant(velocityScale);
+            scales(3) = std::max(scales(3), _configuration.acmSettings.rho0 * velocityScale * velocityScale);
+            baseNorm = std::sqrt((global.array() / scales.array().square()).sum());
+        }
         const auto report = SolveImplicitLinearSystem(
             _linearRhs, _linearIncrement, useLUSGS,
             settings.lusgsSweeps, settings.gmresSubspace, settings.gmresRestarts,
             settings.linearAbsoluteTolerance, settings.linearRelativeTolerance,
             std::sqrt(static_cast<real>(_mesh->NumCellGlobal()) * Traits::nVarsFixed),
             [&](TDof &input, TDof &output)
-            { _evaluator->ApplyImplicitLinearization(input, diagonal, faceJacobians, output); },
+            {
+                if (!settings.newtonKrylov)
+                {
+                    _evaluator->ApplyImplicitLinearization(input, diagonal, faceJacobians, output);
+                    return;
+                }
+                real local = 0, global = 0;
+                for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+                    local += State(input[cell]).cwiseQuotient(scales).squaredNorm();
+                MPI::Allreduce(&local, &global, 1, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
+                if (global == 0) { output.setConstant(0.0); return; }
+                const real epsilon = CentralJacobianProbeStep(baseNorm, std::sqrt(global), 1e100);
+                try
+                {
+                    for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+                        _u[cell] = newtonBase[cell] + epsilon * input[cell];
+                    _evaluator->EvaluateRHS(plus, _u, _newtonTime);
+                    for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+                        _u[cell] = newtonBase[cell] - epsilon * input[cell];
+                    _evaluator->EvaluateRHS(minus, _u, _newtonTime);
+                }
+                catch (...)
+                {
+                    CopyStateFieldToOwned(newtonBase, _u);
+                    throw;
+                }
+                for (index cell = 0; cell < _mesh->NumCell(); ++cell)
+                    output[cell] = (minus[cell] - plus[cell]) / (2 * epsilon) + _newtonMass[cell] * input[cell];
+                CopyStateFieldToOwned(newtonBase, _u);
+                _evaluator->EvaluateRHS(_rhs, _u, _newtonTime);
+            },
             [&](TDof &input, TDof &output)
             {
                 if (useLUSGS || settings.gmresPreconditioner == GMRESPreconditionerType::LUSGS)
@@ -544,6 +592,14 @@ namespace DNDS::ACM
                                     _configuration.acmSettings.alpha) /
                                     pseudoTimeStep[ii];
             }
+            if (_configuration.timeMarchSettings.newtonKrylov)
+            {
+                _newtonTime = time;
+                _newtonMass.resize(states.size());
+                for (std::size_t cell = 0; cell < states.size(); ++cell)
+                    _newtonMass[cell] = PseudoTimeProductJacobian(states[cell], statesOld[cell],
+                        pseudoTimeStep[cell], _configuration.acmSettings);
+            }
             SolveImplicitCorrection(
                 diagonal,
                 faceJacobians,
@@ -575,7 +631,7 @@ namespace DNDS::ACM
         real physicalTime)
     {
         DNDS_check_throw_info(
-            IsBDF2DualTimeIntegrator(_configuration.timeMarchSettings.integrator),
+            IsPhysicalTimeIntegrator(_configuration.timeMarchSettings.integrator),
             "ACM BDF2 advance requires a BDF2 dual-time integrator");
         DNDS_check_throw_info(
             states.size() == pseudoTimeStep.size() &&
@@ -605,12 +661,14 @@ namespace DNDS::ACM
             for (index iCell = 0; iCell < _mesh->NumCell(); iCell++)
             {
                 const std::size_t ii = static_cast<std::size_t>(iCell);
-                _linearRhs[iCell] = _rhs[iCell] - EvaluateBDF2PhysicalDerivative(
+                _linearRhs[iCell] = _rhs[iCell] - (_dirkShift > 0
+                    ? State(_dirkShift * PhysicalTimeMassMatrix() * (states[ii] - _dirkSource[ii]))
+                    : EvaluateBDF2PhysicalDerivative(
                                                       states[ii],
                                                       previous[ii],
                                                       previousPrevious[ii],
                                                       coefficients,
-                                                      physicalTimeStep);
+                                                      physicalTimeStep));
             }
             const auto norms = MeasureResidualNorms<Traits::nVarsFixed>(
                 _linearRhs, _mesh->NumCell(), _mesh->NumCellGlobal(), _mpi.comm);
@@ -657,10 +715,23 @@ namespace DNDS::ACM
                 diagonal,
                 faceJacobians,
                 physicalTime);
-            AddBDF2PhysicalDiagonal(diagonal, coefficients, physicalTimeStep);
+            if (_dirkShift > 0)
+                for (auto &block : diagonal) block += _dirkShift * PhysicalTimeMassMatrix();
+            else
+                AddBDF2PhysicalDiagonal(diagonal, coefficients, physicalTimeStep);
+            if (_configuration.timeMarchSettings.newtonKrylov)
+            {
+                _newtonTime = physicalTime;
+                _newtonMass.resize(states.size());
+                const real shift = _dirkShift > 0 ? _dirkShift : coefficients.current / physicalTimeStep;
+                for (std::size_t cell = 0; cell < states.size(); ++cell)
+                    _newtonMass[cell] = GammaLocal(states[cell], _configuration.acmSettings.beta2,
+                        _configuration.acmSettings.alpha) / pseudoTimeStep[cell] + shift * PhysicalTimeMassMatrix();
+            }
             SolveImplicitCorrection(
                 diagonal,
                 faceJacobians,
+                !IsESDIRK3Integrator(_configuration.timeMarchSettings.integrator) &&
                 BDF2UsesLUSGS(_configuration.timeMarchSettings.integrator));
 
 #if defined(DNDS_DIST_MT_USE_OMP)
@@ -712,7 +783,7 @@ namespace DNDS::ACM
             states.size(),
             _configuration.timeMarchSettings.pseudoTimeStep);
         const TimeIntegratorType integrator = _configuration.timeMarchSettings.integrator;
-        const bool useBDF2 = IsBDF2DualTimeIntegrator(integrator);
+        const bool useBDF2 = IsPhysicalTimeIntegrator(integrator);
         DNDS_check_throw_info(
             !useBDF2 || _turbulence == nullptr ||
                 SupportsBDF2TurbulenceModel(_turbulence->GetModel()),
@@ -777,11 +848,36 @@ namespace DNDS::ACM
             TimeStepReport report;
             if (useBDF2)
             {
-                report = AdvanceBDF2DualTimeDistributed(
-                    states,
-                    bdf2History,
-                    pseudoTimeStep,
-                    residualTime);
+                if (IsESDIRK3Integrator(integrator))
+                {
+                    const auto accepted = states;
+                    try
+                    {
+                        report = AdvanceESDIRK3(states, physicalTime, _configuration.timeMarchSettings.physicalTimeStep,
+                            [&](const StateField &input, StateField &rate, real stageTime)
+                            {
+                                CopyStateFieldToOwned(input, _u);
+                                _evaluator->EvaluateRHS(_rhs, _u, stageTime);
+                                CopyOwnedToStateField(_rhs, rate);
+                            },
+                            [&](StateField &stage, const StateField &source, real shift, real stageTime)
+                            {
+                                _dirkSource = source;
+                                _dirkShift = shift;
+                                return AdvanceBDF2DualTimeDistributed(stage, bdf2History, pseudoTimeStep, stageTime);
+                            });
+                        _dirkShift = 0;
+                    }
+                    catch (...)
+                    {
+                        _dirkShift = 0;
+                        states = accepted;
+                        CopyStateFieldToOwned(states, _u);
+                        throw;
+                    }
+                }
+                else
+                    report = AdvanceBDF2DualTimeDistributed(states, bdf2History, pseudoTimeStep, residualTime);
                 DNDS_check_throw_info(
                     report.converged || !_configuration.timeMarchSettings.dualTimeRequireConvergence,
                     fmt::format("ACM physical step {} at time {:.6e} did not converge after {} iterations (criterion={}): "
@@ -845,7 +941,7 @@ namespace DNDS::ACM
                 if (useBDF2)
                     log() << "ACM physical step " << std::setw(8) << absoluteStep
                           << " time=" << physicalTime
-                          << " BDF" << bdf2Coefficients.order;
+                          << (IsESDIRK3Integrator(integrator) ? " ESDIRK3" : " BDF" + std::to_string(bdf2Coefficients.order));
                 else
                     log() << "ACM step " << std::setw(8) << absoluteStep;
                 log() << " residual " << report.initialDefectNorm

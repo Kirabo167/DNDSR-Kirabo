@@ -10,7 +10,7 @@
 
 二维入口仍保留三个速度分量。rho是配置中的常数rho0；本模块不增加密度方程或能量方程。ACMVariable维持自己的五分量变密度实现。
 
-两方程入口通过turbulenceSettings.model选择KOmegaWilcox、KOmegaSST或RealizableKEpsilon。SA入口只接受SpalartAllmaras；层流入口只接受Laminar。元数据、状态长度和闭合模型不匹配时，--check-config即拒绝运行。
+两方程入口通过 `turbulenceSettings.model` 选择 `KOmegaWilcox`、`KOmegaSST`、`KOmegaSSTSAS` 或 `RealizableKEpsilon`。SA 入口接受 `SpalartAllmaras` 和 `SpalartAllmarasIDDES`。层流入口接受 `Laminar`。`--check-config` 会检查元数据、状态长度和闭合模型是否匹配。
 
 ## 状态和配置约定
 
