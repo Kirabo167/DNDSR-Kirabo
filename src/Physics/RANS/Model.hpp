@@ -65,7 +65,7 @@ namespace DNDS::Physics::RANS
         /// k-omega profiles share the device math; RealizableKE remains CPU-only.
         NumericalResult<TurbulentTransport> TryTransport(const Point &point) const noexcept;
         NumericalResult<std::array<real, 2>> TryDiffusionFlux(const Point &point, const Eigen::Vector3d &normal, real turbulentViscosity) const noexcept;
-        NumericalResult<std::array<real, 2>> TrySource(const Point &point, int mode = 0) const noexcept;
+        NumericalResult<std::array<real, 2>> TrySource(const Point &point, int mode = 0, SASKinematics sas = {}) const noexcept;
         int ComponentNumber() const { return _kind == ModelKind::None ? 0 : _kind == ModelKind::SA ? 1
                                                                                                    : 2; }
         /// Stable logical component names; this metadata does not prescribe an

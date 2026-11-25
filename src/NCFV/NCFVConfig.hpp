@@ -356,6 +356,10 @@ namespace DNDS::NCFV
         ViscousSettings viscous;
         Physics::RANS::ModelSettings turbulence;
 
+        static constexpr const char *sstSASModelName = "KOmegaSSTSAS";
+        bool UsesSSTScaleAdaptivity() const { return turbulence.model == sstSASModelName; }
+        Physics::RANS::Model MakeTurbulenceModel() const;
+
         DNDS_DECLARE_CONFIG(PhysicsSettings)
         {
             DNDS_FIELD(gamma, "Ideal-gas heat-capacity ratio", DNDS::Config::range(1.0));
@@ -376,7 +380,12 @@ namespace DNDS::NCFV
             config.template field_array_of<BoundaryZoneSettings>(
                 &T::boundaryZones, "boundaryZones", "Per-CGNS-zone boundary conditions");
             config.field_section(&T::viscous, "viscous", "Molecular viscous and heat-flux model");
-            config.field_section(&T::turbulence, "turbulence", "Shared RANS closure and hybrid length-scale controls");
+            config.field_schema(&T::turbulence, "turbulence", "Shared RANS closure and hybrid length-scale controls", []
+            {
+                auto schema = Physics::RANS::ModelSettings::schema();
+                schema["properties"]["model"]["enum"].push_back(sstSASModelName);
+                return schema;
+            });
         }
     };
 

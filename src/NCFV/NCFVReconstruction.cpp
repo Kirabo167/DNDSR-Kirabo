@@ -371,6 +371,15 @@ namespace DNDS::NCFV
         return inverseLengths.head(dimension).asDiagonal() * gradient;
     }
 
+    Eigen::RowVectorXd Reconstruction::EvaluateBasisLaplacian(const Vector3 &referenceLengths, int dimension)
+    {
+        const Eigen::MatrixXd hessian = QuadraticHessianRows(referenceLengths, dimension);
+        Eigen::RowVectorXd laplacian = hessian.row(0);
+        for (int axis = 1; axis < dimension; ++axis)
+            laplacian += hessian.row(axis * (dimension + 1));
+        return laplacian;
+    }
+
     Eigen::VectorXd Reconstruction::MeanBasis(
         const RawMoments &moments,
         const Vector3 &anchor,

@@ -115,13 +115,17 @@ namespace DNDS::Physics::RANS
     /// enabled SA DES require explicit positive cellLength. No exception, log,
     /// allocation, repair or host fallback occurs in this function.
     DNDS_DEVICE_CALLABLE inline NumericalResult<std::array<real, 2>> TrySource(
-        const PointParameters &parameters, const Point &point, int mode) noexcept
+        const PointParameters &parameters, const Point &point, int mode, SASKinematics sas = {}) noexcept
     {
         const auto status = CheckPoint(parameters, point);
         if (!status)
             return status;
         if (mode != 0 && mode != 1)
             return NumericalStatus{NumericalError::InvalidInput};
+        if (sas.filterWidth != 0 || sas.velocityLaplacianMagnitude != 0)
+            if (parameters.kind != ModelKind::KOmegaSST || !(std::isfinite(sas.filterWidth) && sas.filterWidth > 0) ||
+                !(std::isfinite(sas.velocityLaplacianMagnitude) && sas.velocityLaplacianMagnitude >= 0))
+                return NumericalStatus{NumericalError::InvalidInput};
         if (((parameters.kind == ModelKind::SA && parameters.desScale <= 100) || parameters.kind == ModelKind::KOmegaSST) &&
             !(std::isfinite(point.cellLength) && point.cellLength > 0))
             return NumericalStatus{NumericalError::InvalidInput};
@@ -145,7 +149,7 @@ namespace DNDS::Physics::RANS
             break;
         case ModelKind::KOmegaSST:
             GetSource_SST<3>(point.state, point.gradient, point.molecularViscosity, point.wallDistance,
-                             point.cellLength * parameters.desScale, source, mode, parameters.sst);
+                             point.cellLength * parameters.desScale, source, mode, parameters.sst, sas);
             break;
         default:
             break;

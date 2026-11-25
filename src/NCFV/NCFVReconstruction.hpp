@@ -229,6 +229,8 @@ namespace DNDS::NCFV
             const Vector3 &displacement,
             const Vector3 &referenceLengths,
             int dimension);
+        /** @brief Trace of each basis function's physical Hessian. */
+        static Eigen::RowVectorXd EvaluateBasisLaplacian(const Vector3 &referenceLengths, int dimension);
         /**
          * @brief Integrate the normalized quadratic basis using supplied dual-volume raw moments.
          * @param moments Positive volume and first/second raw moments in the same coordinate frame as anchor.

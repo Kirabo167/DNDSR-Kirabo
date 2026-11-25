@@ -61,11 +61,21 @@ namespace DNDS::NCFV
         }
     }
 
+    Physics::RANS::Model PhysicsSettings::MakeTurbulenceModel() const
+    {
+        auto settings = turbulence;
+        // SST-SAS shares the SST state layout, wall data, and diffusion kernels.
+        // The volume source supplies the additional SAS kinematics.
+        if (UsesSSTScaleAdaptivity())
+            settings.model = "KOmegaSST";
+        return Physics::RANS::Model(std::move(settings));
+    }
+
     void Configuration::Validate() const
     {
         DNDS_check_throw_info(dimension == 2 || dimension == 3,
                               "NCFV dimension must be 2 or 3");
-        const Physics::RANS::Model turbulence(physics.turbulence);
+        const auto turbulence = physics.MakeTurbulenceModel();
         const int nTurbulence = turbulence.ComponentNumber();
         DNDS_check_throw_info(nTurbulence == 0 || physics.viscous.enabled,
                               "NCFV turbulence requires physics.viscous.enabled=true");

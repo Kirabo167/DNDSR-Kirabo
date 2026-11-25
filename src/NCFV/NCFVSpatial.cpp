@@ -79,8 +79,11 @@ namespace DNDS::NCFV
     typename SpatialOperator<dimension, nTurbulence>::State
     SpatialOperator<dimension, nTurbulence>::PreservePhysical(
         const State &candidate,
-        const State &anchor) const
+        const State &anchor,
+        real *acceptedFactor) const
     {
+        if (acceptedFactor)
+            *acceptedFactor = 1;
         if (IsPhysical(candidate))
             return candidate;
         DNDS_check_throw_info(
@@ -91,7 +94,11 @@ namespace DNDS::NCFV
                         candidate(0), candidate(dimension + 1),
                         candidate(0) != 0 ? Pressure(candidate) : -veryLargeReal));
         if (!candidate.allFinite())
+        {
+            if (acceptedFactor)
+                *acceptedFactor = 0;
             return anchor;
+        }
         real lower = 0;
         real upper = 1;
         for (int iteration = 0; iteration < 40; iteration++)
@@ -102,7 +109,10 @@ namespace DNDS::NCFV
             else
                 upper = middle;
         }
-        return anchor + (0.95 * lower) * (candidate - anchor);
+        const real factor = 0.95 * lower;
+        if (acceptedFactor)
+            *acceptedFactor = factor;
+        return anchor + factor * (candidate - anchor);
     }
 
     template <int dimension, int nTurbulence>

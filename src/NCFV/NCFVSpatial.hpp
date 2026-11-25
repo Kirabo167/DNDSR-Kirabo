@@ -244,9 +244,10 @@ namespace DNDS::NCFV
          * @brief Blend an inadmissible reconstructed state toward its admissible anchor.
          * @param candidate Reconstructed conservative state to test.
          * @param anchor Physical conservative anchor, normally a mean or recovered node point state.
+         * @param acceptedFactor Optional output scale of the accepted increment from the anchor.
          * @return Candidate if physical; otherwise an admissible anchor-to-candidate state found by bisection.
          */
-        State PreservePhysical(const State &candidate, const State &anchor) const;
+        State PreservePhysical(const State &candidate, const State &anchor, real *acceptedFactor = nullptr) const;
 
         /**
          * @brief Evaluate the Euler flux projected onto a supplied direction.
@@ -605,7 +606,7 @@ namespace DNDS::NCFV
             const NodeHalo &nodeHalo)
             : _mpi(mpi), _mesh(mesh), _topology(topology), _geometry(geometry),
               _reconstruction(reconstruction), _boundaries(boundaries), _mode(mode),
-              _reconstructionSettings(reconstructionSettings), _physics(physics), _turbulence(physics.turbulence),
+              _reconstructionSettings(reconstructionSettings), _physics(physics), _turbulence(physics.MakeTurbulenceModel()),
               _time(time), _nodeHalo(nodeHalo)
         {
         }

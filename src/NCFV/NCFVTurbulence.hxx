@@ -41,7 +41,8 @@ namespace DNDS::NCFV
                                      { return BoundaryRegistry::IsNoSlipWall(_boundaries.Get(zone).mode); }, wallOptions);
             AllocateNodeField(_turbulenceGeometry, "NCFV.turbulenceGeometry", 3);
             const bool hybridSA = nTurbulence == 1 && _physics.turbulence.desScale <= 100;
-            const bool useCellSpan = hybridSA || _turbulence.Kind() == Physics::RANS::ModelKind::KOmegaSST;
+            const bool useCellSpan = hybridSA || (_turbulence.Kind() == Physics::RANS::ModelKind::KOmegaSST &&
+                                                  !_physics.UsesSSTScaleAdaptivity());
             const real farWallDistance = std::pow(veryLargeReal, .25);
             for (const auto &volume : _geometry.NodeVolumes())
             {
@@ -253,23 +254,45 @@ namespace DNDS::NCFV
             const auto &op = _reconstruction.Operator(node);
             const auto coefficients = _coefficients[node];
             const real factor = _sharedGradientFaceSweep ? _sharedGradientFaceSweep->OwnedFactor(node) : _limiterFactors[node](0);
+            const bool useSAS = _physics.UsesSSTScaleAdaptivity();
+            Eigen::Matrix<real, 1, dimension + 1> flowLaplacian;
+            if (useSAS)
+                flowLaplacian = factor * Reconstruction::EvaluateBasisLaplacian(op.referenceLengths, dimension) *
+                                coefficients.template leftCols<dimension + 1>();
             real maxDestruction = 0;
             for (const auto &sample : volume.volumeQuadrature)
             {
                 const Vector3 offset = _nodeHalo.DisplacementToPoint(node, sample.coordinate);
                 const Eigen::VectorXd basis = Reconstruction::EvaluateBasis(offset, op.referenceLengths, dimension) - op.targetBasisMean;
-                const State state = PreservePhysical(mean + factor * (coefficients.transpose() * basis), mean);
-                const StateGradient gradient = factor * Reconstruction::EvaluateBasisGradient(offset, op.referenceLengths, dimension) * coefficients;
+                real acceptedFactor = 1;
+                const State state = PreservePhysical(mean + factor * (coefficients.transpose() * basis), mean,
+                                                     useSAS ? &acceptedFactor : nullptr);
+                StateGradient gradient = StateGradient::Zero();
+                if (acceptedFactor > 0)
+                    gradient = (factor * acceptedFactor) * Reconstruction::EvaluateBasisGradient(offset, op.referenceLengths, dimension) * coefficients;
                 auto point = TurbulencePoint(state, gradient, SourceWallDistance(node, offset), MolecularViscosity(state));
                 point.cellLength = _turbulenceGeometry[node](1);
                 point.wallNormalCellLength = _turbulenceGeometry[node](2);
-                const auto source = _turbulence.TrySource(point);
+                Physics::RANS::SASKinematics sas{0, useSAS ? volume.lengthScale : 0};
+                if (useSAS && acceptedFactor > 0)
+                {
+                    const real inverseDensity = 1 / state[0];
+                    const SpatialVector velocity = inverseDensity * state.template segment<dimension>(1);
+                    const Eigen::Matrix<real, dimension, dimension> velocityGradient = inverseDensity *
+                        (gradient.template middleCols<dimension>(1) - gradient.col(0) * velocity.transpose());
+                    // Laplacian of momentum = rho*laplacian(u) + u*laplacian(rho) + 2*grad(u)^T*grad(rho).
+                    const SpatialVector velocityLaplacian = inverseDensity *
+                        (acceptedFactor * (flowLaplacian.template tail<dimension>().transpose() - flowLaplacian[0] * velocity) -
+                         2 * velocityGradient.transpose() * gradient.col(0));
+                    sas.velocityLaplacianMagnitude = velocityLaplacian.stableNorm();
+                }
+                const auto source = _turbulence.TrySource(point, 0, sas);
                 DNDS_check_throw_info(source, "NCFV RANS volume source evaluation failed");
                 for (int equation = 0; equation < nTurbulence; ++equation)
                     result[FlowSize + equation] += sample.weight * source.value[equation];
                 if (prepareTimeStep)
                 {
-                    const auto destruction = _turbulence.TrySource(point, 1);
+                    const auto destruction = _turbulence.TrySource(point, 1, sas);
                     DNDS_check_throw_info(destruction, "NCFV RANS source destruction estimate failed");
                     maxDestruction = std::max({maxDestruction, destruction.value[0], destruction.value[1]});
                 }

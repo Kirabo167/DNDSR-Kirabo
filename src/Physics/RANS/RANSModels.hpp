@@ -34,6 +34,7 @@
 
 #include "DNDS/Defines.hpp"
 #include "DNDS/Config/ConfigParam.hpp"
+#include "Physics/RANS/SSTScaleAdaptive.hpp"
 #include <utility>
 
 /** @brief When set to 1, cap turbulent viscosity at 1e5 * mu_laminar for k-epsilon. */
@@ -761,9 +762,11 @@ namespace DNDS::Physics::RANS
      * @param lLES      LES length scale for DES/DDES shielding (set to a large value to disable DES).
      * @param[out] source  Output source vector; entries at I4+1 and I4+2 are set.
      * @param mode      Source computation mode: 0 = full source, 1 = nonnegative implicit diagonal.
+     * @param sas       Velocity curvature and grid width for the SST-SAS variant.
      */
     template <int dim, class TU, class TDiffU, class TSource>
-    DNDS_DEVICE_CALLABLE void GetSource_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, real lLES, TSource &source, int mode, const KOmegaSSTConfig &config)
+    DNDS_DEVICE_CALLABLE void GetSource_SST(TU &&UMeanXy, TDiffU &&DiffUxy, real muf, real d, real lLES,
+                                           TSource &source, int mode, const KOmegaSSTConfig &config, SASKinematics sas = {})
     {
         const auto I4 = dim + 1;
         const auto verySmallReal_3 = std::pow(verySmallReal, 1. / 3);
@@ -802,7 +805,8 @@ namespace DNDS::Physics::RANS
             4));
         real F2 = std::tanh(sqr(std::max(2 * std::sqrt(k) / (betaStar * omegaaa * d), 500 * nuPhy / (sqr(d) * omegaaa))));
         real lRANS = std::sqrt(k) / (betaStar * omegaaa);
-        real FDES = std::max(1.0, lRANS / (lLES + verySmallReal) * (1 - F2));
+        const bool useSAS = sas.filterWidth > 0;
+        real FDES = useSAS ? 1.0 : std::max(1.0, lRANS / (lLES + verySmallReal) * (1 - F2));
         // F2 = 0;
         real mut = a1 * k / std::max(OmegaMag * F2, a1 * omegaaa) * rho; // use S/OmegaMag for SST: S: CFD++, OmegaMag: Turbulence Modeling Validation, Testing, and Developmen
 #if KW_SST_LIMIT_MUT == 1
@@ -856,6 +860,14 @@ namespace DNDS::Physics::RANS
                                             diffKO.col(0).dot(diffKO.col(1));
                 source(I4 + 2) += std::max(crossDiffusion, real(0)) / (rho * omegaaa);
             }
+        }
+        if (useSAS && sas.velocityLaplacianMagnitude > 0)
+        {
+            const auto adaptive = EvaluateSASSource(
+                k, omegaaa, std::sqrt(SR2.squaredNorm() / 2), (diffKO.col(0) / k).squaredNorm(),
+                (diffKO.col(1) / omegaaa).squaredNorm(), betaStar, sigO, sas);
+            // rho cancels in the derivative with respect to the conservative rho*omega.
+            source(I4 + 2) += mode == 0 ? rho * adaptive.omegaProduction : adaptive.negativeOmegaDerivative;
         }
     }
 

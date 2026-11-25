@@ -781,7 +781,7 @@ namespace DNDS::NCFV
     void Solver<dimension, nTurbulence>::Initialize()
     {
         _configuration.Validate();
-        DNDS_check_throw_info(Physics::RANS::Model(_configuration.physics.turbulence).ComponentNumber() == nTurbulence,
+        DNDS_check_throw_info(_configuration.physics.MakeTurbulenceModel().ComponentNumber() == nTurbulence,
                               "NCFV configured turbulence model does not match the solver state layout");
         ReadMesh();
 

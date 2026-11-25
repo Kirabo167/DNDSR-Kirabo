@@ -575,6 +575,7 @@ H5 重启使用原始节点编号重分配，支持更换 MPI 进程数；JSON �
 | `SA` | `nuTilde` | 5 / 6 |
 | `KOmegaWilcox` | `k, omega` | 6 / 7 |
 | `KOmegaSST` | `k, omega` | 6 / 7 |
+| `KOmegaSSTSAS` | `k, omega` | 6 / 7 |
 | `RealizableKE` | `k, epsilon` | 6 / 7 |
 
 初始值、远场储库、分区原始变量和节点文件使用同一字段顺序。分区的 `primitive`
@@ -605,6 +606,18 @@ H5 重启使用原始节点编号重分配，支持更换 MPI 进程数；JSON �
 \(2\rho k/3\) 的法向应力与做功。黏性通量使用共享模型的涡黏度、湍流导热和
 各方程扩散系数。体源项在两种模式下均从对偶均值重构二次场，在微单纯形求积点
 评价后做体积平均。RANS 的显式 CFL 包含湍流扩散及源项耗散率。
+
+选择 `physics.turbulence.model="KOmegaSSTSAS"` 后，SST-1994 的守恒 \(\omega\) 方程增加
+Menter–Egorov 的 \(\rho q_{\mathrm{SAS}}\)，\(k\) 耗散采用 RANS 长度。两种积分模式都从
+限幅后的守恒量二次重构求速度拉普拉斯。以 \(\boldsymbol m=\rho\boldsymbol u\) 表示动量时，
+
+\[
+\nabla^2 u_i = \frac{\nabla^2 m_i-u_i\nabla^2\rho-2\nabla\rho\cdot\nabla u_i}{\rho}.
+\]
+
+SAS 的网格下限使用对偶体局部长度 \(\Delta=V_{\mathrm{dual}}^{1/d}\)。体积分点上计算的
+SAS \(\omega\) 负导数参与显式 CFL 估计。解析三维尾流时使用三维网格和全局物理时间步
+`time.useLocalTimeStep=false`。源项公式见 [SST-SAS 模型说明](../../docs/solver-guide/acm_rans_zh.md#6-sst-sas-尺度自适应模型)。
 
 开放边界按域内法向速度的符号选取湍流对流信息。流入及回流采用储库，流出采用
 域内重构并给零法向标量扩散。`Extrapolation` 始终沿用域内重构状态及梯度，周期面走内部

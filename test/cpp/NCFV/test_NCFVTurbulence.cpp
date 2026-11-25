@@ -66,7 +66,7 @@ namespace
         point.molecularViscosity = c.physics.viscous.dynamicViscosity;
         point.wallDistance = std::pow(veryLargeReal, .25);
         point.cellLength = 1;
-        const auto source = Physics::RANS::Model(c.physics.turbulence).Source(point);
+        const auto source = c.physics.MakeTurbulenceModel().Source(point);
         for (DNDS::index node = 0; node < solver.Mesh()->NumNode(); ++node)
         {
             const auto rhs = solver.ResidualField()[node];
@@ -78,6 +78,99 @@ namespace
             }
         }
     }
+
+    template <int dimension>
+    void CheckCompressibleSAS(IntegrationMode mode)
+    {
+        CAPTURE(dimension);
+        CAPTURE(static_cast<int>(mode));
+        constexpr int axis = dimension - 1;
+        constexpr int nVariables = dimension + 4;
+        constexpr real k = .025, omega = 1.2;
+        auto c = MakeConfiguration<dimension>("KOmegaSST", mode);
+        c.time.useCFLTimeStep = true;
+        c.time.useLocalTimeStep = true;
+        Solver<dimension, 2> solver(mpi, c);
+        solver.Initialize();
+        const auto &halo = solver.NodeCommunication();
+        NodeStatePair means, rhs;
+        means.InitPair("NCFV.testSASMeans", mpi);
+        means.father->Resize(solver.Mesh()->NumNode(), nVariables, 1);
+        means.son->Resize(halo.NumNodeGhost(), nVariables, 1);
+        means.BorrowSetup(halo.Layout());
+        means.trans.initPersistentPull();
+        CFV::BuildUDofOnMesh(rhs, "NCFV.testSASRHS", mpi, solver.Mesh(), nVariables, false, false, Geom::MeshLoc::Node);
+
+        for (const auto &volume : solver.Geometry().NodeVolumes())
+        {
+            const auto node = volume.node;
+            const auto &moment = volume.moments;
+            const real anchor = halo.Coordinate(node)[axis];
+            const real meanX = anchor + moment.first[axis] / moment.measure;
+            const real meanX2 = sqr(anchor) +
+                (2 * anchor * moment.first[axis] + moment.second(axis, axis)) / moment.measure;
+            const real rho = 1.3 + .45 * meanX + .22 * meanX2;
+            means[node].setZero();
+            means[node][0] = rho;
+            means[node][1] = .25 + .04 * meanX + .11 * meanX2;
+            means[node][dimension + 1] = 3;
+            means[node][dimension + 2] = rho * k;
+            means[node][dimension + 3] = rho * omega;
+        }
+
+        std::vector<Eigen::Vector<real, nVariables>> sstRhs(solver.Mesh()->NumNode());
+        std::vector<real> sstTimeStep(solver.Mesh()->NumNode());
+        for (const char *model : {"KOmegaSST", "KOmegaSSTSAS"})
+        {
+            c.physics.turbulence.model = model;
+            SpatialOperator<dimension, 2> spatial(mpi, solver.Mesh(), solver.EdgeTopology(), solver.Geometry(),
+                                                  solver.ReconstructionData(), solver.Boundaries(), mode,
+                                                  c.reconstruction, c.physics, c.time, halo);
+            spatial.Initialize();
+            spatial.EvaluateRHS(means, rhs);
+            real localSASVolumeIntegral = 0;
+            for (const auto &volume : solver.Geometry().NodeVolumes())
+            {
+                const auto node = volume.node;
+                if (!c.physics.UsesSSTScaleAdaptivity())
+                {
+                    sstRhs[node] = rhs[node];
+                    sstTimeStep[node] = spatial.LocalTimeStep(node);
+                    continue;
+                }
+
+                const real minimumLength = .11 * std::sqrt(.41 * 3.51 / (.856 * sqr(.41) / .3)) * volume.lengthScale;
+                const real modelLength = std::sqrt(k) / (std::pow(.09, .25) * omega);
+                real expectedSource = 0, expectedRate = 0;
+                for (const auto &sample : volume.volumeQuadrature)
+                {
+                    const real x = sample.coordinate[axis];
+                    const real rho = 1.3 + .45 * x + .22 * sqr(x);
+                    const real rhoGradient = .45 + .44 * x;
+                    const real momentum = .25 + .04 * x + .11 * sqr(x);
+                    const real velocity = momentum / rho;
+                    const real velocityGradient = (.04 + .22 * x - velocity * rhoGradient) / rho;
+                    const real velocityLaplacian = (.22 - .44 * velocity - 2 * rhoGradient * velocityGradient) / rho;
+                    const real rate = std::min(std::abs(velocityLaplacian) / .41, std::abs(velocityGradient) / minimumLength);
+                    const real sas = 3.51 * .41 * sqr(modelLength * rate);
+                    expectedSource += sample.weight * rho * sas;
+                    expectedRate = std::max(expectedRate, 2 * sas / omega);
+                }
+                const Eigen::Vector<real, nVariables> change = rhs[node] - sstRhs[node];
+                CHECK(change.template head<nVariables - 1>().norm() < 1e-12);
+                CHECK(std::abs(change[nVariables - 1] - expectedSource / volume.moments.measure) < 1e-11);
+                const real rateChange = c.time.cfl * (1 / spatial.LocalTimeStep(node) - 1 / sstTimeStep[node]);
+                CHECK(std::abs(rateChange - expectedRate) < 1e-10);
+                localSASVolumeIntegral += change[nVariables - 1] * volume.moments.measure;
+            }
+            if (c.physics.UsesSSTScaleAdaptivity())
+            {
+                real sasVolumeIntegral = 0;
+                MPI_Allreduce(&localSASVolumeIntegral, &sasVolumeIntegral, 1, DNDS_MPI_REAL, MPI_SUM, mpi.comm);
+                CHECK(sasVolumeIntegral > 1e-4);
+            }
+        }
+    }
 }
 
 TEST_CASE("NCFV assembles all RANS equation layouts with both spatial integration methods")
@@ -86,11 +179,20 @@ TEST_CASE("NCFV assembles all RANS equation layouts with both spatial integratio
     {
         CheckUniformRHS<2, 1>(MakeConfiguration<2>("SA", mode));
         CheckUniformRHS<3, 1>(MakeConfiguration<3>("SA", mode));
-        for (const auto *model : {"KOmegaWilcox", "KOmegaSST", "RealizableKE"})
+        for (const auto *model : {"KOmegaWilcox", "KOmegaSST", "KOmegaSSTSAS", "RealizableKE"})
         {
             CheckUniformRHS<2, 2>(MakeConfiguration<2>(model, mode));
             CheckUniformRHS<3, 2>(MakeConfiguration<3>(model, mode));
         }
+    }
+}
+
+TEST_CASE("NCFV SST-SAS integrates variable-density velocity curvature and limits the CFL step")
+{
+    for (const auto mode : {IntegrationMode::TraditionalQuadrature, IntegrationMode::EfficientDifferential})
+    {
+        CheckCompressibleSAS<2>(mode);
+        CheckCompressibleSAS<3>(mode);
     }
 }
 

@@ -68,7 +68,7 @@ namespace DNDS::NCFV
                 parser.get<std::vector<std::string>>("--overwrite_key"),
                 parser.get<std::vector<std::string>>("--overwrite_value"));
 
-            const int nTurbulence = Physics::RANS::Model(loaded.configuration.physics.turbulence).ComponentNumber();
+            const int nTurbulence = loaded.configuration.physics.MakeTurbulenceModel().ComponentNumber();
             loaded.configuration.solver.Require(
                 {"ncfv_euler", "NCFV", "IdealGas", dimension + 2 + nTurbulence});
             DNDS_check_throw_info(loaded.configuration.dimension == dimension,

@@ -549,7 +549,8 @@
                                 "SA",
                                 "KOmegaWilcox",
                                 "KOmegaSST",
-                                "RealizableKE"
+                                "RealizableKE",
+                                "KOmegaSSTSAS"
                             ]
                         },
                         "viscosityReference": {

@@ -94,11 +94,11 @@ namespace DNDS::Physics::RANS
         return result;
     }
 
-    NumericalResult<std::array<real, 2>> Model::TrySource(const Point &point, int mode) const noexcept
+    NumericalResult<std::array<real, 2>> Model::TrySource(const Point &point, int mode, SASKinematics sas) const noexcept
     {
         if (_parameters.Supported())
-            return RANS::TrySource(_parameters, point, mode);
-        if (mode != 0 && mode != 1)
+            return RANS::TrySource(_parameters, point, mode, sas);
+        if ((mode != 0 && mode != 1) || sas.filterWidth != 0 || sas.velocityLaplacianMagnitude != 0)
             return NumericalStatus{NumericalError::InvalidInput};
         // RealizableKE does not enter the DES/SST cellLength throw path.
         const auto result = EvaluateSource(point, mode);
