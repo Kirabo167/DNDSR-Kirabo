@@ -64,16 +64,16 @@ def read_cartesian_axes(mesh_path):
     return nx, ny, nz, float(axes[2][-1])
 
 
-def median_overlap(n):
+def median_overlap(n, split=0.5):
     """Use index coordinates for exact 1/2 fractions on an aligned discontinuity."""
     node = np.arange(n + 1, dtype=float)
     lower, upper = np.maximum(0, node - 0.5), np.minimum(n, node + 0.5)
     width = upper - lower
-    left_fraction = np.clip((n / 2 - lower) / width, 0, 1)
+    left_fraction = np.clip((n * split - lower) / width, 0, 1)
     return left_fraction, width / n
 
 
-def write_case(name, output, mesh_path, mesh_sha256, dimensions):
+def write_case(name, output, mesh_path, mesh_sha256, dimensions, split=(0.5, 0.5)):
     nx, ny, nz, depth = dimensions
     metadata_path = output.with_suffix(".metadata.json")
     if output.exists() or metadata_path.exists():
@@ -84,18 +84,23 @@ def write_case(name, output, mesh_path, mesh_sha256, dimensions):
     conservative[:, 4] = (primitive[:, 4] / (GAMMA - 1)
                           + 0.5 * primitive[:, 0]
                           * np.sum(primitive[:, 1:4] ** 2, axis=1))
-    left, dx = median_overlap(nx)
-    bottom, dy = median_overlap(ny)
+    x_split, y_split = split
+    if not (0 < x_split < 1 and 0 < y_split < 1):
+        raise ValueError("Discontinuities must lie inside the unit square")
+    left, dx = median_overlap(nx, x_split)
+    bottom, dy = median_overlap(ny, y_split)
     weights = np.stack((np.outer(bottom, left), np.outer(bottom, 1 - left),
                         np.outer(1 - bottom, left), np.outer(1 - bottom, 1 - left)),
                        axis=-1).reshape(-1, 4)
-    np.testing.assert_array_equal(weights.sum(axis=1), np.ones(len(weights)))
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, rtol=0, atol=2e-15)
     values = weights @ conservative
     volumes_xy = np.outer(dy, dx).reshape(-1)
     actual_integral = np.sum(values.astype(np.longdouble)
                              * volumes_xy[:, None].astype(np.longdouble),
                              axis=0).astype(float) * depth
-    expected_integral = conservative.mean(axis=0) * depth
+    areas = np.array([x_split * y_split, (1 - x_split) * y_split,
+                      x_split * (1 - y_split), (1 - x_split) * (1 - y_split)])
+    expected_integral = (areas @ conservative) * depth
     np.testing.assert_allclose(actual_integral, expected_integral,
                                rtol=2e-13, atol=1e-16)
     pressure = (GAMMA - 1) * (values[:, 4] - 0.5 * np.sum(
@@ -122,6 +127,7 @@ def write_case(name, output, mesh_path, mesh_sha256, dimensions):
         "variables": "Conservative", "node_file_index_base": 0, "gamma": GAMMA,
         "initialization": "Exact quadrant intersection of clipped median dual volumes",
         "quadrant_order": ["BL", "BR", "TL", "TR"],
+        "discontinuity_xy": list(split),
         "primitive_states": primitive.tolist(),
         "conservative_states": conservative.tolist(),
         "nodes_mixing_two_quadrants": int(np.sum(mixture_count == 2)) * (nz + 1),
@@ -144,12 +150,14 @@ def main():
                         default=list(INITIAL_STATES))
     parser.add_argument("--output-dir", type=Path,
                         default=ROOT / "data/mesh/riemann_barth_400x400x5_initial")
+    parser.add_argument("--split", type=float, nargs=2, default=(0.5, 0.5),
+                        metavar=("X", "Y"), help="Location of the two quadrant discontinuities")
     args = parser.parse_args()
     mesh_path = args.mesh.resolve()
     dimensions, mesh_sha256 = read_cartesian_axes(mesh_path), digest(mesh_path)
     for name in args.cases:
         write_case(name, args.output_dir.resolve() / f"{name}.csv",
-                   mesh_path, mesh_sha256, dimensions)
+                   mesh_path, mesh_sha256, dimensions, args.split)
 
 
 if __name__ == "__main__":

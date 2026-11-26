@@ -1,0 +1,996 @@
+--- a/src/NCFV/NCFVReconstruction.hpp
++++ b/src/NCFV/NCFVReconstruction.hpp
+@@ -6,11 +6,9 @@
+
+ #include "NCFVDualGeometry.hpp"
+ #include "NCFVNodeHalo.hpp"
+-#include "NCFVLinearLimiter.hpp"
+
+ #include "DNDS/ArrayDOF.hpp"
+
+-#include <cmath>
+ #include <vector>
+
+ namespace DNDS::NCFV
+@@ -83,7 +81,6 @@
+         std::vector<std::vector<index>> _nodeGraphGlobals;
+         std::vector<ReconstructionOperator> _operators;
+         std::vector<std::vector<VariationalNeighborOperator>> _variationalOperators;
+-        LinearBarthLimiter _linearLimiter;
+
+         /**
+          * @brief Copy complete first-ring graph adjacency into local/global lists for owned-node stencils and
+@@ -134,7 +131,6 @@
+          * @note Collective because stencil quality diagnostics use MPI reductions.
+          */
+         void Build();
+-        [[nodiscard]] const LinearBarthLimiter &LinearLimiter() const { return _linearLimiter; }
+         /**
+          * @brief Collect the final reconstruction and limiter node dependencies.
+          * @return Sorted unique global node IDs referenced by selected stencils and any enabled first-ring limiter
+@@ -268,43 +264,6 @@
+             const NodeMatrixPair &gradients,
+             const NodeMatrixPair &coefficients,
+             NodeStatePair &pointValues) const;
+-
+-        /**
+-         * @brief Recover an anchor value for a mean-preserving, possibly limited P1 polynomial.
+-         * @param mean Unchanged control-volume mean (conserved-component column vector).
+-         * @param gradient Own frozen physical gradient: direction rows, component columns.
+-         * @param linearWeight Precomputed centroid-minus-anchor offset; never the P2 self weight.
+-         * @param factor Common contraction in [0,1], also applied to the gradient when evaluating P1.
+-         * @return mean - factor * gradient.transpose() * linearWeight.
+-         * @note With an already contracted gradient, pass factor=1 to avoid double limiting.
+-         * This discards all quadratic zero-mean modes; it cannot be obtained by scaling
+-         * the old P2 point-minus-mean difference. It performs no neighbor access or integration.
+-         */
+-        template <class TMean, class TGradient>
+-        [[nodiscard]] static auto RecoverLinearPointValue(
+-            const Eigen::MatrixBase<TMean> &mean,
+-            const Eigen::MatrixBase<TGradient> &gradient,
+-            const Vector3 &linearWeight,
+-            real factor = 1)
+-        {
+-            return LinearBarthLimiter::RecoverPointValue(mean, gradient, linearWeight, factor);
+-        }
+-
+-        /**
+-         * @brief Recover only the linear zero-mean part, with optional own-cell contraction factors.
+-         * @param means Unchanged dual means. Owned entries suffice; ghosts need not be synchronized.
+-         * @param gradients Own frozen physical gradients; no neighboring gradients are read or changed.
+-         * @param [out] pointValues Owned P1 anchor values; caller synchronizes output ghosts if needed.
+-         * @param factors Empty for factor=1, otherwise exactly one factor per owned node.
+-         * @pre The limiter was enabled when Build() initialized the optional recovery weights.
+-         * @note The corresponding P1 polynomial uses factors[i] * gradients[i]. This method
+-         * does not select fallback cells, constrain face states, or alter the P2 recovery path.
+-         */
+-        void RecoverLinearPointValues(
+-            const NodeStatePair &means,
+-            const NodeMatrixPair &gradients,
+-            NodeStatePair &pointValues,
+-            const std::vector<real> &factors = {}) const;
+
+         /**
+          * @brief One scalar limiter coefficient per owned node.
+--- a/src/NCFV/NCFVReconstruction.cpp
++++ b/src/NCFV/NCFVReconstruction.cpp
+@@ -1056,7 +1056,6 @@
+                 _settings.method == ReconstructionMethod::Variational,
+             "NCFV reconstruction selected an unsupported method/mode");
+         BuildNodeGraph();
+-        _linearLimiter.Initialize(_geometry, _settings.enableLimiter);
+         _operators.clear();
+         _operators.resize(static_cast<std::size_t>(_mesh->NumNode()));
+         real localMaximumCondition = 0;
+@@ -1119,10 +1118,7 @@
+                       DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
+         if (_mpi.rank == 0)
+             log() << "NCFV quadratic reconstruction: stored rows="
+-                  << (_mode == IntegrationMode::EfficientDifferential &&
+-                              _settings.method != ReconstructionMethod::Variational
+-                          ? _mesh->getDim()
+-                          : BasisSize())
++                  << BasisSize()
+                   << ", method="
+                   << (_settings.method == ReconstructionMethod::LeastSquares
+                           ? "LeastSquares"
+@@ -1365,33 +1361,9 @@
+         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+         {
+             pointValues[iNode] = means[iNode];
+-            if (_mode == IntegrationMode::EfficientDifferential)
+-            {
+-                for (const auto &entry : _geometry.NodeVolume(iNode).pointRecoveryStencil)
+-                    pointValues[iNode] -= gradients[entry.node].transpose() *
+-                                          entry.gradientWeight.head(_mesh->getDim());
+-            }
+-            else
+-            {
+-                const ReconstructionOperator &op = _operators[static_cast<std::size_t>(iNode)];
+-                pointValues[iNode] -= coefficients[iNode].transpose() * op.targetBasisMean;
+-            }
+-        }
+-    }
+-
+-    void Reconstruction::RecoverLinearPointValues(
+-        const NodeStatePair &means,
+-        const NodeMatrixPair &gradients,
+-        NodeStatePair &pointValues,
+-        const std::vector<real> &factors) const
+-    {
+-        DNDS_check_throw_info(factors.empty() || factors.size() == static_cast<std::size_t>(_mesh->NumNode()),
+-                              "NCFV linear point recovery needs one factor per owned node");
+-        for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-            pointValues[iNode] = RecoverLinearPointValue(
+-                means[iNode], gradients[iNode],
+-                _linearLimiter.Weight(iNode),
+-                factors.empty() ? real(1) : factors[static_cast<std::size_t>(iNode)]);
++            const ReconstructionOperator &op = _operators[static_cast<std::size_t>(iNode)];
++            pointValues[iNode] -= coefficients[iNode].transpose() * op.targetBasisMean;
++        }
+     }
+
+     std::vector<real> Reconstruction::ComputeLimiterFactors(
+--- a/src/NCFV/NCFVSpatial.cpp
++++ b/src/NCFV/NCFVSpatial.cpp
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <limits>
++#include "NCFVDifferential.hxx"
+
+ namespace DNDS::NCFV
+ {
+@@ -156,6 +157,8 @@
+     template <int dimension>
+     void SpatialOperator<dimension>::ComputePhysicalFluxGradients()
+     {
++        ComputeCellLocalFluxJets();
++        return;
+         DNDS_assert(_mode == IntegrationMode::EfficientDifferential);
+         DNDS_assert(_physicalFluxGradients.Size() == _stateGradients.Size());
+         DNDS_assert(_physicalFluxGradients.Size() == _pointValues.Size());
+@@ -630,6 +633,7 @@
+             const State self = means[iNode];
+             State minimum = self, maximum = self;
+             real pressureMinimum = Pressure(self);
++            real maximumPressureJump = 0;
+             real entropyMinimum = pressureMinimum / std::pow(self(0), _physics.gamma);
+             const auto include = [&](const State &state)
+             {
+@@ -647,6 +651,15 @@
+                 const SpatialVector normal = (left ? 1.0 : -1.0) *
+                                              surface.vectorMeasure.template head<dimension>() / surface.measure;
+                 const State other = means[neighbor];
++                maximumPressureJump = std::max(maximumPressureJump,
++                    std::abs(Pressure(self) - Pressure(other)) / std::max(Pressure(self), Pressure(other)));
++                maximumPressureJump = std::max(maximumPressureJump,
++                    std::abs(self(0) - other(0)) / std::max(self(0), other(0)));
++                const real soundSum = std::sqrt(_physics.gamma * Pressure(self) / self(0)) +
++                                      std::sqrt(_physics.gamma * Pressure(other) / other(0));
++                maximumPressureJump = std::max(maximumPressureJump,
++                    (self.template segment<dimension>(1) / self(0) -
++                     other.template segment<dimension>(1) / other(0)).norm() / soundSum);
+                 const real speed = LowOrderSpeed(self, other, normal);
+                 include(other);
+                 include(.5 * (self + other) -
+@@ -670,9 +683,70 @@
+             _fluxCorrectionBounds[iNode](dimension + 2, 1) = pressureMinimum;
+             _fluxCorrectionBounds[iNode](dimension + 3, 0) = entropyMinimum;
+             _fluxCorrectionBounds[iNode](dimension + 3, 1) = entropyMinimum;
++            if (_cellShockSensing)
++                _cellShockSensor[iNode](0) = std::clamp((maximumPressureJump - 0.005) / 0.045, real(0), real(1));
+         }
+         _fluxCorrectionBounds.trans.startPersistentPull();
+         _fluxCorrectionBounds.trans.waitPersistentPull();
++        if (_cellShockSensing)
++        {
++            _cellShockSensor.trans.startPersistentPull();
++            _cellShockSensor.trans.waitPersistentPull();
++        }
++    }
++
++    template <int dimension>
++    typename SpatialOperator<dimension>::State SpatialOperator<dimension>::BoundFluxComponents(
++        const State &bar, const State &increment,
++        const Eigen::Matrix<real, dimension + 4, 2> &bounds, State factors) const
++    {
++        for (int v = 0; v < (_fluxDensityOnly ? 1 : dimension + 2); v++)
++        {
++            const real padding = _fluxConstraintTolerance + 64 * std::numeric_limits<real>::epsilon() *
++                std::max({1.0, std::abs(bounds(v,0)), std::abs(bounds(v,1))});
++            real factor = factors(v);
++            if (increment(v) > 0) factor = std::min(factor, (bounds(v,1)+padding-bar(v))/increment(v));
++            else if (increment(v) < 0) factor = std::min(factor, (bounds(v,0)-padding-bar(v))/increment(v));
++            factors(v) = std::clamp(factor, real(0), factors(v));
++        }
++        return factors;
++    }
++
++    template <int dimension>
++    real SpatialOperator<dimension>::BoundFluxFactor(const State &bar, const State &increment,
++        const Eigen::Matrix<real, dimension + 4, 2> &bounds, real factor, bool linearBounds) const
++    {
++        for (int component = 0; linearBounds && component < (_fluxDensityOnly ? 1 : dimension + 2); component++)
++        {
++            const real padding = _fluxConstraintTolerance + 64 * std::numeric_limits<real>::epsilon() *
++                std::max({1.0, std::abs(bounds(component, 0)), std::abs(bounds(component, 1))});
++            if (increment(component) > 0)
++                factor = std::min(factor, (bounds(component, 1) + padding - bar(component)) / increment(component));
++            else if (increment(component) < 0)
++                factor = std::min(factor, (bounds(component, 0) - padding - bar(component)) / increment(component));
++        }
++        factor = std::clamp(factor, 0.0, linearBounds ? _reconstructionSettings.maximumFluxCorrection : 1.0);
++        const real pressureMinimum = _fluxPressureFloorOnly ? 1e-12 : bounds(dimension + 2, 0);
++        const real padding = _fluxConstraintTolerance + 64 * std::numeric_limits<real>::epsilon() * std::max(1.0, std::abs(pressureMinimum));
++        const auto admissible = [&](real theta)
++        {
++            const State state = bar + theta * increment;
++            return IsPhysical(state) && Pressure(state) >= pressureMinimum - padding &&
++                (!_reconstructionSettings.fluxCorrectionEntropy ||
++                 Pressure(state) >= bounds(dimension + 3, 0) * std::pow(state(0), _physics.gamma) - padding);
++        };
++        if (!admissible(factor))
++        {
++            real lo = 0, hi = factor;
++            for (int iteration = 0; iteration < 48; iteration++)
++            {
++                const real mid = .5 * (lo + hi);
++                if (admissible(mid)) lo = mid;
++                else hi = mid;
++            }
++            factor = lo;
++        }
++        return factor;
+     }
+
+     template <int dimension>
+@@ -686,10 +760,24 @@
+         const real speed = LowOrderSpeed(left, right, normal);
+         const real dissipation = speed * surface.measure;
+         const State lowOrder = LowOrderFlux(left, right, normal, surface.measure);
+-        const State correction = highOrder - lowOrder;
++        State correction = highOrder - lowOrder;
+         const State bar = .5 * (left + right) -
+                           .5 / speed * (PhysicalFlux(right, normal) - PhysicalFlux(left, normal));
+         real factor = _reconstructionSettings.maximumFluxCorrection;
++        if (_cellShockSensing)
++            factor = std::min(factor, 1 - std::max(_cellShockSensor[surface.nodes[0]](0),
++                                                 _cellShockSensor[surface.nodes[1]](0)));
++        State componentFactors = State::Constant(factor);
++        if (_fluxComponentWise)
++        {
++            for (int side = 0; side < 2; side++)
++            {
++                const State increment = (side == 0 ? -1.0 : 1.0) * correction / dissipation;
++                componentFactors = BoundFluxComponents(bar, increment, _fluxCorrectionBounds[surface.nodes[side]], componentFactors);
++            }
++            correction = correction.cwiseProduct(componentFactors);
++            factor = 1;
++        }
+         for (int side = 0; side < 2; side++)
+         {
+             const index node = surface.nodes[side];
+@@ -704,45 +792,11 @@
+                                                    Pressure(right) / std::pow(right(0), _physics.gamma),
+                                                    Pressure(bar) / std::pow(bar(0), _physics.gamma)});
+             }
+-            for (int component = 0; component < dimension + 2; component++)
+-            {
+-                const real padding = 64 * std::numeric_limits<real>::epsilon() *
+-                                     std::max({1.0, std::abs(bounds(component, 0)), std::abs(bounds(component, 1))});
+-                if (increment(component) > 0)
+-                    factor = std::min(factor, (bounds(component, 1) + padding - bar(component)) / increment(component));
+-                else if (increment(component) < 0)
+-                    factor = std::min(factor, (bounds(component, 0) - padding - bar(component)) / increment(component));
+-            }
+-            factor = std::clamp(factor, 0.0, _reconstructionSettings.maximumFluxCorrection);
+-            // Pressure is concave along a conservative segment. Its lower
+-            // superlevel set is convex; an upper pressure box is not.
+-            const real pressureMinimum = bounds(dimension + 2, 0);
+-            const real pressurePadding = 64 * std::numeric_limits<real>::epsilon() *
+-                                         std::max(1.0, std::abs(pressureMinimum));
+-            const auto admissible = [&](real theta)
+-            {
+-                const State candidate = bar + theta * increment;
+-                return IsPhysical(candidate) && Pressure(candidate) >= pressureMinimum - pressurePadding &&
+-                       (!_reconstructionSettings.fluxCorrectionEntropy ||
+-                        Pressure(candidate) >= bounds(dimension + 3, 0) * std::pow(candidate(0), _physics.gamma) - pressurePadding);
+-            };
+-            if (!admissible(factor))
+-            {
+-                real lower = 0, upper = factor;
+-                for (int iteration = 0; iteration < 48; iteration++)
+-                {
+-                    const real middle = .5 * (lower + upper);
+-                    if (admissible(middle))
+-                        lower = middle;
+-                    else
+-                        upper = middle;
+-                }
+-                factor = lower;
+-            }
++            factor = BoundFluxFactor(bar, increment, bounds, factor, !_fluxComponentWise);
+         }
+         if (_reconstructionSettings.fluxCorrectionBinary && factor < _reconstructionSettings.maximumFluxCorrection)
+             factor = 0;
+-        _edgeFluxCorrectionFactors[iEdge](0) = factor;
++        _edgeFluxCorrectionFactors[iEdge](0) = _fluxComponentWise ? factor * componentFactors.mean() : factor;
+         // A single owner-computed flux is shared by both incident volumes.
+         return lowOrder + factor * correction;
+     }
+@@ -819,32 +873,49 @@
+         double phaseStart = 0;
+         if (_detailedFluxTiming)
+             phaseStart = MPI_Wtime();
+-        const State leftIntegral = EfficientIntegratedPhysicalFlux(
+-            0, surface,
+-            _lastRhsTiming.edgeLeftPhysicalFluxDetail);
++        if (_p1FallbackSides[iEdge][0] || _p1FallbackSides[iEdge][1])
++        {
++            // A triggered side supplies its limited P1 edge-midpoint state.
++            // An untriggered side supplies its already computed high-order face mean.
++            // Replace the whole interface flux, including all high-order physical integrals.
++            const real effectiveArea = surface.vectorMeasure.template head<dimension>().norm();
++            DNDS_check_throw_info(effectiveArea > verySmallReal, "Zero equivalent vector for P1 Roe interface");
++            if (_p1UseLLF)
++            {
++                const State left = CellLocalSurfaceMean(iEdge, 0), right = CellLocalSurfaceMean(iEdge, 1);
++                const SpatialVector normal = surface.vectorMeasure.template head<dimension>() / effectiveArea;
++                const real speed = std::max(
++                    std::abs(left.template segment<dimension>(1).dot(normal) / left(0)) + std::sqrt(_physics.gamma * Pressure(left) / left(0)),
++                    std::abs(right.template segment<dimension>(1).dot(normal) / right(0)) + std::sqrt(_physics.gamma * Pressure(right) / right(0)));
++                const State high = .5 * effectiveArea * (PhysicalFlux(left, normal) + PhysicalFlux(right, normal) - speed * (right-left));
++                return _reconstructionSettings.limitFluxCorrection ? LimitEdgeFluxCorrection(iEdge, means, high) : high;
++            }
++            const State high = effectiveArea * NumericalFlux(CellLocalSurfaceMean(iEdge, 0), CellLocalSurfaceMean(iEdge, 1),
++                surface.vectorMeasure.template head<dimension>() / effectiveArea);
++            return _reconstructionSettings.limitFluxCorrection ? LimitEdgeFluxCorrection(iEdge, means, high) : high;
++        }
++        const State leftIntegral = CellLocalIntegratedFlux(iEdge, 0);
+         if (_detailedFluxTiming)
+         {
+             _lastRhsTiming.edgeLeftPhysicalFluxIntegralSeconds +=
+                 MPI_Wtime() - phaseStart;
+             phaseStart = MPI_Wtime();
+         }
+-        const State rightIntegral = EfficientIntegratedPhysicalFlux(
+-            1, surface,
+-            _lastRhsTiming.edgeRightPhysicalFluxDetail);
++        const State rightIntegral = CellLocalIntegratedFlux(iEdge, 1);
+         if (_detailedFluxTiming)
+         {
+             _lastRhsTiming.edgeRightPhysicalFluxIntegralSeconds +=
+                 MPI_Wtime() - phaseStart;
+             phaseStart = MPI_Wtime();
+         }
+-        const State leftMean = EfficientSurfaceMean(0, surface);
++        const State leftMean = CellLocalSurfaceMean(iEdge, 0);
+         if (_detailedFluxTiming)
+         {
+             _lastRhsTiming.edgeLeftStatePreparationSeconds +=
+                 MPI_Wtime() - phaseStart;
+             phaseStart = MPI_Wtime();
+         }
+-        const State rightMean = EfficientSurfaceMean(1, surface);
++        const State rightMean = CellLocalSurfaceMean(iEdge, 1);
+         if (_detailedFluxTiming)
+         {
+             _lastRhsTiming.edgeRightStatePreparationSeconds +=
+@@ -935,18 +1006,33 @@
+     typename SpatialOperator<dimension>::State
+     SpatialOperator<dimension>::EvaluateOwnedBoundaryFlux(index iNode, const NodeStatePair &means) const
+     {
++        if (_mode == IntegrationMode::EfficientDifferential && !_reconstructionSettings.limitFluxCorrection)
++            return CellLocalBoundaryFlux(iNode);
+         State total = State::Zero();
+         const auto &controlVolume = _geometry.NodeVolume(iNode);
+         if (_reconstructionSettings.limitFluxCorrection)
+         {
+             const State inside = means[iNode];
+-            for (const auto &piece : controlVolume.boundaryPieces)
+-            {
++            for (std::size_t b = 0; b < controlVolume.boundaryPieces.size(); b++)
++            {
++                const auto &piece = controlVolume.boundaryPieces[b];
+                 const auto &boundary = _boundaries.Get(piece.zone);
+                 if (boundary.mode == BoundaryMode::Periodic)
+                     continue;
+                 const SpatialVector normal = piece.vectorMeasure.template head<dimension>() / piece.measure;
+-                total += LowOrderFlux(inside, BoundaryExterior(inside, normal, boundary), normal, piece.measure);
++                const State outside = BoundaryExterior(inside, normal, boundary);
++                const real speed = LowOrderSpeed(inside, outside, normal);
++                const State low = LowOrderFlux(inside, outside, normal, piece.measure);
++                State correction = _boundaryHighFlux[iNode][b] - low;
++                const State bar = .5 * (inside + outside) - .5 / speed *
++                    (PhysicalFlux(outside, normal) - PhysicalFlux(inside, normal));
++                if (_fluxComponentWise)
++                    correction = correction.cwiseProduct(BoundFluxComponents(bar, -correction/(piece.measure*speed),
++                        _fluxCorrectionBounds[iNode], State::Constant(_reconstructionSettings.maximumFluxCorrection)));
++                const State increment = -correction / (piece.measure * speed);
++                const real factor = BoundFluxFactor(bar, increment, _fluxCorrectionBounds[iNode],
++                    _fluxComponentWise ? 1 : _reconstructionSettings.maximumFluxCorrection, !_fluxComponentWise);
++                total += low + factor * correction;
+             }
+             return total;
+         }
+@@ -1144,12 +1230,11 @@
+         AllocateNodeMatrix(_stateGradients, "NCFV.stateGradients", dimension);
+         if (_mode == IntegrationMode::EfficientDifferential)
+         {
+-            if (_reconstructionSettings.method == ReconstructionMethod::Variational)
+-                AllocateNodeMatrix(_coefficients, "NCFV.coefficients",
+-                                   Reconstruction::QuadraticBasisSize(dimension));
+-            AllocateLocalNodeMatrix(
+-                _physicalFluxGradients, "NCFV.physicalFluxGradients",
+-                dimension + 2, dimension * dimension);
++            // Differential experiment: raw first derivatives are the only
++            // reconstructed solution field. Curvature/flux jets are transient
++            // inside the owner-cell loop; send completed face sides instead.
++            DNDS_check_throw_info(_reconstructionSettings.method != ReconstructionMethod::Variational,
++                                  "Differential WBAP requires the gradient-only LS path");
+         }
+         else
+             AllocateNodeMatrix(_coefficients, "NCFV.coefficients",
+@@ -1170,6 +1255,7 @@
+         }
+
+         _farField = PrimitiveToConservative(_physics.farFieldPrimitive);
++        InitializeCellLocal();
+         for (index iNode = 0; iNode < _limiterFactors.Size(); iNode++)
+             _limiterFactors[iNode](0, 0) = 1.0;
+         for (index iNode = 0; iNode < _localTimeSteps.Size(); iNode++)
+@@ -1187,6 +1273,11 @@
+     template <int dimension>
+     void SpatialOperator<dimension>::Reconstruct(NodeStatePair &means)
+     {
++        if (_mode == IntegrationMode::EfficientDifferential)
++        {
++            ReconstructCellLocal(means);
++            return;
++        }
+         double phaseStart = MPI_Wtime();
+         means.trans.startPersistentPull();
+         means.trans.waitPersistentPull();
+@@ -1550,6 +1641,111 @@
+         }
+         _lastRhsTiming.residualAssemblySeconds = MPI_Wtime() - phaseStart;
+
++        if (const char *path = std::getenv("NCFV_BAR_AUDIT_FILE"); path && _reconstructionSettings.limitFluxCorrection)
++        {
++            const int interval = std::getenv("NCFV_BAR_AUDIT_INTERVAL") ? std::atoi(std::getenv("NCFV_BAR_AUDIT_INTERVAL")) : 100;
++            if (_cellAuditCalls <= 6 || _cellAuditCalls % std::max(1, interval) == 0)
++            {
++                index count[3]{}, globalCount[3]{};
++                real excess = 0, globalExcess = 0, alphaSum = 0, globalAlphaSum = 0;
++                State conservation = State::Zero(), globalConservation = State::Zero();
++                const auto check = [&](const State &value, index node)
++                {
++                    const auto bounds = _fluxCorrectionBounds[node];
++                    real e = 0;
++                    for (int v = 0; v < (_fluxDensityOnly ? 1 : dimension + 2); v++)
++                        e = std::max({e, bounds(v,0)-value(v), value(v)-bounds(v,1)});
++                    e = std::max(e, (_fluxPressureFloorOnly ? 1e-12 : bounds(dimension+2,0))-Pressure(value));
++                    if (_reconstructionSettings.fluxCorrectionEntropy)
++                        e = std::max(e, bounds(dimension+3,0)*std::pow(value(0),_physics.gamma)-Pressure(value));
++                    excess = std::max(excess,e);
++                    count[1] += e > 1e-10 || !IsPhysical(value);
++                };
++                for (index edge = 0; edge < _topology.NumEdge(); edge++)
++                {
++                    const auto &face = _geometry.EdgeSurface(edge);
++                    const State left = means[face.nodes[0]], right = means[face.nodes[1]];
++                    const SpatialVector normal = face.vectorMeasure.template head<dimension>()/face.measure;
++                    const real speed = LowOrderSpeed(left,right,normal);
++                    const State low = LowOrderFlux(left,right,normal,face.measure);
++                    const State bar = .5*(left+right)-.5/speed*(PhysicalFlux(right,normal)-PhysicalFlux(left,normal));
++                    const State change = (State(_edgeFlux[edge])-low)/(speed*face.measure);
++                    check(bar-change,face.nodes[0]);check(bar+change,face.nodes[1]);
++                    const real alpha = _edgeFluxCorrectionFactors[edge](0);
++                    count[0]++; count[2] += alpha < 1-1e-12; alphaSum += alpha;
++                }
++                for (index node = 0; node < _mesh->NumNode(); node++)
++                {
++                    conservation += _nodeHalo.Volume(node)*State(rhs[node])+EvaluateOwnedBoundaryFlux(node,means);
++                    const auto &pieces = _geometry.NodeVolume(node).boundaryPieces;
++                    const State inside = means[node];
++                    for (std::size_t b=0;b<pieces.size();b++)
++                    {
++                        const auto &piece=pieces[b];const auto &boundary=_boundaries.Get(piece.zone);
++                        if (boundary.mode==BoundaryMode::Periodic) continue;
++                        const SpatialVector normal=piece.vectorMeasure.template head<dimension>()/piece.measure;
++                        const State outside=BoundaryExterior(inside,normal,boundary);
++                        const real speed=LowOrderSpeed(inside,outside,normal);
++                        const State low=LowOrderFlux(inside,outside,normal,piece.measure);
++                        const State bar=.5*(inside+outside)-.5/speed*(PhysicalFlux(outside,normal)-PhysicalFlux(inside,normal));
++                        State correction=_boundaryHighFlux[node][b]-low;
++                        if (_fluxComponentWise)
++                            correction=correction.cwiseProduct(BoundFluxComponents(bar,-correction/(piece.measure*speed),
++                                _fluxCorrectionBounds[node],State::Constant(_reconstructionSettings.maximumFluxCorrection)));
++                        const State increment=-correction/(piece.measure*speed);
++                        const real alpha=BoundFluxFactor(bar,increment,_fluxCorrectionBounds[node],
++                            _fluxComponentWise ? 1 : _reconstructionSettings.maximumFluxCorrection,!_fluxComponentWise);
++                        check(bar+alpha*increment,node);
++                    }
++                }
++                MPI_Allreduce(count,globalCount,3,DNDS_MPI_INDEX,MPI_SUM,_mpi.comm);
++                MPI_Allreduce(&excess,&globalExcess,1,DNDS_MPI_REAL,MPI_MAX,_mpi.comm);
++                MPI_Allreduce(&alphaSum,&globalAlphaSum,1,DNDS_MPI_REAL,MPI_SUM,_mpi.comm);
++                MPI_Allreduce(conservation.data(),globalConservation.data(),dimension+2,DNDS_MPI_REAL,MPI_SUM,_mpi.comm);
++                if (_mpi.rank==0)
++                {
++                    std::ofstream stream(path,std::ios::app);
++                    stream << nlohmann::json({{"rhs_call",_cellAuditCalls},{"edges",globalCount[0]},
++                        {"invalid_corrected_bar_states",globalCount[1]},{"corrected_edges",globalCount[2]},
++                        {"mean_alpha",globalAlphaSum/globalCount[0]},{"maximum_bar_excess",globalExcess},
++                        {"conservation_defect",std::vector<real>(globalConservation.data(),globalConservation.data()+dimension+2)}}).dump() << '\n';
++                }
++            }
++        }
++
++        if (const char *path = std::getenv("NCFV_P1_FLUX_AUDIT_FILE"))
++        {
++            index counts[4]{}, globalCounts[4]{};
++            real error = 0, globalError = 0;
++            State conservation = State::Zero(), globalConservation = State::Zero();
++            for (index edge = 0; edge < _topology.NumEdge(); edge++)
++            {
++                const int category = int(_p1FallbackSides[edge][0]) + 2 * int(_p1FallbackSides[edge][1]);
++                counts[category]++;
++                if (category)
++                {
++                    const auto &surface = _geometry.EdgeSurface(edge);
++                    const SpatialVector vector = surface.vectorMeasure.template head<dimension>();
++                    const State expected = vector.norm() * NumericalFlux(_differentialTraces[edge][0], _differentialTraces[edge][1], vector.normalized());
++                    error = std::max(error, (State(_edgeFlux[edge]) - expected).cwiseAbs().maxCoeff());
++                }
++            }
++            for (index node = 0; node < _mesh->NumNode(); node++)
++                conservation += _nodeHalo.Volume(node) * State(rhs[node]) + EvaluateOwnedBoundaryFlux(node, means);
++            MPI_Allreduce(counts, globalCounts, 4, DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
++            MPI_Allreduce(&error, &globalError, 1, DNDS_MPI_REAL, MPI_MAX, _mpi.comm);
++            MPI_Allreduce(conservation.data(), globalConservation.data(), dimension + 2, DNDS_MPI_REAL, MPI_SUM, _mpi.comm);
++            if (_mpi.rank == 0)
++            {
++                const nlohmann::json row{{"rhs_call", _cellAuditCalls}, {"high_order_faces", globalCounts[0]},
++                    {"left_only_fallback_faces", globalCounts[1]}, {"right_only_fallback_faces", globalCounts[2]},
++                    {"both_fallback_faces", globalCounts[3]}, {"maximum_full_roe_flux_error", globalError},
++                    {"conservation_defect", std::vector<real>(globalConservation.data(), globalConservation.data() + dimension + 2)}};
++                std::ofstream stream(path, std::ios::app);
++                stream << row.dump() << '\n';
++            }
++        }
++
+         real residualNorm = 0;
+         if (computeResidualNorm)
+         {
+--- a/src/NCFV/NCFVLinearLimiter.hpp
++++ b/src/NCFV/NCFVLinearLimiter.hpp
+@@ -18,6 +18,51 @@
+         std::vector<Vector3> _recoveryWeights;
+
+     public:
++        /** Componentwise asymmetric A(x,y) of the supplied report, section 2.4. */
++        [[nodiscard]] static real ReportIncrement(real x, real y, real epsilon = 1e-10)
++        {
++            if ((x < 0 && y > 0) || (x > 0 && y < 0) || (x == 0 && y == 0)) return 0;
++            const real scale = std::max({std::abs(x), std::abs(y), epsilon});
++            const real a = x / scale, b = y / scale, e = epsilon / scale;
++            const real gate = x == 0 || y == 0 ? .5 : 1.; // sign(0)=0
++            return scale * (gate * (a * (b * b + 2 * e * e) + b * (2 * a * a + e * e)) /
++                            (2 * a * a - a * b + 2 * b * b + 3 * e * e));
++        }
++
++        /**
++         * Limit a predicted mean increment a against the neighboring mean
++         * increment b. This is an edge-projected multidimensional extension,
++         * not a claim of the one-dimensional TVD property on arbitrary meshes.
++         * kind: 1=minmod, 2=MC, 3=van Leer, 4=van Albada 1,
++         * 5=Superbee, 6=Koren with r=b/a. Never enlarge a.
++         */
++        [[nodiscard]] static real ProjectedSlopeFactor(real a, real b, int kind,
++                                                       real tolerance = 1e-10)
++        {
++            DNDS_check_throw_info(std::isfinite(a) && std::isfinite(b) &&
++                std::isfinite(tolerance) && tolerance >= 0 && kind >= 1 && kind <= 6,
++                "Invalid projected slope limiter data");
++            if (std::abs(a) <= tolerance)
++                return 1;
++            if ((a > 0 && b <= 0) || (a < 0 && b >= 0))
++                return 0;
++            // For equal signs and |b|>=|a| all capped factors are one.
++            if (std::abs(b) >= std::abs(a))
++                return 1;
++            const real r = b / a; // Here 0<r<1, so no overflow is possible.
++            if (kind == 1)
++                return r;
++            if (kind == 2)
++                return std::min({real(1), real(.5) * (1 + r), 2 * r});
++            if (kind == 4)
++                return r * (1 + r) / (1 + r * r);
++            if (kind == 5)
++                return std::min(real(1), 2 * r); // capped Superbee for 0 < r < 1
++            if (kind == 6)
++                return std::min(2 * r, (1 + 2 * r) / 3);
++            return 2 * r / (1 + r);
++        }
++
+         /** Cache omega_ii^(1)=centroid_i-x_i. All other P1 weights are zero. */
+         void Initialize(const DualGeometry &geometry, bool enabled)
+         {
+@@ -108,6 +153,43 @@
+         }
+
+         template <class TMean, class TGradient, class TLower, class TUpper>
++        [[nodiscard]] static auto LimitComponentsWithWeight(
++            const Eigen::MatrixBase<TMean> &mean,
++            const Eigen::MatrixBase<TGradient> &gradient,
++            const Vector3 &weight, const std::vector<Vector3> &offsets,
++            const Eigen::MatrixBase<TLower> &lower,
++            const Eigen::MatrixBase<TUpper> &upper, real tolerance = 1e-10)
++        {
++            struct ComponentResult
++            {
++                typename TMean::PlainObject factors, linearConstant, point;
++                typename TGradient::PlainObject gradient;
++            } result;
++            DNDS_check_throw_info(mean.allFinite() && gradient.allFinite() &&
++                (lower.array() <= mean.array()).all() && (mean.array() <= upper.array()).all(),
++                "Invalid componentwise P1 limiter data");
++            result.factors = mean;
++            result.factors.setOnes();
++            result.linearConstant = -gradient.transpose() * weight.head(gradient.rows());
++            for (const auto &offset : offsets)
++            {
++                const auto delta = (result.linearConstant + gradient.transpose() * offset.head(gradient.rows())).eval();
++                for (Eigen::Index v = 0; v < mean.rows(); v++)
++                {
++                    if (delta(v) > tolerance)
++                        result.factors(v) = std::min(result.factors(v), std::clamp((upper(v)-mean(v))/delta(v), real(0), real(1)));
++                    else if (delta(v) < -tolerance)
++                        result.factors(v) = std::min(result.factors(v), std::clamp((lower(v)-mean(v))/delta(v), real(0), real(1)));
++                }
++            }
++            result.gradient = gradient;
++            for (Eigen::Index v = 0; v < mean.rows(); v++)
++                result.gradient.col(v) *= result.factors(v);
++            result.point = mean + result.factors.cwiseProduct(result.linearConstant);
++            return result;
++        }
++
++        template <class TMean, class TGradient, class TLower, class TUpper>
+         [[nodiscard]] auto LimitCell(
+             index node, const Eigen::MatrixBase<TMean> &mean,
+             const Eigen::MatrixBase<TGradient> &gradient, const std::vector<Vector3> &offsets,
+--- a/src/NCFV/NCFVSpatial.hpp
++++ b/src/NCFV/NCFVSpatial.hpp
+@@ -7,6 +7,7 @@
+ #include "NCFVBoundary.hpp"
+ #include "NCFVReconstruction.hpp"
+ #include "NCFVSharedGradientLimiter.hpp"
++#include "NCFVLinearLimiter.hpp"
+
+ #include "Euler/Gas.hpp"
+
+@@ -174,6 +175,70 @@
+         NodeMatrixPair _stateGradients;
+         NodeMatrixPair _physicalFluxGradients;
+         NodeMatrixPair _coefficients;
++        // Isolated experiment: each dual volume owns its complete P2 state/flux jet.
++        static constexpr int LocalModes = dimension + dimension * (dimension + 1) / 2;
++        using LocalBasis = Eigen::Matrix<real, LocalModes, 1>;
++        using LocalFluxMoment = Eigen::Matrix<real, LocalModes, dimension>;
++        std::vector<std::array<LocalBasis, 2>> _cellFaceBasis;
++        std::vector<std::array<LocalFluxMoment, 2>> _cellFaceFluxBasis;
++        std::vector<LocalBasis> _cellVolumeBasis;
++        std::vector<std::vector<LocalBasis>> _cellBoundaryBasis;
++        std::vector<std::vector<std::pair<index, SpatialVector>>> _cellGradientFit;
++        int _cellLimiterKind = 0;
++        NodeMatrixPair _cellRawCoefficients;
++        bool _cellShockSensing = false;
++        bool _cellPairBounds = false;
++        NodeStatePair _cellShockSensor;
++        LinearBarthLimiter _localLinearLimiter;
++        std::vector<std::array<bool, 2>> _p1FallbackSides;
++        bool _p1BothSides = true;
++        bool _p1ComponentWise = false, _p1UseLLF = false;
++        bool _p1LocalComponentWise = false;
++        index _p1GatedNodes = 0, _p1FullWeightNodes = 0, _p1ChangedFallbackNodes = 0;
++        int _p1SlopeLimiter = 0;
++        NodeStatePair _p1CentroidOffsets;
++        bool _fluxDensityOnly = false;
++        bool _fluxComponentWise = false;
++        bool _fluxPressureFloorOnly = false;
++        real _fluxConstraintTolerance = 0;
++        std::vector<std::vector<State>> _boundaryHighFlux;
++        std::vector<std::array<State, 2>> _p1Traces;
++        // Report §2.4 mode: _p1Traces holds nodal P1 values. Raw gradients
++        // already exist on both edge-owner nodes; only one more scalar per side.
++        bool _reportFourPoint = false;
++        std::vector<std::array<real, 2>> _reportP1Scales;
++        void ApplyReportFourPoint(index edge);
++        using LocalCoefficients = Eigen::Matrix<real, LocalModes, dimension + 2>;
++        struct DifferentialStencil
++        {
++            std::vector<index> nodes;
++            std::vector<Eigen::MatrixXd> maps;
++            real length = 1;
++        };
++        std::vector<DifferentialStencil> _differentialStencils;
++        std::vector<std::array<State, 2>> _differentialTraces, _differentialFluxes;
++        std::vector<State> _differentialBoundary;
++        std::vector<std::pair<index, int>> _differentialSendSlots, _differentialReceiveSlots;
++        std::vector<int> _differentialSendCounts, _differentialReceiveCounts;
++        std::vector<int> _differentialSendOffsets, _differentialReceiveOffsets;
++        real _differentialMeanDefect = 0, _differentialMaximumDz = 0;
++        index _differentialBoundaryViolations = 0, _differentialBoundaryNonphysical = 0;
++        real _differentialBoundaryExcess = 0, _differentialBoundaryMinDensity = 0, _differentialBoundaryMinPressure = 0;
++        bool _differentialBounds = true, _differentialWBAP = true;
++        real _twoParameterObjectiveExcess = 0;
++        real _twoParameterMinimumAlpha = 1, _twoParameterMinimumBeta = 1;
++        index _twoParameterSplitCells = 0, _twoParameterPositiveCells = 0;
++        void ExchangeDifferentialSides();
++        LocalCoefficients CellWBAPCandidate(index node) const;
++        NodeMatrixPair _cellBounds;
++        index _cellAuditCalls = 0;
++        void InitializeCellLocal();
++        void ReconstructCellLocal(NodeStatePair &means);
++        void ComputeCellLocalFluxJets();
++        void AuditCellLocal(const NodeStatePair &means);
++        State CellLocalSurfaceMean(index edge, int side) const;
++        State CellLocalIntegratedFlux(index edge, int side) const;
++        State CellLocalBoundaryFlux(index node) const;
+         NodeStatePair _pointValues;
+         // Thesis (3-96): one anchor coefficient multiplies the complete
+         // differential-weight correction for that side of every macro surface.
+@@ -416,6 +481,10 @@
+          *     entries must already be synchronized.
+          */
+         void PrepareFluxCorrectionBounds(const NodeStatePair &means);
++        real BoundFluxFactor(const State &bar, const State &increment,
++            const Eigen::Matrix<real, dimension + 4, 2> &bounds, real factor, bool linearBounds = true) const;
++        State BoundFluxComponents(const State &bar, const State &increment,
++            const Eigen::Matrix<real, dimension + 4, 2> &bounds, State factors) const;
+         /**
+          * @brief Blend a high-order edge flux toward LLF using one factor shared by both endpoints.
+          * @param iEdge Owned primal-edge index.
+--- a/src/NCFV/NCFVSolver.cpp
++++ b/src/NCFV/NCFVSolver.cpp
+@@ -1,4 +1,5 @@
+ #include "NCFVSolver.hpp"
++#include "PeriodicLayer.hpp"
+ #include "NCFVAnalytic.hpp"
+
+ #include "DNDS/Errors.hpp"
+@@ -212,8 +213,26 @@
+     index Solver<dimension>::CountNonphysicalOwnedStates(const NodeStatePair &state) const
+     {
+         index localBad = 0;
++        const char *diagnostic = std::getenv("NCFV_BAD_STATE_PREFIX");
++        nlohmann::json badStates = nlohmann::json::array();
+         for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-            localBad += StateIsPhysical(State(state[iNode])) ? 0 : 1;
++            if (!StateIsPhysical(State(state[iNode])))
++            {
++                localBad++;
++                if (diagnostic && badStates.size() < 16)
++                {
++                    const State value = state[iNode];
++                    const real pressure = value(0) != 0 ? ConservativeToPrimitive(value)(dimension + 1) : -veryLargeReal;
++                    badStates.push_back({{"original", _mesh->node2nodeOrig(iNode, 0)},
++                        {"state", std::vector<real>(value.data(), value.data() + value.size())}, {"pressure", pressure}});
++                }
++            }
++        if (diagnostic && localBad)
++        {
++            std::ofstream stream(std::string(diagnostic) + ".rank" + std::to_string(_mpi.rank) + ".jsonl", std::ios::app);
++            stream << nlohmann::json({{"iteration_attempt", _currentIteration + 1}, {"base_time", _simulationTime},
++                {"bad_count", localBad}, {"first_states", badStates}}).dump() << '\n';
++        }
+         index globalBad = 0;
+         MPI_Allreduce(&localBad, &globalBad, 1,
+                       DNDS_MPI_INDEX, MPI_SUM, _mpi.comm);
+@@ -742,13 +761,23 @@
+     void Solver<dimension>::Initialize()
+     {
+         _configuration.Validate();
++        const Configuration physical = _configuration;
++        const char *imageMesh = std::getenv("NCFV_LAYER_IMAGE_MESH");
++        const char *imageField = std::getenv("NCFV_LAYER_IMAGE_FIELD");
++        const char *copies = std::getenv("NCFV_LAYER_IMAGES");
++        DNDS_check_throw_info(imageMesh && imageField && copies && std::getenv("NCFV_LAYER_SIDE"),
++                              "Missing single-period operator geometry");
++        _configuration.mesh.meshFile = imageMesh;
++        _configuration.mesh.periodicLengths[2] *= std::stoi(copies);
++        _configuration.initialField.nodeFile = imageField;
++        _configuration.io.restartInput.clear();
+         ReadMesh();
+
+         _topology = std::make_unique<Topology>(_mpi, _mesh);
+         _topology->Build();
+         _geometry = std::make_unique<DualGeometry>(
+             _mpi, _mesh, *_topology, _configuration.algorithm,
+-            _configuration.reconstruction.enableLimiter || _configuration.reconstruction.limitFluxCorrection,
++            true, // Local-polynomial constraints/tests need every incident surface.
+             &_configuration.mesh);
+         _geometry->Build();
+         _nodeHalo = std::make_unique<NodeHalo>(
+@@ -801,6 +830,7 @@
+             _rhs[iNode].setZero();
+         }
+         CheckOwnedState(_state, "initialization");
++        _configuration = physical;
+         WriteResolvedConfiguration();
+
+         if (_mpi.rank == 0)
+@@ -815,169 +845,7 @@
+     template <int dimension>
+     void Solver<dimension>::Run()
+     {
+-        const index additionalIterations = _configuration.time.iterations;
+-        WriteVortexDiagnostics(true);
+-        real residual = 0;
+-        if (_configuration.io.writeInitial || additionalIterations == 0)
+-            residual = EvaluateResidual();
+-
+-        if (_configuration.io.writeVTK && _configuration.io.writeInitial)
+-            WriteOutput(StampedName(
+-                _configuration.io.outputPrefix, _currentIteration));
+-
+-        for (index additional = 0; additional < additionalIterations; additional++)
+-        {
+-            if (_configuration.time.endTime >= 0 &&
+-                _simulationTime >= _configuration.time.endTime - 1e-13)
+-                break;
+-            _lastStepTiming = {};
+-            const double stepStart = MPI_Wtime();
+-            real maximumStep = _configuration.time.endTime >= 0 ?
+-                                   _configuration.time.endTime - _simulationTime : veryLargeReal;
+-            const double baseCopyStart = MPI_Wtime();
+-            for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-                _baseState[iNode] = _state[iNode];
+-            _lastStepTiming.baseStateCopySeconds = MPI_Wtime() - baseCopyStart;
+-
+-            real physicalStep = 0;
+-            for (int retry = 0;; retry++)
+-            {
+-                _spatial->SetMaximumStep(maximumStep);
+-                std::string rejectedStage;
+-                const auto checkStage = [&](const NodeStatePair &state, const std::string &where)
+-                {
+-                    if (!_configuration.time.rejectNonPhysicalSteps)
+-                    {
+-                        CheckOwnedState(state, where);
+-                        return true;
+-                    }
+-                    if (CountNonphysicalOwnedStates(state) == 0)
+-                        return true;
+-                    rejectedStage = where;
+-                    return false;
+-                };
+-                const auto advance = [&]() -> bool
+-                {
+-                    _spatial->ResetRiemannSolverCallCount();
+-                    _spatial->EvaluateRHS(_state, _rhs, true, false);
+-                    _lastStepTiming.rhs += _spatial->LastRhsTiming();
+-                    physicalStep = _spatial->LastMinimumTimeStep();
+-                    std::vector<real> stepSize(static_cast<std::size_t>(_mesh->NumNode()));
+-                    double stageUpdateStart = MPI_Wtime();
+-                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-                    {
+-                        stepSize[static_cast<std::size_t>(iNode)] =
+-                            _spatial->LocalTimeStep(iNode);
+-                        _stageState[iNode] =
+-                            _baseState[iNode] +
+-                            stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode];
+-                    }
+-                    _spatial->ApplyStrongBoundaryConditions(_stageState);
+-                    if (!checkStage(_stageState, "SSPRK3 stage 1"))
+-                        return false;
+-                    _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+-
+-                    _spatial->EvaluateRHS(_stageState, _rhs, false, false);
+-                    _lastStepTiming.rhs += _spatial->LastRhsTiming();
+-                    stageUpdateStart = MPI_Wtime();
+-                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-                        _stageState[iNode] =
+-                            0.75 * _baseState[iNode] +
+-                            0.25 * (_stageState[iNode] +
+-                                    stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
+-                    _spatial->ApplyStrongBoundaryConditions(_stageState);
+-                    if (!checkStage(_stageState, "SSPRK3 stage 2"))
+-                        return false;
+-                    _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+-
+-                    residual = _spatial->EvaluateRHS(_stageState, _rhs, false, true);
+-                    _lastStepTiming.rhs += _spatial->LastRhsTiming();
+-                    stageUpdateStart = MPI_Wtime();
+-                    for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-                        _state[iNode] =
+-                            (1.0 / 3.0) * _baseState[iNode] +
+-                            (2.0 / 3.0) *
+-                                (_stageState[iNode] +
+-                                 stepSize[static_cast<std::size_t>(iNode)] * _rhs[iNode]);
+-                    _spatial->ApplyStrongBoundaryConditions(_state);
+-                    if (!checkStage(_state, "SSPRK3 stage 3"))
+-                        return false;
+-                    _lastStepRiemannSolverCalls = _spatial->RiemannSolverCallCount();
+-                    _lastStepTiming.stageUpdateSeconds += MPI_Wtime() - stageUpdateStart;
+-                    return true;
+-                };
+-                if (advance())
+-                    break;
+-                // All ranks reject together. Restore the complete old state;
+-                // reducing one common physical step preserves flux conservation.
+-                for (index iNode = 0; iNode < _mesh->NumNode(); iNode++)
+-                    _state[iNode] = _baseState[iNode];
+-                DNDS_check_throw_info(retry < _configuration.time.maximumStepRetries,
+-                                      "NCFV exhausted nonphysical-step retries at " + rejectedStage);
+-                maximumStep = .5 * physicalStep;
+-                DNDS_check_throw_info(maximumStep >= _configuration.time.minimumTimeStep,
+-                                      "NCFV positivity retry fell below minimumTimeStep");
+-                if (_mpi.rank == 0)
+-                    log() << "NCFV rejected iteration=" << _currentIteration + 1
+-                          << " after " << rejectedStage << "; retry dt <= "
+-                          << maximumStep << std::endl;
+-            }
+-            _lastStepTiming.totalSeconds = MPI_Wtime() - stepStart;
+-
+-            _currentIteration++;
+-            _simulationTime += physicalStep;
+-            if (_mpi.rank == 0 &&
+-                (_currentIteration == 1 ||
+-                 _currentIteration % _configuration.time.reportInterval == 0 ||
+-                 additional + 1 == additionalIterations))
+-            {
+-                log() << "NCFV iteration=" << _currentIteration
+-                      << ", residual RMS=" << std::setprecision(12) << residual
+-                      << ", dt[min,max]=[" << _spatial->LastMinimumTimeStep()
+-                      << "," << _spatial->LastMaximumTimeStep() << "]"
+-                      << ", time=" << _simulationTime
+-                      << ", target=" << _configuration.time.endTime
+-                      << ", step wall[s]=" << _lastStepTiming.totalSeconds
+-                      << std::endl;
+-                if (const auto *sweep = _spatial->SharedGradientSweepDiagnostics())
+-                    log() << "NCFV shared-gradient sweep: updated faces="
+-                          << sweep->updatedFaces << ", zero-factor faces="
+-                          << sweep->zeroFactorFaces << ", minimum theta="
+-                          << sweep->minimumFaceFactor << ", colors=" << sweep->colorGroups
+-                          << ", limiter stages[s]=" << _lastStepTiming.rhs.limiterSeconds
+-                          << ", last sweep[s]=" << sweep->totalSeconds
+-                          << ", last sweep communication[s]=" << sweep->blockCommunicationSeconds
+-                          << std::endl;
+-            }
+-
+-            if (_configuration.io.writeVTK &&
+-                _configuration.io.outputInterval > 0 &&
+-                _currentIteration % _configuration.io.outputInterval == 0)
+-                WriteOutput(StampedName(
+-                    _configuration.io.outputPrefix, _currentIteration));
+-            if (_configuration.io.restartInterval > 0 &&
+-                _currentIteration % _configuration.io.restartInterval == 0)
+-                WriteRestart(StampedName(
+-                    _configuration.io.restartPrefix, _currentIteration));
+-        }
+-
+-        WriteVortexDiagnostics(false);
+-
+-        if (additionalIterations == 0 && _mpi.rank == 0)
+-            log() << "NCFV initialization-only residual RMS="
+-                  << std::setprecision(12) << residual
+-                  << ", dt[min,max]=[" << _spatial->LastMinimumTimeStep()
+-                  << "," << _spatial->LastMaximumTimeStep() << "]"
+-                  << std::endl;
+-
+-        if (_configuration.io.writeVTK && _configuration.io.writeFinal &&
+-            _lastOutputIteration != _currentIteration)
+-            WriteOutput(StampedName(
+-                _configuration.io.outputPrefix, _currentIteration));
+-        if (_configuration.io.writeFinalRestart &&
+-            _lastRestartIteration != _currentIteration)
+-            WriteRestart(StampedName(
+-                _configuration.io.restartPrefix, _currentIteration));
++#include "SingleLayerRun.hxx"
+     }
+
+     template class Solver<DNDS_NCFV_INSTANTIATION_DIM>;
